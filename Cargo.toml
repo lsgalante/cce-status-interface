@@ -1,0 +1,16 @@
+[package]
+name = "clear-status-interface"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+clear-ui = { path = "../clear-ui" }
+winit = "0.30"
+wgpu = "24"
+bytemuck = { version = "1", features = ["derive"] }
+pollster = "0.4"
+glyphon = "0.8"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = "0.4"
