@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::collections::HashMap;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
@@ -9,6 +10,36 @@ use glyphon::{
     TextAtlas, TextBounds, TextRenderer, Viewport,
 };
 use clear_ui::color;
+use stray::StatusNotifierWatcher;
+use stray::message::NotifierItemMessage;
+
+#[derive(Debug, Clone)]
+struct TrayPixmap {
+    width: i32,
+    height: i32,
+    pixels: Vec<u8>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+struct TrayItem {
+    id: String,
+    icon_name: Option<String>,
+    icon_theme_path: Option<String>,
+    pixmaps: Option<Vec<TrayPixmap>>,
+    title: Option<String>,
+}
+
+
+#[derive(Debug, Clone)]
+struct TrayIconBounds {
+    id: String,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    title: Option<String>,
+}
 
 #[derive(Debug, Clone)]
 struct SystemStats {
@@ -24,7 +55,10 @@ enum CustomEvent {
     LayoutUpdated(String),
     TitleUpdated(String),
     SystemStatsUpdated(SystemStats),
+    TrayUpdated(TrayItem),
+    TrayRemoved(String),
 }
+
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -193,6 +227,10 @@ struct StatusApp {
     layout: String,
     title: String,
     stats: Option<SystemStats>,
+    tray_items: HashMap<String, TrayItem>,
+    cursor_pos: (f64, f64),
+    hovered_tray_item: Option<String>,
+    tray_item_bounds: Vec<TrayIconBounds>,
 
     font_system: FontSystem,
     swash_cache: SwashCache,
@@ -299,12 +337,17 @@ impl StatusApp {
             layout: String::new(),
             title: String::new(),
             stats: None,
+            tray_items: HashMap::new(),
+            cursor_pos: (0.0, 0.0),
+            hovered_tray_item: None,
+            tray_item_bounds: Vec::new(),
             font_system, swash_cache, text_atlas, text_renderer, text_viewport,
             rects: Vec::new(), text_items: Vec::new(),
             scale_factor,
             width: size.width, height: size.height,
             needs_rebuild: true,
         };
+
         app.rebuild_layout();
         app
     }
@@ -391,9 +434,8 @@ impl StatusApp {
         }
 
         // 5. Right Side Stats (CPU, Mem, Bat, Clock)
+        let mut right_x = sw - 12.0 * s;
         if let Some(ref stats) = self.stats {
-            let mut right_x = sw - 12.0 * s;
-
             // Clock
             let buf = make_text_buffer(&mut self.font_system, &stats.clock, 11.0 * s);
             let w = buf.layout_runs().next().map(|r| r.line_w).unwrap_or(0.0);
@@ -458,6 +500,146 @@ impl StatusApp {
                     (color::TEXT_DIM[2] * 255.0) as u8,
                 ),
             });
+        }
+
+        // 5b. System Tray Icons (render to the left of the CPU/stats block)
+        self.tray_item_bounds.clear();
+        if !self.tray_items.is_empty() {
+            right_x -= 16.0 * s; // Separator padding
+            let mut sorted_tray: Vec<&TrayItem> = self.tray_items.values().collect();
+            sorted_tray.sort_by_key(|item| &item.id);
+
+            for item in sorted_tray.iter().rev() {
+                let icon_size = 16.0 * s;
+                right_x -= icon_size;
+                let x = right_x;
+                let y = (bar_h - icon_size) / 2.0;
+
+                // Record bounds for hit-testing
+                self.tray_item_bounds.push(TrayIconBounds {
+                    id: item.id.clone(),
+                    x,
+                    y,
+                    w: icon_size,
+                    h: icon_size,
+                    title: item.title.clone(),
+                });
+
+                // Attempt to draw pixmap
+                let mut drawn_pixmap = false;
+                if let Some(ref pixmaps) = item.pixmaps {
+                    if !pixmaps.is_empty() {
+                        // Find pixmap closest to 16 pixels wide
+                        if let Some(pixmap) = pixmaps.iter().min_by_key(|p| (p.width - 16).abs()) {
+                            if pixmap.width > 0 && pixmap.height > 0 {
+                                let pixel_w = icon_size / pixmap.width as f32;
+                                let pixel_h = icon_size / pixmap.height as f32;
+                                for row in 0..pixmap.height {
+                                    for col in 0..pixmap.width {
+                                        let idx = ((row * pixmap.width + col) * 4) as usize;
+                                        if idx + 3 < pixmap.pixels.len() {
+                                            let a = pixmap.pixels[idx] as f32 / 255.0;
+                                            if a > 0.0 {
+                                                let r = pixmap.pixels[idx + 1] as f32 / 255.0;
+                                                let g = pixmap.pixels[idx + 2] as f32 / 255.0;
+                                                let b = pixmap.pixels[idx + 3] as f32 / 255.0;
+                                                self.rects.push(RectWidget {
+                                                    x: x + col as f32 * pixel_w,
+                                                    y: y + row as f32 * pixel_h,
+                                                    w: pixel_w,
+                                                    h: pixel_h,
+                                                    color: [r, g, b, a],
+                                                });
+                                            }
+                                        }
+                                    }
+                                }
+                                drawn_pixmap = true;
+                            }
+                        }
+                    }
+                }
+
+                // Fallback to text icon symbol
+                if !drawn_pixmap {
+                    let symbol = if let Some(ref name) = item.icon_name {
+                        let name_lower = name.to_lowercase();
+                        if name_lower.contains("volume") || name_lower.contains("sound") || name_lower.contains("audio") {
+                            if name_lower.contains("mute") { "🔇" } else { "🔊" }
+                        } else if name_lower.contains("wifi") || name_lower.contains("network") || name_lower.contains("ethernet") {
+                            "📶"
+                        } else if name_lower.contains("battery") {
+                            "🔋"
+                        } else if name_lower.contains("bluetooth") {
+                            "ᛒ"
+                        } else if name_lower.contains("mail") || name_lower.contains("envelope") {
+                            "✉"
+                        } else if name_lower.contains("chat") || name_lower.contains("messenger") || name_lower.contains("discord") || name_lower.contains("slack") || name_lower.contains("telegram") {
+                            "💬"
+                        } else if name_lower.contains("steam") || name_lower.contains("game") {
+                            "🎮"
+                        } else {
+                            "⚙"
+                        }
+                    } else {
+                        "⚙"
+                    };
+
+                    let buf = make_text_buffer(&mut self.font_system, symbol, 11.0 * s);
+                    let tw = buf.layout_runs().next().map(|r| r.line_w).unwrap_or(0.0);
+                    let tx = x + (icon_size - tw) / 2.0;
+                    let ty = y + (icon_size - 11.0 * s * 1.4) / 2.0;
+                    self.text_items.push(TextItem {
+                        buffer: buf,
+                        x: tx,
+                        y: ty,
+                        color: glyphon::Color::rgb(
+                            (color::TEXT_ACCENT[0] * 255.0) as u8,
+                            (color::TEXT_ACCENT[1] * 255.0) as u8,
+                            (color::TEXT_ACCENT[2] * 255.0) as u8,
+                        ),
+                    });
+                }
+
+                right_x -= 8.0 * s; // Gap between icons
+            }
+        }
+
+        // 5c. Tooltip Rendering (if hovered)
+        if let Some(ref hovered_id) = self.hovered_tray_item {
+            if let Some(bound) = self.tray_item_bounds.iter().find(|b| &b.id == hovered_id) {
+                let tooltip_text = bound.title.as_deref().unwrap_or(bound.id.as_str());
+                let font_size = 10.0 * s;
+                let buf = make_text_buffer(&mut self.font_system, tooltip_text, font_size);
+                let text_w = buf.layout_runs().next().map(|r| r.line_w).unwrap_or(0.0);
+                let padding = 6.0 * s;
+
+                let tooltip_w = text_w + padding * 2.0;
+                let tooltip_h = font_size * 1.4 + padding * 2.0;
+                let tx = bound.x + (bound.w - tooltip_w) / 2.0;
+                let ty = bar_h + 4.0 * s;
+
+                // Tooltip background
+                self.rects.push(RectWidget {
+                    x: tx,
+                    y: ty,
+                    w: tooltip_w,
+                    h: tooltip_h,
+                    color: [0.08, 0.08, 0.12, 0.95],
+                });
+
+                // Tooltip text
+                self.text_items.push(TextItem {
+                    buffer: buf,
+                    x: tx + padding,
+                    y: ty + padding,
+                    color: glyphon::Color::rgb(
+                        (color::TEXT_FG[0] * 255.0) as u8,
+                        (color::TEXT_FG[1] * 255.0) as u8,
+                        (color::TEXT_FG[2] * 255.0) as u8,
+                    ),
+                });
+            }
         }
 
         self.needs_rebuild = false;
@@ -607,6 +789,28 @@ impl ApplicationHandler<CustomEvent> for AppWrapper {
                 }
                 true
             }
+            WindowEvent::CursorMoved { position, .. } => {
+                if let Some(st) = &mut self.state {
+                    let cx = position.x / st.scale_factor;
+                    let cy = position.y / st.scale_factor;
+                    st.cursor_pos = (cx, cy);
+                    
+                    let mut newly_hovered = None;
+                    for bound in &st.tray_item_bounds {
+                        if cx >= bound.x as f64 && cx <= (bound.x + bound.w) as f64
+                            && cy >= bound.y as f64 && cy <= (bound.y + bound.h) as f64 {
+                            newly_hovered = Some(bound.id.clone());
+                            break;
+                        }
+                    }
+                    if st.hovered_tray_item != newly_hovered {
+                        st.hovered_tray_item = newly_hovered;
+                        st.needs_rebuild = true;
+                        st.window.request_redraw();
+                    }
+                }
+                true
+            }
             _ => false,
         };
         if redraw {
@@ -615,6 +819,7 @@ impl ApplicationHandler<CustomEvent> for AppWrapper {
             }
         }
     }
+
 
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: CustomEvent) {
         if let Some(ref mut st) = self.state {
@@ -631,11 +836,18 @@ impl ApplicationHandler<CustomEvent> for AppWrapper {
                 CustomEvent::SystemStatsUpdated(s) => {
                     st.stats = Some(s);
                 }
+                CustomEvent::TrayUpdated(item) => {
+                    st.tray_items.insert(item.id.clone(), item);
+                }
+                CustomEvent::TrayRemoved(id) => {
+                    st.tray_items.remove(&id);
+                }
             }
             st.needs_rebuild = true;
             st.window.request_redraw();
         }
     }
+
 }
 
 async fn spawn_status_listener(sub: &'static str, proxy: EventLoopProxy<CustomEvent>) {
@@ -698,6 +910,58 @@ async fn spawn_system_stats(proxy: EventLoopProxy<CustomEvent>) {
     }
 }
 
+async fn spawn_status_tray(
+    proxy: EventLoopProxy<CustomEvent>,
+    cmd_rx: tokio::sync::mpsc::Receiver<stray::message::NotifierItemCommand>,
+) {
+    let watcher = match StatusNotifierWatcher::new(cmd_rx).await {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("Failed to create StatusNotifierWatcher: {:?}", e);
+            return;
+        }
+    };
+    let mut host = match watcher.create_notifier_host("clear-status-bar").await {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("Failed to create NotifierHost: {:?}", e);
+            return;
+        }
+    };
+    loop {
+        match host.recv().await {
+            Ok(msg) => match msg {
+                NotifierItemMessage::Update { address, item, menu: _ } => {
+                    let pixmaps = item.icon_pixmap.map(|v| {
+                        v.into_iter()
+                            .map(|p| TrayPixmap {
+                                width: p.width,
+                                height: p.height,
+                                pixels: p.pixels,
+                            })
+                            .collect()
+                    });
+                    let tray_item = TrayItem {
+                        id: address.clone(),
+                        icon_name: item.icon_name,
+                        icon_theme_path: item.icon_theme_path,
+                        pixmaps,
+                        title: item.title,
+                    };
+                    let _ = proxy.send_event(CustomEvent::TrayUpdated(tray_item));
+                }
+                NotifierItemMessage::Remove { address } => {
+                    let _ = proxy.send_event(CustomEvent::TrayRemoved(address));
+                }
+            },
+            Err(e) => {
+                eprintln!("Tray host recv error: {:?}", e);
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            }
+        }
+    }
+}
+
 fn main() {
     let event_loop = EventLoop::<CustomEvent>::with_user_event().build().unwrap();
     event_loop.set_control_flow(ControlFlow::Wait);
@@ -706,6 +970,9 @@ fn main() {
     let proxy_layout = event_loop.create_proxy();
     let proxy_title = event_loop.create_proxy();
     let proxy_stats = event_loop.create_proxy();
+    let proxy_tray = event_loop.create_proxy();
+
+    let (_cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(32);
 
     // Spawn Tokio Runtime for async listeners
     std::thread::spawn(move || {
@@ -715,6 +982,7 @@ fn main() {
             tokio::spawn(spawn_status_listener("layout", proxy_layout));
             tokio::spawn(spawn_status_listener("title", proxy_title));
             tokio::spawn(spawn_system_stats(proxy_stats));
+            tokio::spawn(spawn_status_tray(proxy_tray, cmd_rx));
             
             // Keep the runtime thread alive
             loop {
@@ -726,3 +994,23 @@ fn main() {
     let mut wrapper = AppWrapper { state: None };
     event_loop.run_app(&mut wrapper).unwrap();
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
