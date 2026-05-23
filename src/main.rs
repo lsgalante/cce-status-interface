@@ -2,7 +2,7 @@ use std::sync::Arc;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
-use winit::window::{Window, WindowAttributes};
+use winit::window::{Fullscreen, Window, WindowAttributes};
 use winit::platform::wayland::WindowAttributesExtWayland;
 use glyphon::{
     Attrs, Buffer, Cache, FontSystem, Metrics, Resolution, SwashCache, TextArea,
@@ -313,18 +313,19 @@ impl StatusApp {
         let sw = self.width as f32;
         let sh = self.height as f32;
         let s = self.scale_factor as f32;
+        let bar_h = 28.0 * s;
 
         self.rects.clear();
         self.text_items.clear();
 
-        // 1. Background
+        // 1. Background (spans the entire fullscreen area)
         self.rects.push(RectWidget {
             x: 0.0, y: 0.0, w: sw, h: sh,
             color: color::STATUS_BG,
         });
-        // 1b. Accent border at bottom
+        // 1b. Accent border at bottom of the status bar area
         self.rects.push(RectWidget {
-            x: 0.0, y: sh - 2.0 * s, w: sw, h: 2.0 * s,
+            x: 0.0, y: bar_h - 2.0 * s, w: sw, h: 2.0 * s,
             color: color::STATUS_ACCENT,
         });
 
@@ -339,7 +340,7 @@ impl StatusApp {
             self.text_items.push(TextItem {
                 buffer: buf,
                 x: left_x,
-                y: (sh - 11.0 * s * 1.4) / 2.0,
+                y: (bar_h - 11.0 * s * 1.4) / 2.0,
                 color: glyphon::Color::rgb(
                     (col[0] * 255.0) as u8,
                     (col[1] * 255.0) as u8,
@@ -360,7 +361,7 @@ impl StatusApp {
             self.text_items.push(TextItem {
                 buffer: buf,
                 x: left_x,
-                y: (sh - 11.0 * s * 1.4) / 2.0,
+                y: (bar_h - 11.0 * s * 1.4) / 2.0,
                 color: glyphon::Color::rgb(
                     (color::TEXT_ACCENT[0] * 255.0) as u8,
                     (color::TEXT_ACCENT[1] * 255.0) as u8,
@@ -380,7 +381,7 @@ impl StatusApp {
             self.text_items.push(TextItem {
                 buffer: buf,
                 x: left_x,
-                y: (sh - 11.0 * s * 1.4) / 2.0,
+                y: (bar_h - 11.0 * s * 1.4) / 2.0,
                 color: glyphon::Color::rgb(
                     (color::TEXT_FG[0] * 255.0) as u8,
                     (color::TEXT_FG[1] * 255.0) as u8,
@@ -400,7 +401,7 @@ impl StatusApp {
             self.text_items.push(TextItem {
                 buffer: buf,
                 x: right_x,
-                y: (sh - 11.0 * s * 1.4) / 2.0,
+                y: (bar_h - 11.0 * s * 1.4) / 2.0,
                 color: glyphon::Color::rgb(
                     (color::TEXT_FG[0] * 255.0) as u8,
                     (color::TEXT_FG[1] * 255.0) as u8,
@@ -417,7 +418,7 @@ impl StatusApp {
                 self.text_items.push(TextItem {
                     buffer: buf,
                     x: right_x,
-                    y: (sh - 11.0 * s * 1.4) / 2.0,
+                    y: (bar_h - 11.0 * s * 1.4) / 2.0,
                     color: glyphon::Color::rgb(
                         (color::TEXT_ACCENT[0] * 255.0) as u8,
                         (color::TEXT_ACCENT[1] * 255.0) as u8,
@@ -434,7 +435,7 @@ impl StatusApp {
             self.text_items.push(TextItem {
                 buffer: buf,
                 x: right_x,
-                y: (sh - 11.0 * s * 1.4) / 2.0,
+                y: (bar_h - 11.0 * s * 1.4) / 2.0,
                 color: glyphon::Color::rgb(
                     (color::TEXT_DIM[0] * 255.0) as u8,
                     (color::TEXT_DIM[1] * 255.0) as u8,
@@ -450,7 +451,7 @@ impl StatusApp {
             self.text_items.push(TextItem {
                 buffer: buf,
                 x: right_x,
-                y: (sh - 11.0 * s * 1.4) / 2.0,
+                y: (bar_h - 11.0 * s * 1.4) / 2.0,
                 color: glyphon::Color::rgb(
                     (color::TEXT_DIM[0] * 255.0) as u8,
                     (color::TEXT_DIM[1] * 255.0) as u8,
@@ -579,7 +580,7 @@ impl ApplicationHandler<CustomEvent> for AppWrapper {
             WindowAttributes::default()
                 .with_name("clear-status-interface", "clear-status-interface")
                 .with_title("Clear Status Interface")
-                .with_inner_size(winit::dpi::LogicalSize::new(1920, 28))
+                .with_fullscreen(Some(Fullscreen::Borderless(None)))
                 .with_decorations(false)
         ).unwrap());
         let state = pollster::block_on(StatusApp::new(window));
