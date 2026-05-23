@@ -10,8 +10,10 @@ use glyphon::{
     TextAtlas, TextBounds, TextRenderer, Viewport,
 };
 use clear_ui::color;
-use stray::StatusNotifierWatcher;
-use stray::message::NotifierItemMessage;
+// zbus D-Bus Integration
+
+
+
 
 #[derive(Debug, Clone)]
 struct TrayPixmap {
@@ -505,11 +507,13 @@ impl StatusApp {
         // 5b. System Tray Icons (render to the left of the CPU/stats block)
         self.tray_item_bounds.clear();
         if !self.tray_items.is_empty() {
+            println!("[status-tray-render] Rendering {} tray items (screen size: {}x{})", self.tray_items.len(), sw, sh);
             right_x -= 16.0 * s; // Separator padding
             let mut sorted_tray: Vec<&TrayItem> = self.tray_items.values().collect();
             sorted_tray.sort_by_key(|item| &item.id);
 
             for item in sorted_tray.iter().rev() {
+                println!("[status-tray-render] Item ID: '{}', icon_name: {:?}, pixmaps is Some: {}", item.id, item.icon_name, item.pixmaps.is_some());
                 let icon_size = 16.0 * s;
                 right_x -= icon_size;
                 let x = right_x;
@@ -532,17 +536,60 @@ impl StatusApp {
                         // Find pixmap closest to 16 pixels wide
                         if let Some(pixmap) = pixmaps.iter().min_by_key(|p| (p.width - 16).abs()) {
                             if pixmap.width > 0 && pixmap.height > 0 {
-                                let pixel_w = icon_size / pixmap.width as f32;
-                                let pixel_h = icon_size / pixmap.height as f32;
+                                // Calculate average brightness of visible pixels to see if we need to recolor
+                                let mut total_brightness = 0.0;
+                                let mut visible_pixel_count = 0;
                                 for row in 0..pixmap.height {
                                     for col in 0..pixmap.width {
                                         let idx = ((row * pixmap.width + col) * 4) as usize;
                                         if idx + 3 < pixmap.pixels.len() {
                                             let a = pixmap.pixels[idx] as f32 / 255.0;
-                                            if a > 0.0 {
+                                            if a > 0.1 {
                                                 let r = pixmap.pixels[idx + 1] as f32 / 255.0;
                                                 let g = pixmap.pixels[idx + 2] as f32 / 255.0;
                                                 let b = pixmap.pixels[idx + 3] as f32 / 255.0;
+                                                total_brightness += (r + g + b) / 3.0;
+                                                visible_pixel_count += 1;
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                let avg_brightness = if visible_pixel_count > 0 {
+                                    total_brightness / visible_pixel_count as f32
+                                } else {
+                                    0.5
+                                };
+                                                               // If the average brightness is dark, recolor it to be light
+                                let recolor_light = avg_brightness < 0.35;
+ 
+                                // Downsample to 16x16 quads to optimize rendering
+                                let draw_w = 16;
+                                let draw_h = 16;
+                                let pixel_w = icon_size / draw_w as f32;
+                                let pixel_h = icon_size / draw_h as f32;
+                                let mut pushed_pixels = 0;
+                                for row in 0..draw_h {
+                                    for col in 0..draw_w {
+                                        let src_row = row * pixmap.height / draw_h;
+                                        let src_col = col * pixmap.width / draw_w;
+                                        let idx = ((src_row * pixmap.width + src_col) * 4) as usize;
+                                        if idx + 3 < pixmap.pixels.len() {
+                                            let a = pixmap.pixels[idx] as f32 / 255.0;
+                                            if a > 0.0 {
+                                                let mut r = pixmap.pixels[idx + 1] as f32 / 255.0;
+                                                let mut g = pixmap.pixels[idx + 2] as f32 / 255.0;
+                                                let mut b = pixmap.pixels[idx + 3] as f32 / 255.0;
+                                                
+                                                if recolor_light {
+                                                    let l = (r + g + b) / 3.0;
+                                                    // Map 0.0 (black) to 0.85 (light grey), 1.0 stays 1.0
+                                                    let new_l = 0.85 + (1.0 - 0.85) * l;
+                                                    r = new_l;
+                                                    g = new_l;
+                                                    b = new_l;
+                                                }
+                                                
                                                 self.rects.push(RectWidget {
                                                     x: x + col as f32 * pixel_w,
                                                     y: y + row as f32 * pixel_h,
@@ -550,16 +597,20 @@ impl StatusApp {
                                                     h: pixel_h,
                                                     color: [r, g, b, a],
                                                 });
+                                                pushed_pixels += 1;
                                             }
                                         }
                                     }
                                 }
+                                println!("[status-tray-render] Item '{}' drawing downsampled pixmap width={}, height={}, icon_size={}, x={}, y={}, pixel_size={}x{}, pushed_rects={}", 
+                                    item.id, pixmap.width, pixmap.height, icon_size, x, y, pixel_w, pixel_h, pushed_pixels);
                                 drawn_pixmap = true;
                             }
                         }
                     }
                 }
 
+                println!("[status-tray-render] Item '{}' drawn_pixmap: {}", item.id, drawn_pixmap);
                 // Fallback to text icon symbol
                 if !drawn_pixmap {
                     let symbol = if let Some(ref name) = item.icon_name {
@@ -578,6 +629,8 @@ impl StatusApp {
                             "💬"
                         } else if name_lower.contains("steam") || name_lower.contains("game") {
                             "🎮"
+                        } else if name_lower.contains("dropbox") {
+                            "📦"
                         } else {
                             "⚙"
                         }
@@ -910,55 +963,474 @@ async fn spawn_system_stats(proxy: EventLoopProxy<CustomEvent>) {
     }
 }
 
-async fn spawn_status_tray(
-    proxy: EventLoopProxy<CustomEvent>,
-    cmd_rx: tokio::sync::mpsc::Receiver<stray::message::NotifierItemCommand>,
-) {
-    let watcher = match StatusNotifierWatcher::new(cmd_rx).await {
-        Ok(w) => w,
-        Err(e) => {
-            eprintln!("Failed to create StatusNotifierWatcher: {:?}", e);
-            return;
+#[derive(Debug, Clone)]
+pub struct NotifierAddress {
+    pub destination: String,
+    pub path: String,
+}
+
+impl NotifierAddress {
+    pub fn from_notifier_service(service: &str, sender: &str) -> Result<Self, String> {
+        if service.starts_with('/') {
+            Ok(NotifierAddress {
+                destination: sender.to_string(),
+                path: service.to_string(),
+            })
+        } else if let Some((destination, path)) = service.split_once('/') {
+            Ok(NotifierAddress {
+                destination: destination.to_string(),
+                path: format!("/{}", path),
+            })
+        } else if service.contains(':') {
+            let split = service.split(':').collect::<Vec<&str>>();
+            Ok(NotifierAddress {
+                destination: format!(":{}", split[1]),
+                path: "/StatusNotifierItem".to_string(),
+            })
+        } else {
+            Ok(NotifierAddress {
+                destination: service.to_string(),
+                path: "/StatusNotifierItem".to_string(),
+            })
         }
-    };
-    let mut host = match watcher.create_notifier_host("clear-status-bar").await {
-        Ok(h) => h,
-        Err(e) => {
-            eprintln!("Failed to create NotifierHost: {:?}", e);
-            return;
-        }
-    };
-    loop {
-        match host.recv().await {
-            Ok(msg) => match msg {
-                NotifierItemMessage::Update { address, item, menu: _ } => {
-                    let pixmaps = item.icon_pixmap.map(|v| {
-                        v.into_iter()
-                            .map(|p| TrayPixmap {
-                                width: p.width,
-                                height: p.height,
-                                pixels: p.pixels,
-                            })
-                            .collect()
-                    });
-                    let tray_item = TrayItem {
-                        id: address.clone(),
-                        icon_name: item.icon_name,
-                        icon_theme_path: item.icon_theme_path,
-                        pixmaps,
-                        title: item.title,
-                    };
-                    let _ = proxy.send_event(CustomEvent::TrayUpdated(tray_item));
+    }
+}
+
+#[zbus::proxy(
+    interface = "org.kde.StatusNotifierItem",
+    default_path = "/StatusNotifierItem"
+)]
+trait StatusNotifierItem {
+    #[zbus(property)]
+    fn id(&self) -> zbus::Result<String>;
+
+    #[zbus(property)]
+    fn category(&self) -> zbus::Result<String>;
+
+    #[zbus(property)]
+    fn status(&self) -> zbus::Result<String>;
+
+    #[zbus(property)]
+    fn title(&self) -> zbus::Result<String>;
+
+    #[zbus(property)]
+    fn icon_name(&self) -> zbus::Result<String>;
+
+    #[zbus(property)]
+    fn icon_theme_path(&self) -> zbus::Result<String>;
+
+    #[zbus(property)]
+    fn icon_pixmap(&self) -> zbus::Result<Vec<(i32, i32, Vec<u8>)>>;
+
+    #[zbus(signal)]
+    fn new_icon(&self) -> zbus::Result<()>;
+    #[zbus(signal)]
+    fn new_title(&self) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    fn new_status(&self) -> zbus::Result<()>;
+}
+
+fn find_icon_file(dir: &std::path::Path, icon_name: &str) -> Option<std::path::PathBuf> {
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.filter_map(Result::ok) {
+            if let Ok(file_type) = entry.file_type() {
+                let path = entry.path();
+                if file_type.is_dir() {
+                    if !file_type.is_symlink() {
+                        if let Some(found) = find_icon_file(&path, icon_name) {
+                            return Some(found);
+                        }
+                    }
+                } else if file_type.is_file() {
+                    if let Some(file_name) = path.file_name().and_then(|f| f.to_str()) {
+                        if file_name == format!("{}.png", icon_name) {
+                            return Some(path);
+                        }
+                    }
                 }
-                NotifierItemMessage::Remove { address } => {
-                    let _ = proxy.send_event(CustomEvent::TrayRemoved(address));
-                }
-            },
-            Err(e) => {
-                eprintln!("Tray host recv error: {:?}", e);
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             }
         }
+    }
+    None
+}
+
+fn load_png_as_pixmap(path: &std::path::Path) -> Option<TrayPixmap> {
+    let file = std::fs::File::open(path).ok()?;
+    let mut decoder = png::Decoder::new(file);
+    decoder.set_transformations(png::Transformations::EXPAND);
+    let mut reader = decoder.read_info().ok()?;
+    let mut buf = vec![0; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut buf).ok()?;
+    
+    let width = info.width as i32;
+    let height = info.height as i32;
+    println!("[status-tray] PNG info: width={}, height={}, color_type={:?}, buffer_size={}", width, height, info.color_type, info.buffer_size());
+    let mut argb_pixels = Vec::with_capacity((width * height * 4) as usize);
+    
+    let actual_bytes = &buf[..info.buffer_size()];
+    let mut printed = 0;
+    match info.color_type {
+        png::ColorType::Rgba => {
+            for (i, chunk) in actual_bytes.chunks_exact(4).enumerate() {
+                if chunk[3] > 10 && printed < 5 {
+                    println!("[status-tray] Pixel {}: original RGBA=[{}, {}, {}, {}]", i, chunk[0], chunk[1], chunk[2], chunk[3]);
+                    printed += 1;
+                }
+                argb_pixels.push(chunk[3]); // A
+                argb_pixels.push(chunk[0]); // R
+                argb_pixels.push(chunk[1]); // G
+                argb_pixels.push(chunk[2]); // B
+            }
+        }
+        png::ColorType::Rgb => {
+            for chunk in actual_bytes.chunks_exact(3) {
+                argb_pixels.push(255);      // A
+                argb_pixels.push(chunk[0]); // R
+                argb_pixels.push(chunk[1]); // G
+                argb_pixels.push(chunk[2]); // B
+            }
+        }
+        png::ColorType::Grayscale => {
+            for &g in actual_bytes {
+                argb_pixels.push(255); // A
+                argb_pixels.push(g);   // R
+                argb_pixels.push(g);   // G
+                argb_pixels.push(g);   // B
+            }
+        }
+        png::ColorType::GrayscaleAlpha => {
+            for chunk in actual_bytes.chunks_exact(2) {
+                argb_pixels.push(chunk[1]); // A
+                argb_pixels.push(chunk[0]); // R
+                argb_pixels.push(chunk[0]); // G
+                argb_pixels.push(chunk[0]); // B
+            }
+        }
+        _ => return None,
+    }
+    
+    Some(TrayPixmap {
+        width,
+        height,
+        pixels: argb_pixels,
+    })
+}
+
+fn resolve_icon_path(theme_path: Option<&str>, icon_name: &str) -> Option<std::path::PathBuf> {
+    if icon_name.is_empty() {
+        return None;
+    }
+
+    let icon_name = if icon_name == "dropbox" { "dropboxstatus-idle" } else { icon_name };
+
+    if let Some(path_str) = theme_path {
+        if !path_str.is_empty() {
+            let path = std::path::Path::new(path_str);
+            if path.exists() {
+                if let Some(found) = find_icon_file(path, icon_name) {
+                    return Some(found);
+                }
+            }
+        }
+    }
+
+    let mut search_dirs = Vec::new();
+    if let Ok(home) = std::env::var("HOME") {
+        search_dirs.push(format!("{}/.local/share/icons", home));
+        search_dirs.push(format!("{}/.icons", home));
+    }
+    search_dirs.push("/usr/share/icons".to_string());
+    search_dirs.push("/usr/share/pixmaps".to_string());
+
+    let sub_paths = [
+        "hicolor/16x16/status",
+        "hicolor/22x22/status",
+        "hicolor/24x24/status",
+        "hicolor/32x32/status",
+        "hicolor/48x48/status",
+        "hicolor/16x16/apps",
+        "hicolor/22x22/apps",
+        "hicolor/24x24/apps",
+        "hicolor/32x32/apps",
+        "hicolor/48x48/apps",
+        "gnome/16x16/status",
+        "gnome/22x22/status",
+        "gnome/24x24/status",
+        "gnome/32x32/status",
+        "gnome/48x48/status",
+        "gnome/16x16/apps",
+        "gnome/22x22/apps",
+        "gnome/24x24/apps",
+        "gnome/32x32/apps",
+        "gnome/48x48/apps",
+    ];
+
+    for base in &search_dirs {
+        for sub in &sub_paths {
+            let path = std::path::Path::new(base).join(sub).join(format!("{}.png", icon_name));
+            if path.exists() && path.is_file() {
+                return Some(path);
+            }
+        }
+        let base_path = std::path::Path::new(base);
+        if base_path.exists() {
+            if let Some(found) = find_icon_file(base_path, icon_name) {
+                return Some(found);
+            }
+        }
+    }
+
+    None
+}
+
+async fn fetch_tray_item(conn: &zbus::Connection, addr: &NotifierAddress) -> Result<TrayItem, zbus::Error> {
+    let proxy = StatusNotifierItemProxy::builder(conn)
+        .destination(addr.destination.clone())?
+        .path(addr.path.clone())?
+        .build()
+        .await?;
+
+    let id = format!("{}/{}", addr.destination, addr.path.trim_start_matches('/'));
+    let icon_name = proxy.icon_name().await.ok();
+    let icon_theme_path = proxy.icon_theme_path().await.ok();
+    let title = proxy.title().await.ok();
+
+    let mut pixmaps = proxy.icon_pixmap().await.ok().and_then(|v| {
+        if v.is_empty() || (v.len() == 1 && v[0].0 == 0 && v[0].1 == 0) {
+            None
+        } else {
+            Some(v.into_iter()
+                .map(|(w, h, pixels)| TrayPixmap {
+                    width: w,
+                    height: h,
+                    pixels,
+                })
+                .collect::<Vec<_>>())
+        }
+    });
+
+    if pixmaps.is_none() {
+        if let Some(ref name) = icon_name {
+            println!("[status-tray] Trying to resolve theme icon for '{}' (theme path: {:?})", name, icon_theme_path);
+            if let Some(icon_path) = resolve_icon_path(icon_theme_path.as_deref(), name) {
+                println!("[status-tray] Found icon file at {:?}", icon_path);
+                if let Some(pixmap) = load_png_as_pixmap(&icon_path) {
+                    println!("[status-tray] Successfully decoded icon file to pixmap (size: {}x{})", pixmap.width, pixmap.height);
+                    pixmaps = Some(vec![pixmap]);
+                } else {
+                    println!("[status-tray] Failed to decode icon file");
+                }
+            } else {
+                println!("[status-tray] Could not find icon file on system or theme path");
+            }
+        }
+    } else {
+        println!("[status-tray] Loaded raw D-Bus pixmap for '{}'", id);
+    }
+
+    Ok(TrayItem {
+        id,
+        icon_name,
+        icon_theme_path,
+        pixmaps,
+        title,
+    })
+}
+
+struct Watcher {
+    registered_items: Arc<tokio::sync::Mutex<HashMap<String, NotifierAddress>>>,
+    proxy_events: EventLoopProxy<CustomEvent>,
+    tokio_handle: tokio::runtime::Handle,
+}
+
+#[zbus::interface(name = "org.kde.StatusNotifierWatcher")]
+impl Watcher {
+    async fn register_status_notifier_item(
+        &self,
+        service: &str,
+        #[zbus(header)] header: zbus::MessageHeader<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+    ) {
+        let sender = header
+            .sender()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| service.to_string());
+        
+        if let Ok(addr) = NotifierAddress::from_notifier_service(service, &sender) {
+            let mut items = self.registered_items.lock().await;
+            let full_address = format!("{}/{}", addr.destination, addr.path.trim_start_matches('/'));
+            if !items.contains_key(&full_address) {
+                items.insert(full_address.clone(), addr.clone());
+                
+                let conn = conn.clone();
+                let addr_clone = addr.clone();
+                let proxy_events_clone = self.proxy_events.clone();
+                
+                self.tokio_handle.spawn(async move {
+                    if let Ok(item) = fetch_tray_item(&conn, &addr_clone).await {
+                        let _ = proxy_events_clone.send_event(CustomEvent::TrayUpdated(item));
+                    }
+                    
+                    // Listen for updates
+                    if let Ok(proxy) = StatusNotifierItemProxy::builder(&conn)
+                        .destination(addr_clone.destination.clone())
+                        .unwrap()
+                        .path(addr_clone.path.clone())
+                        .unwrap()
+                        .build()
+                        .await
+                    {
+                        let mut new_icon_stream = proxy.receive_new_icon().await.ok();
+                        let mut new_title_stream = proxy.receive_new_title().await.ok();
+                        let mut new_status_stream = proxy.receive_new_status().await.ok();
+                        
+                        use tokio_stream::StreamExt;
+                        loop {
+                            tokio::select! {
+                                Some(_) = async {
+                                    if let Some(ref mut s) = new_icon_stream {
+                                        s.next().await
+                                    } else {
+                                        std::future::pending().await
+                                    }
+                                } => {
+                                    if let Ok(item) = fetch_tray_item(&conn, &addr_clone).await {
+                                        let _ = proxy_events_clone.send_event(CustomEvent::TrayUpdated(item));
+                                    }
+                                }
+                                Some(_) = async {
+                                    if let Some(ref mut s) = new_title_stream {
+                                        s.next().await
+                                    } else {
+                                        std::future::pending().await
+                                    }
+                                } => {
+                                    if let Ok(item) = fetch_tray_item(&conn, &addr_clone).await {
+                                        let _ = proxy_events_clone.send_event(CustomEvent::TrayUpdated(item));
+                                    }
+                                }
+                                Some(_) = async {
+                                    if let Some(ref mut s) = new_status_stream {
+                                        s.next().await
+                                    } else {
+                                        std::future::pending().await
+                                    }
+                                } => {
+                                    if let Ok(item) = fetch_tray_item(&conn, &addr_clone).await {
+                                        let _ = proxy_events_clone.send_event(CustomEvent::TrayUpdated(item));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+        }
+    }
+
+    async fn register_status_notifier_host(&self, _service: &str) {}
+
+    #[zbus(property)]
+    async fn protocol_version(&self) -> i32 {
+        0
+    }
+
+    #[zbus(property)]
+    async fn is_status_notifier_host_registered(&self) -> bool {
+        true
+    }
+
+    #[zbus(property)]
+    async fn registered_status_notifier_items(&self) -> Vec<String> {
+        let items = self.registered_items.lock().await;
+        items.keys().cloned().collect()
+    }
+}
+
+async fn spawn_status_tray(proxy: EventLoopProxy<CustomEvent>) {
+    let registered_items = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let tokio_handle = tokio::runtime::Handle::current();
+
+    let watcher = Watcher {
+        registered_items: registered_items.clone(),
+        proxy_events: proxy.clone(),
+        tokio_handle,
+    };
+
+    let conn = match zbus::ConnectionBuilder::session() {
+        Ok(builder) => {
+            match builder
+                .name("org.kde.StatusNotifierWatcher")
+                .unwrap()
+                .serve_at("/StatusNotifierWatcher", watcher)
+                .unwrap()
+                .build()
+                .await
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("Failed to build D-Bus connection: {:?}", e);
+                    return;
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("Failed to initialize D-Bus session: {:?}", e);
+            return;
+        }
+    };
+
+    println!("StatusNotifierWatcher running successfully on D-Bus!");
+
+    // Start NameOwnerChanged listener to detect when tray apps disconnect
+    let dbus_proxy = match zbus::fdo::DBusProxy::new(&conn).await {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("Failed to create DBusProxy: {:?}", e);
+            return;
+        }
+    };
+    let mut owner_changes = match dbus_proxy.receive_name_owner_changed().await {
+        Ok(oc) => oc,
+        Err(e) => {
+            eprintln!("Failed to receive name owner changed: {:?}", e);
+            return;
+        }
+    };
+
+    let registered_items_clone = registered_items.clone();
+    let proxy_events_clone = proxy.clone();
+    
+    tokio::spawn(async move {
+        use tokio_stream::StreamExt;
+        while let Some(signal) = owner_changes.next().await {
+            if let Ok(args) = signal.args() {
+                let old = args.old_owner;
+                let new = args.new_owner;
+                let old_opt: &Option<_> = &*old;
+                if let Some(ref old_owner) = old_opt {
+                    if new.is_none() {
+                        let mut items = registered_items_clone.lock().await;
+                        let mut to_remove = Vec::new();
+                        for (key, addr) in items.iter() {
+                            if addr.destination == old_owner.as_str() {
+                                to_remove.push(key.clone());
+                            }
+                        }
+                        for key in to_remove {
+                            items.remove(&key);
+                            let _ = proxy_events_clone.send_event(CustomEvent::TrayRemoved(key));
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    // Keep the task alive
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
     }
 }
 
@@ -972,8 +1444,6 @@ fn main() {
     let proxy_stats = event_loop.create_proxy();
     let proxy_tray = event_loop.create_proxy();
 
-    let (_cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(32);
-
     // Spawn Tokio Runtime for async listeners
     std::thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -982,7 +1452,7 @@ fn main() {
             tokio::spawn(spawn_status_listener("layout", proxy_layout));
             tokio::spawn(spawn_status_listener("title", proxy_title));
             tokio::spawn(spawn_system_stats(proxy_stats));
-            tokio::spawn(spawn_status_tray(proxy_tray, cmd_rx));
+            tokio::spawn(spawn_status_tray(proxy_tray));
             
             // Keep the runtime thread alive
             loop {
@@ -994,6 +1464,7 @@ fn main() {
     let mut wrapper = AppWrapper { state: None };
     event_loop.run_app(&mut wrapper).unwrap();
 }
+
 
 
 
