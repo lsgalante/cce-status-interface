@@ -49,6 +49,7 @@ struct SystemStats {
     memory: String,
     cpu: String,
     battery: String,
+    volume: String,
 }
 
 #[derive(Debug, Clone)]
@@ -467,6 +468,32 @@ impl StatusApp {
                         (color::TEXT_ACCENT[0] * 255.0) as u8,
                         (color::TEXT_ACCENT[1] * 255.0) as u8,
                         (color::TEXT_ACCENT[2] * 255.0) as u8,
+                    ),
+                });
+            }
+
+            // Volume
+            if !stats.volume.is_empty() {
+                right_x -= 16.0 * s;
+                let buf = make_text_buffer(&mut self.font_system, &stats.volume, 11.0 * s);
+                let w = buf.layout_runs().next().map(|r| r.line_w).unwrap_or(0.0);
+                right_x -= w;
+                
+                let is_muted = stats.volume.starts_with('🔇');
+                let color_val = if is_muted {
+                    color::TEXT_DIM
+                } else {
+                    color::TEXT_ACCENT
+                };
+
+                self.text_items.push(TextItem {
+                    buffer: buf,
+                    x: right_x,
+                    y: (bar_h - 11.0 * s * 1.4) / 2.0,
+                    color: glyphon::Color::rgb(
+                        (color_val[0] * 255.0) as u8,
+                        (color_val[1] * 255.0) as u8,
+                        (color_val[2] * 255.0) as u8,
                     ),
                 });
             }
@@ -930,9 +957,63 @@ async fn spawn_status_listener(sub: &'static str, proxy: EventLoopProxy<CustomEv
     }
 }
 
+async fn read_volume() -> Option<String> {
+    let vol_output = match tokio::process::Command::new("pactl")
+        .args(["get-sink-volume", "@DEFAULT_SINK@"])
+        .output()
+        .await
+    {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("[read_volume] failed to spawn pactl: {:?}", e);
+            return None;
+        }
+    };
+    if !vol_output.status.success() {
+        eprintln!("[read_volume] pactl get-sink-volume exited with error: {:?}", String::from_utf8_lossy(&vol_output.stderr));
+        return None;
+    }
+    let vol_str = String::from_utf8_lossy(&vol_output.stdout);
+    
+    let mute_output = match tokio::process::Command::new("pactl")
+        .args(["get-sink-mute", "@DEFAULT_SINK@"])
+        .output()
+        .await
+    {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("[read_volume] failed to spawn pactl mute: {:?}", e);
+            return None;
+        }
+    };
+    if !mute_output.status.success() {
+        eprintln!("[read_volume] pactl get-sink-mute exited with error: {:?}", String::from_utf8_lossy(&mute_output.stderr));
+        return None;
+    }
+    let mute_str = String::from_utf8_lossy(&mute_output.stdout);
+    let muted = mute_str.contains("yes");
+
+    let mut pct = None;
+    if let Some(pos) = vol_str.find('%') {
+        let start = vol_str[..pos].rfind(|c: char| !c.is_ascii_digit()).map(|i| i + 1).unwrap_or(0);
+        if let Ok(num) = vol_str[start..pos].parse::<u32>() {
+            pct = Some(num);
+        }
+    }
+
+    match (muted, pct) {
+        (true, Some(p)) => Some(format!("🔇 {}%", p)),
+        (true, None) => Some("🔇 Muted".to_string()),
+        (false, Some(p)) => Some(format!("🔊 {}%", p)),
+        (false, None) => Some("🔊 Vol".to_string()),
+    }
+}
+
 async fn spawn_system_stats(proxy: EventLoopProxy<CustomEvent>) {
+    eprintln!("[spawn_system_stats] Starting system stats loop!");
     let mut last_cpu = read_cpu_ticks().unwrap_or((0, 0));
     loop {
+        eprintln!("[spawn_system_stats] loop iteration start");
         let clock = chrono::Local::now().format("%A, %B %d, %Y %I:%M %p").to_string();
         let memory = read_memory_usage().unwrap_or_else(|| "Mem N/A".to_string());
         
@@ -951,13 +1032,16 @@ async fn spawn_system_stats(proxy: EventLoopProxy<CustomEvent>) {
         };
 
         let battery = read_battery().unwrap_or_default();
+        let volume = read_volume().await.unwrap_or_default();
 
         let stats = SystemStats {
             clock,
             memory,
             cpu: cpu_str,
             battery,
+            volume,
         };
+        eprintln!("[spawn_system_stats] stats: {:?}", stats);
         let _ = proxy.send_event(CustomEvent::SystemStatsUpdated(stats));
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
