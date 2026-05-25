@@ -1,19 +1,38 @@
-use std::sync::Arc;
 use std::collections::HashMap;
-use winit::application::ApplicationHandler;
-use winit::event::WindowEvent;
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
-use winit::window::{Fullscreen, Window, WindowAttributes};
-use winit::platform::wayland::WindowAttributesExtWayland;
+use std::sync::Arc;
 use glyphon::{
     Attrs, Buffer, Cache, FontSystem, Metrics, Resolution, SwashCache, TextArea,
     TextAtlas, TextBounds, TextRenderer, Viewport,
 };
 use clear_ui::color;
-// zbus D-Bus Integration
 
-
-
+use smithay_client_toolkit::{
+    compositor::{CompositorHandler, CompositorState},
+    delegate_compositor, delegate_keyboard, delegate_pointer, delegate_registry,
+    delegate_seat, delegate_shm, delegate_xdg_shell, delegate_xdg_window, delegate_output,
+    registry::{ProvidesRegistryState, RegistryState},
+    output::{OutputHandler, OutputState},
+    seat::{
+        keyboard::KeyboardHandler,
+        pointer::PointerHandler,
+        Capability, SeatHandler, SeatState,
+    },
+    shell::{
+        xdg::{
+            window::{Window as XdgWindow, WindowConfigure, WindowHandler, WindowDecorations},
+            XdgShell,
+        },
+        WaylandSurface,
+    },
+    shm::{Shm, ShmHandler},
+};
+use wayland_client::{
+    globals::registry_queue_init,
+    protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface},
+    Connection, QueueHandle, Proxy,
+};
+use calloop::EventLoop;
+use calloop_wayland_source::WaylandSource;
 
 #[derive(Debug, Clone)]
 struct TrayPixmap {
@@ -31,7 +50,6 @@ struct TrayItem {
     pixmaps: Option<Vec<TrayPixmap>>,
     title: Option<String>,
 }
-
 
 #[derive(Debug, Clone)]
 struct TrayIconBounds {
@@ -70,7 +88,6 @@ enum CustomEvent {
     TrayUpdated(TrayItem),
     TrayRemoved(String),
 }
-
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -259,8 +276,9 @@ impl Label {
 }
 
 struct StatusApp {
-    window: Arc<Window>,
-    surface: wgpu::Surface<'static>,
+    window: XdgWindow,
+    surface: wl_surface::WlSurface,
+    wgpu_surface: wgpu::Surface<'static>,
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
@@ -295,16 +313,34 @@ struct StatusApp {
 }
 
 impl StatusApp {
-    async fn new(window: Arc<Window>) -> Self {
-        let size = window.inner_size();
+    async fn new(
+        conn: &Connection,
+        qh: &QueueHandle<AppState>,
+        compositor_state: &CompositorState,
+        xdg_shell_state: &XdgShell,
+        width: u32,
+        height: u32,
+    ) -> Self {
+        let surface = compositor_state.create_surface(qh);
+        let window = xdg_shell_state.create_window(surface.clone(), WindowDecorations::None, qh);
+        window.set_title("Clear Status Interface");
+        window.set_app_id("clear-status-interface");
+        window.set_fullscreen(None);
+        window.commit();
+
+        let wayland_handle = Box::leak(Box::new(clear_ui::wayland::WaylandSurfaceHandle {
+            display_ptr: conn.backend().display_id().as_ptr() as *mut std::ffi::c_void,
+            surface_ptr: surface.id().as_ptr() as *mut std::ffi::c_void,
+        }));
+
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::VULKAN,
             ..Default::default()
         });
-        let surface = instance.create_surface(window.clone()).expect("surface");
+        let wgpu_surface = instance.create_surface(wayland_handle).expect("surface");
         let adapter = instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
-            compatible_surface: Some(&surface),
+            compatible_surface: Some(&wgpu_surface),
             force_fallback_adapter: false,
         }).await.expect("adapter");
         let (device, queue) = adapter.request_device(&wgpu::DeviceDescriptor {
@@ -313,8 +349,8 @@ impl StatusApp {
             required_limits: wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter.limits()),
             memory_hints: wgpu::MemoryHints::MemoryUsage,
         }, None).await.expect("device");
-        let config = surface.get_default_config(&adapter, size.width.max(1), size.height.max(1)).expect("config");
-        surface.configure(&device, &config);
+        let config = wgpu_surface.get_default_config(&adapter, width.max(1), height.max(1)).expect("config");
+        wgpu_surface.configure(&device, &config);
 
         let shader_code = clear_ui::SHADER;
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -366,7 +402,7 @@ impl StatusApp {
         let mut text_atlas = TextAtlas::new(&device, &queue, &cache, config.format);
         let text_renderer = TextRenderer::new(&mut text_atlas, &device, wgpu::MultisampleState::default(), None);
         let mut text_viewport = Viewport::new(&device, &cache);
-        text_viewport.update(&queue, Resolution { width: size.width, height: size.height });
+        text_viewport.update(&queue, Resolution { width, height });
 
         let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Vertex Buffer"),
@@ -375,10 +411,10 @@ impl StatusApp {
             mapped_at_creation: false,
         });
 
-        let scale_factor = (window.scale_factor() as f32).max(2.0) as f64;
+        let scale_factor = 2.0;
 
         let mut app = Self {
-            window, surface, device, queue, config, render_pipeline,
+            window, surface, wgpu_surface, device, queue, config, render_pipeline,
             vertex_buffer, vertex_count: 0,
             tags: String::new(),
             layout: String::new(),
@@ -392,7 +428,7 @@ impl StatusApp {
             font_system, swash_cache, text_atlas, text_renderer, text_viewport,
             rects: Vec::new(), text_items: Vec::new(),
             scale_factor,
-            width: size.width, height: size.height,
+            width, height,
             needs_rebuild: true,
         };
 
@@ -559,7 +595,7 @@ impl StatusApp {
                                 } else {
                                     0.5
                                 };
-                                                               // If the average brightness is dark, recolor it to be light
+                                                                // If the average brightness is dark, recolor it to be light
                                 let recolor_light = avg_brightness < 0.35;
  
                                 // Downsample to 16x16 quads to optimize rendering
@@ -667,7 +703,7 @@ impl StatusApp {
                 let padding = 6.0 * s;
 
                 let tooltip_w = text_w + padding * 2.0;
-                let tooltip_h = font_size * 1.4 + padding * 2.0;
+                let tooltip_w_h = font_size * 1.4 + padding * 2.0;
                 let tx = bound.x * s + (bound.w * s - tooltip_w) / 2.0;
                 let ty = bar_h + 4.0 * s;
 
@@ -676,7 +712,7 @@ impl StatusApp {
                     x: tx,
                     y: ty,
                     w: tooltip_w,
-                    h: tooltip_h,
+                    h: tooltip_w_h,
                     color: [0.08, 0.08, 0.12, 0.95],
                 });
 
@@ -741,13 +777,13 @@ impl StatusApp {
         ).unwrap();
     }
 
-    fn resize(&mut self, size: winit::dpi::PhysicalSize<u32>) {
-        if size.width > 0 && size.height > 0 {
-            self.width = size.width;
-            self.height = size.height;
-            self.config.width = size.width;
-            self.config.height = size.height;
-            self.surface.configure(&self.device, &self.config);
+    fn resize(&mut self, width: u32, height: u32) {
+        if width > 0 && height > 0 {
+            self.width = width;
+            self.height = height;
+            self.config.width = width;
+            self.config.height = height;
+            self.wgpu_surface.configure(&self.device, &self.config);
             self.needs_rebuild = true;
         }
     }
@@ -759,10 +795,10 @@ impl StatusApp {
         }
         self.prepare_text();
 
-        let output = match self.surface.get_current_texture() {
+        let output = match self.wgpu_surface.get_current_texture() {
             Ok(t) => t,
             Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-                self.surface.configure(&self.device, &self.config);
+                self.wgpu_surface.configure(&self.device, &self.config);
                 return;
             }
             Err(wgpu::SurfaceError::Timeout) => return,
@@ -798,75 +834,179 @@ impl StatusApp {
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
-        self.window.pre_present_notify();
         output.present();
     }
 }
 
-struct AppWrapper {
+// ── CustomEvent & AppState ──
+
+struct AppState {
+    registry_state: RegistryState,
+    compositor_state: CompositorState,
+    xdg_shell_state: XdgShell,
+    shm_state: Shm,
+    seat_state: SeatState,
+    output_state: OutputState,
+
+    seats: Vec<wl_seat::WlSeat>,
+    pointer: Option<wl_pointer::WlPointer>,
+    keyboard: Option<wl_keyboard::WlKeyboard>,
+
     state: Option<StatusApp>,
+    exit: bool,
+    redraw: bool,
 }
 
-impl ApplicationHandler<CustomEvent> for AppWrapper {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.state.is_some() { return; }
-        let window = Arc::new(event_loop.create_window(
-            WindowAttributes::default()
-                .with_name("clear-status-interface", "clear-status-interface")
-                .with_title("Clear Status Interface")
-                .with_fullscreen(Some(Fullscreen::Borderless(None)))
-                .with_decorations(false)
-        ).unwrap());
-        let state = pollster::block_on(StatusApp::new(window));
-        self.state = Some(state);
-        self.state.as_ref().unwrap().window.request_redraw();
+impl CompositorHandler for AppState {
+    fn scale_factor_changed(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &wl_surface::WlSurface,
+        scale_factor: i32,
+    ) {
+        if let Some(state) = &mut self.state {
+            state.scale_factor = (scale_factor as f32).max(2.0) as f64;
+            state.resize(state.width, state.height);
+        }
+        self.redraw = true;
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: winit::window::WindowId, event: WindowEvent) {
-        if !matches!(event, WindowEvent::RedrawRequested) {
-            println!("[window_event] Event: {:?}", event);
+    fn transform_changed(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &wl_surface::WlSurface,
+        _new_transform: wl_output::Transform,
+    ) {}
+
+    fn frame(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &wl_surface::WlSurface,
+        _time: u32,
+    ) {}
+
+    fn surface_enter(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &wl_surface::WlSurface,
+        _output: &wl_output::WlOutput,
+    ) {}
+
+    fn surface_leave(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &wl_surface::WlSurface,
+        _output: &wl_output::WlOutput,
+    ) {}
+}
+
+impl OutputHandler for AppState {
+    fn output_state(&mut self) -> &mut OutputState {
+        &mut self.output_state
+    }
+
+    fn new_output(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _output: wl_output::WlOutput) {}
+    fn update_output(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _output: wl_output::WlOutput) {}
+    fn output_destroyed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _output: wl_output::WlOutput) {}
+}
+
+impl SeatHandler for AppState {
+    fn seat_state(&mut self) -> &mut SeatState {
+        &mut self.seat_state
+    }
+
+    fn new_seat(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, seat: wl_seat::WlSeat) {
+        self.seats.push(seat);
+    }
+
+    fn new_capability(
+        &mut self,
+        _conn: &Connection,
+        qh: &QueueHandle<Self>,
+        seat: wl_seat::WlSeat,
+        capability: Capability,
+    ) {
+        if capability == Capability::Pointer && self.pointer.is_none() {
+            let pointer = self.seat_state.get_pointer(qh, &seat).unwrap();
+            self.pointer = Some(pointer);
         }
-        let redraw = match event {
-            WindowEvent::CloseRequested => {
-                event_loop.exit();
-                true
+        if capability == Capability::Keyboard && self.keyboard.is_none() {
+            let keyboard = self.seat_state.get_keyboard(qh, &seat, None).unwrap();
+            self.keyboard = Some(keyboard);
+        }
+    }
+
+    fn remove_capability(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _seat: wl_seat::WlSeat,
+        capability: Capability,
+    ) {
+        if capability == Capability::Pointer {
+            self.pointer = None;
+        }
+        if capability == Capability::Keyboard {
+            self.keyboard = None;
+        }
+    }
+
+    fn remove_seat(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, seat: wl_seat::WlSeat) {
+        self.seats.retain(|s| s != &seat);
+    }
+}
+
+impl ShmHandler for AppState {
+    fn shm_state(&mut self) -> &mut Shm {
+        &mut self.shm_state
+    }
+}
+
+impl PointerHandler for AppState {
+    fn pointer_frame(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _pointer: &wl_pointer::WlPointer,
+        events: &[smithay_client_toolkit::seat::pointer::PointerEvent],
+    ) {
+        use smithay_client_toolkit::seat::pointer::PointerEventKind;
+        for event in events {
+            let (x, y) = event.position;
+            if let Some(ref mut st) = self.state {
+                st.cursor_pos = (x, y);
             }
-            WindowEvent::Resized(s) => {
-                if let Some(st) = &mut self.state {
-                    st.resize(s);
-                }
-                true
-            }
-            WindowEvent::RedrawRequested => {
-                if let Some(st) = &mut self.state {
-                    st.render();
-                }
-                true
-            }
-            WindowEvent::CursorMoved { position, .. } => {
-                if let Some(st) = &mut self.state {
-                    let cx = position.x / st.scale_factor;
-                    let cy = position.y / st.scale_factor;
-                    st.cursor_pos = (cx, cy);
-                    
-                    let mut newly_hovered = None;
-                    for bound in &st.tray_item_bounds {
-                        if cx >= bound.x as f64 && cx <= (bound.x + bound.w) as f64
-                            && cy >= bound.y as f64 && cy <= (bound.y + bound.h) as f64 {
-                            newly_hovered = Some(bound.id.clone());
-                            break;
+
+            match &event.kind {
+                PointerEventKind::Motion { .. } => {
+                    if let Some(st) = &mut self.state {
+                        let cx = x;
+                        let cy = y;
+                        
+                        let mut newly_hovered = None;
+                        for bound in &st.tray_item_bounds {
+                            if cx >= bound.x as f64 && cx <= (bound.x + bound.w) as f64
+                                && cy >= bound.y as f64 && cy <= (bound.y + bound.h) as f64 {
+                                newly_hovered = Some(bound.id.clone());
+                                break;
+                            }
+                        }
+                        if st.hovered_tray_item != newly_hovered {
+                            st.hovered_tray_item = newly_hovered;
+                            st.needs_rebuild = true;
+                            self.redraw = true;
                         }
                     }
-                    if st.hovered_tray_item != newly_hovered {
-                        st.hovered_tray_item = newly_hovered;
-                        st.needs_rebuild = true;
-                        st.window.request_redraw();
-                    }
                 }
-                true
-            }
-            WindowEvent::MouseInput { state, button, .. } => {
-                if state == winit::event::ElementState::Pressed && button == winit::event::MouseButton::Left {
+                PointerEventKind::Press { button, .. } => {
+                    if *button != 272 {
+                        continue;
+                    }
                     if let Some(st) = &mut self.state {
                         let (cx, cy) = st.cursor_pos;
                         println!("[tags-click] Mouse left click at logical: ({}, {})", cx, cy);
@@ -887,19 +1027,122 @@ impl ApplicationHandler<CustomEvent> for AppWrapper {
                         }
                     }
                 }
-                true
-            }
-            _ => false,
-        };
-        if redraw {
-            if let Some(st) = &mut self.state {
-                st.window.request_redraw();
+                _ => {}
             }
         }
     }
+}
 
+impl KeyboardHandler for AppState {
+    fn enter(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _keyboard: &wl_keyboard::WlKeyboard,
+        _surface: &wl_surface::WlSurface,
+        _serial: u32,
+        _raw_modifiers: &[u32],
+        _keysyms: &[xkeysym::Keysym],
+    ) {}
 
-    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: CustomEvent) {
+    fn leave(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _keyboard: &wl_keyboard::WlKeyboard,
+        _surface: &wl_surface::WlSurface,
+        _serial: u32,
+    ) {}
+
+    fn press_key(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _keyboard: &wl_keyboard::WlKeyboard,
+        _serial: u32,
+        _event: smithay_client_toolkit::seat::keyboard::KeyEvent,
+    ) {}
+
+    fn release_key(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _keyboard: &wl_keyboard::WlKeyboard,
+        _serial: u32,
+        _event: smithay_client_toolkit::seat::keyboard::KeyEvent,
+    ) {}
+
+    fn update_modifiers(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _keyboard: &wl_keyboard::WlKeyboard,
+        _serial: u32,
+        _modifiers: smithay_client_toolkit::seat::keyboard::Modifiers,
+        _layout: u32,
+    ) {}
+}
+
+impl WindowHandler for AppState {
+    fn configure(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _window: &XdgWindow,
+        configure: WindowConfigure,
+        _serial: u32,
+    ) {
+        let (w, h) = configure.new_size;
+        if let (Some(w), Some(h)) = (w, h) {
+            let width = w.get();
+            let height = h.get();
+            if let Some(state) = &mut self.state {
+                state.resize(width, height);
+            }
+        }
+        self.redraw = true;
+    }
+
+    fn request_close(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _window: &XdgWindow) {
+        self.exit = true;
+    }
+}
+
+impl ProvidesRegistryState for AppState {
+    fn registry(&mut self) -> &mut RegistryState {
+        &mut self.registry_state
+    }
+    
+    fn runtime_add_global(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _name: u32,
+        _interface: &str,
+        _version: u32,
+    ) {}
+    
+    fn runtime_remove_global(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _name: u32,
+        _interface: &str,
+    ) {}
+}
+
+delegate_compositor!(AppState);
+delegate_xdg_shell!(AppState);
+delegate_xdg_window!(AppState);
+delegate_shm!(AppState);
+delegate_seat!(AppState);
+delegate_pointer!(AppState);
+delegate_keyboard!(AppState);
+delegate_registry!(AppState);
+delegate_output!(AppState);
+
+impl AppState {
+    fn handle_custom_event(&mut self, event: CustomEvent) {
         if let Some(ref mut st) = self.state {
             match event {
                 CustomEvent::TagsUpdated(t) => {
@@ -922,13 +1165,12 @@ impl ApplicationHandler<CustomEvent> for AppWrapper {
                 }
             }
             st.needs_rebuild = true;
-            st.window.request_redraw();
+            self.redraw = true;
         }
     }
-
 }
 
-async fn spawn_status_listener(sub: &'static str, proxy: EventLoopProxy<CustomEvent>) {
+async fn spawn_status_listener(sub: &'static str, sender: calloop::channel::Sender<CustomEvent>) {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::net::UnixStream;
     loop {
@@ -945,7 +1187,7 @@ async fn spawn_status_listener(sub: &'static str, proxy: EventLoopProxy<CustomEv
                             "title" => CustomEvent::TitleUpdated(val),
                             _ => unreachable!(),
                         };
-                        let _ = proxy.send_event(ev);
+                        let _ = sender.send(ev);
                     }
                     line.clear();
                 }
@@ -1007,7 +1249,7 @@ async fn read_volume() -> Option<String> {
     }
 }
 
-async fn spawn_system_stats(proxy: EventLoopProxy<CustomEvent>) {
+async fn spawn_system_stats(sender: calloop::channel::Sender<CustomEvent>) {
     eprintln!("[spawn_system_stats] Starting system stats loop!");
     let mut last_cpu = read_cpu_ticks().unwrap_or((0, 0));
     loop {
@@ -1040,7 +1282,7 @@ async fn spawn_system_stats(proxy: EventLoopProxy<CustomEvent>) {
             volume,
         };
         eprintln!("[spawn_system_stats] stats: {:?}", stats);
-        let _ = proxy.send_event(CustomEvent::SystemStatsUpdated(stats));
+        let _ = sender.send(CustomEvent::SystemStatsUpdated(stats));
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
 }
@@ -1322,7 +1564,7 @@ async fn fetch_tray_item(conn: &zbus::Connection, addr: &NotifierAddress) -> Res
 
 struct Watcher {
     registered_items: Arc<tokio::sync::Mutex<HashMap<String, NotifierAddress>>>,
-    proxy_events: EventLoopProxy<CustomEvent>,
+    sender: calloop::channel::Sender<CustomEvent>,
     tokio_handle: tokio::runtime::Handle,
 }
 
@@ -1347,11 +1589,11 @@ impl Watcher {
                 
                 let conn = conn.clone();
                 let addr_clone = addr.clone();
-                let proxy_events_clone = self.proxy_events.clone();
+                let sender_clone = self.sender.clone();
                 
                 self.tokio_handle.spawn(async move {
                     if let Ok(item) = fetch_tray_item(&conn, &addr_clone).await {
-                        let _ = proxy_events_clone.send_event(CustomEvent::TrayUpdated(item));
+                        let _ = sender_clone.send(CustomEvent::TrayUpdated(item));
                     }
                     
                     // Listen for updates
@@ -1378,7 +1620,7 @@ impl Watcher {
                                     }
                                 } => {
                                     if let Ok(item) = fetch_tray_item(&conn, &addr_clone).await {
-                                        let _ = proxy_events_clone.send_event(CustomEvent::TrayUpdated(item));
+                                        let _ = sender_clone.send(CustomEvent::TrayUpdated(item));
                                     }
                                 }
                                 Some(_) = async {
@@ -1389,7 +1631,7 @@ impl Watcher {
                                     }
                                 } => {
                                     if let Ok(item) = fetch_tray_item(&conn, &addr_clone).await {
-                                        let _ = proxy_events_clone.send_event(CustomEvent::TrayUpdated(item));
+                                        let _ = sender_clone.send(CustomEvent::TrayUpdated(item));
                                     }
                                 }
                                 Some(_) = async {
@@ -1400,7 +1642,7 @@ impl Watcher {
                                     }
                                 } => {
                                     if let Ok(item) = fetch_tray_item(&conn, &addr_clone).await {
-                                        let _ = proxy_events_clone.send_event(CustomEvent::TrayUpdated(item));
+                                        let _ = sender_clone.send(CustomEvent::TrayUpdated(item));
                                     }
                                 }
                             }
@@ -1430,13 +1672,13 @@ impl Watcher {
     }
 }
 
-async fn spawn_status_tray(proxy: EventLoopProxy<CustomEvent>) {
+async fn spawn_status_tray(sender: calloop::channel::Sender<CustomEvent>) {
     let registered_items = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
     let tokio_handle = tokio::runtime::Handle::current();
 
     let watcher = Watcher {
         registered_items: registered_items.clone(),
-        proxy_events: proxy.clone(),
+        sender: sender.clone(),
         tokio_handle,
     };
 
@@ -1482,7 +1724,7 @@ async fn spawn_status_tray(proxy: EventLoopProxy<CustomEvent>) {
     };
 
     let registered_items_clone = registered_items.clone();
-    let proxy_events_clone = proxy.clone();
+    let sender_clone = sender.clone();
     
     tokio::spawn(async move {
         use tokio_stream::StreamExt;
@@ -1502,7 +1744,7 @@ async fn spawn_status_tray(proxy: EventLoopProxy<CustomEvent>) {
                         }
                         for key in to_remove {
                             items.remove(&key);
-                            let _ = proxy_events_clone.send_event(CustomEvent::TrayRemoved(key));
+                            let _ = sender_clone.send(CustomEvent::TrayRemoved(key));
                         }
                     }
                 }
@@ -1517,24 +1759,33 @@ async fn spawn_status_tray(proxy: EventLoopProxy<CustomEvent>) {
 }
 
 fn main() {
-    let event_loop = EventLoop::<CustomEvent>::with_user_event().build().unwrap();
-    event_loop.set_control_flow(ControlFlow::Wait);
+    let conn = Connection::connect_to_env().unwrap();
+    let (globals, mut event_queue) = registry_queue_init(&conn).unwrap();
+    let qh = event_queue.handle();
 
-    let proxy_tags = event_loop.create_proxy();
-    let proxy_layout = event_loop.create_proxy();
-    let proxy_title = event_loop.create_proxy();
-    let proxy_stats = event_loop.create_proxy();
-    let proxy_tray = event_loop.create_proxy();
+    let compositor_state = CompositorState::bind(&globals, &qh).unwrap();
+    let xdg_shell_state = XdgShell::bind(&globals, &qh).unwrap();
+    let shm_state = Shm::bind(&globals, &qh).unwrap();
+    let seat_state = SeatState::new(&globals, &qh);
+    let output_state = OutputState::new(&globals, &qh);
+
+    let (sender, channel) = calloop::channel::channel::<CustomEvent>();
+
+    let sender_tags = sender.clone();
+    let sender_layout = sender.clone();
+    let sender_title = sender.clone();
+    let sender_stats = sender.clone();
+    let sender_tray = sender.clone();
 
     // Spawn Tokio Runtime for async listeners
     std::thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            tokio::spawn(spawn_status_listener("tags", proxy_tags));
-            tokio::spawn(spawn_status_listener("layout", proxy_layout));
-            tokio::spawn(spawn_status_listener("title", proxy_title));
-            tokio::spawn(spawn_system_stats(proxy_stats));
-            tokio::spawn(spawn_status_tray(proxy_tray));
+            tokio::spawn(spawn_status_listener("tags", sender_tags));
+            tokio::spawn(spawn_status_listener("layout", sender_layout));
+            tokio::spawn(spawn_status_listener("title", sender_title));
+            tokio::spawn(spawn_system_stats(sender_stats));
+            tokio::spawn(spawn_status_tray(sender_tray));
             
             // Keep the runtime thread alive
             loop {
@@ -1543,27 +1794,52 @@ fn main() {
         });
     });
 
-    let mut wrapper = AppWrapper { state: None };
-    event_loop.run_app(&mut wrapper).unwrap();
+    let state = pollster::block_on(StatusApp::new(
+        &conn,
+        &qh,
+        &compositor_state,
+        &xdg_shell_state,
+        1920,
+        28,
+    ));
+
+    let mut app = AppState {
+        registry_state: RegistryState::new(&globals),
+        compositor_state,
+        xdg_shell_state,
+        shm_state,
+        seat_state,
+        output_state,
+        seats: Vec::new(),
+        pointer: None,
+        keyboard: None,
+        state: Some(state),
+        exit: false,
+        redraw: true,
+    };
+
+    let mut event_loop = EventLoop::try_new().unwrap();
+    let loop_handle = event_loop.handle();
+    WaylandSource::new(conn, event_queue).insert(loop_handle.clone()).unwrap();
+
+    loop_handle.insert_source(channel, |event, _metadata, app_state: &mut AppState| {
+        if let calloop::channel::Event::Msg(msg) = event {
+            app_state.handle_custom_event(msg);
+        }
+    }).unwrap();
+
+    loop {
+        event_loop
+            .dispatch(std::time::Duration::from_millis(16), &mut app)
+            .unwrap();
+        if app.exit {
+            break;
+        }
+        if app.redraw {
+            app.redraw = false;
+            if let Some(state) = &mut app.state {
+                state.render();
+            }
+        }
+    }
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
