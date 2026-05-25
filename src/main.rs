@@ -44,6 +44,15 @@ struct TrayIconBounds {
 }
 
 #[derive(Debug, Clone)]
+struct TagBounds {
+    name: String,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+}
+
+#[derive(Debug, Clone)]
 struct SystemStats {
     clock: String,
     memory: String,
@@ -215,6 +224,40 @@ struct TextItem {
     color: glyphon::Color,
 }
 
+struct Label {
+    buffer: Buffer,
+    w: f32,
+    color: glyphon::Color,
+}
+
+impl Label {
+    fn new(fs: &mut FontSystem, text: &str, size: f32, color: [f32; 4]) -> Self {
+        let buf = make_text_buffer(fs, text, size);
+        let w = buf.layout_runs().next().map(|r| r.line_w).unwrap_or(0.0);
+        let g_color = glyphon::Color::rgb(
+            (color[0] * 255.0) as u8,
+            (color[1] * 255.0) as u8,
+            (color[2] * 255.0) as u8,
+        );
+        Self {
+            buffer: buf,
+            w,
+            color: g_color,
+        }
+    }
+
+    fn draw(self, text_items: &mut Vec<TextItem>, x: f32, y: f32) -> f32 {
+        let w = self.w;
+        text_items.push(TextItem {
+            buffer: self.buffer,
+            x,
+            y,
+            color: self.color,
+        });
+        w
+    }
+}
+
 struct StatusApp {
     window: Arc<Window>,
     surface: wgpu::Surface<'static>,
@@ -234,6 +277,7 @@ struct StatusApp {
     cursor_pos: (f64, f64),
     hovered_tray_item: Option<String>,
     tray_item_bounds: Vec<TrayIconBounds>,
+    tag_bounds: Vec<TagBounds>,
 
     font_system: FontSystem,
     swash_cache: SwashCache,
@@ -344,6 +388,7 @@ impl StatusApp {
             cursor_pos: (0.0, 0.0),
             hovered_tray_item: None,
             tray_item_bounds: Vec::new(),
+            tag_bounds: Vec::new(),
             font_system, swash_cache, text_atlas, text_renderer, text_viewport,
             rects: Vec::new(), text_items: Vec::new(),
             scale_factor,
@@ -375,23 +420,21 @@ impl StatusApp {
             color: color::STATUS_ACCENT,
         });
 
+        self.tag_bounds.clear();
         let mut left_x = 12.0 * s;
 
         // 2. Tags
         let tags = parse_tags(&self.tags);
         for (col, text) in tags {
-            let label = format!(" {} ", text);
-            let buf = make_text_buffer(&mut self.font_system, &label, 11.0 * s);
-            let line_w = buf.layout_runs().next().map(|r| r.line_w).unwrap_or(0.0);
-            self.text_items.push(TextItem {
-                buffer: buf,
-                x: left_x,
-                y: (bar_h - 11.0 * s * 1.4) / 2.0,
-                color: glyphon::Color::rgb(
-                    (col[0] * 255.0) as u8,
-                    (col[1] * 255.0) as u8,
-                    (col[2] * 255.0) as u8,
-                ),
+            let label_str = format!(" {} ", text);
+            let label = Label::new(&mut self.font_system, &label_str, 11.0 * s, col);
+            let line_w = label.draw(&mut self.text_items, left_x, (bar_h - 11.0 * s * 1.4) / 2.0);
+            self.tag_bounds.push(TagBounds {
+                name: text.clone(),
+                x: left_x / s,
+                y: 0.0,
+                w: line_w / s,
+                h: bar_h / s,
             });
             left_x += line_w + 4.0 * s;
         }
@@ -401,19 +444,9 @@ impl StatusApp {
 
         // 3. Layout Mode
         if !self.layout.is_empty() {
-            let label = format!("[{}]", self.layout);
-            let buf = make_text_buffer(&mut self.font_system, &label, 11.0 * s);
-            let line_w = buf.layout_runs().next().map(|r| r.line_w).unwrap_or(0.0);
-            self.text_items.push(TextItem {
-                buffer: buf,
-                x: left_x,
-                y: (bar_h - 11.0 * s * 1.4) / 2.0,
-                color: glyphon::Color::rgb(
-                    (color::TEXT_ACCENT[0] * 255.0) as u8,
-                    (color::TEXT_ACCENT[1] * 255.0) as u8,
-                    (color::TEXT_ACCENT[2] * 255.0) as u8,
-                ),
-            });
+            let label_str = format!("[{}]", self.layout);
+            let label = Label::new(&mut self.font_system, &label_str, 11.0 * s, color::TEXT_ACCENT);
+            let line_w = label.draw(&mut self.text_items, left_x, (bar_h - 11.0 * s * 1.4) / 2.0);
             left_x += line_w + 16.0 * s;
         }
 
@@ -423,112 +456,51 @@ impl StatusApp {
             if display_title.chars().count() > 40 {
                 display_title = display_title.chars().take(37).collect::<String>() + "...";
             }
-            let buf = make_text_buffer(&mut self.font_system, &display_title, 11.0 * s);
-            self.text_items.push(TextItem {
-                buffer: buf,
-                x: left_x,
-                y: (bar_h - 11.0 * s * 1.4) / 2.0,
-                color: glyphon::Color::rgb(
-                    (color::TEXT_FG[0] * 255.0) as u8,
-                    (color::TEXT_FG[1] * 255.0) as u8,
-                    (color::TEXT_FG[2] * 255.0) as u8,
-                ),
-            });
+            let label = Label::new(&mut self.font_system, &display_title, 11.0 * s, color::TEXT_FG);
+            label.draw(&mut self.text_items, left_x, (bar_h - 11.0 * s * 1.4) / 2.0);
         }
 
         // 5. Right Side Stats (CPU, Mem, Bat, Clock)
         let mut right_x = sw - 12.0 * s;
         if let Some(ref stats) = self.stats {
             // Clock
-            let buf = make_text_buffer(&mut self.font_system, &stats.clock, 11.0 * s);
-            let w = buf.layout_runs().next().map(|r| r.line_w).unwrap_or(0.0);
-            right_x -= w;
-            self.text_items.push(TextItem {
-                buffer: buf,
-                x: right_x,
-                y: (bar_h - 11.0 * s * 1.4) / 2.0,
-                color: glyphon::Color::rgb(
-                    (color::TEXT_FG[0] * 255.0) as u8,
-                    (color::TEXT_FG[1] * 255.0) as u8,
-                    (color::TEXT_FG[2] * 255.0) as u8,
-                ),
-            });
+            let label = Label::new(&mut self.font_system, &stats.clock, 11.0 * s, color::TEXT_FG);
+            right_x -= label.w;
+            label.draw(&mut self.text_items, right_x, (bar_h - 11.0 * s * 1.4) / 2.0);
 
             // Battery
             if !stats.battery.is_empty() {
                 right_x -= 16.0 * s;
-                let buf = make_text_buffer(&mut self.font_system, &stats.battery, 11.0 * s);
-                let w = buf.layout_runs().next().map(|r| r.line_w).unwrap_or(0.0);
-                right_x -= w;
-                self.text_items.push(TextItem {
-                    buffer: buf,
-                    x: right_x,
-                    y: (bar_h - 11.0 * s * 1.4) / 2.0,
-                    color: glyphon::Color::rgb(
-                        (color::TEXT_ACCENT[0] * 255.0) as u8,
-                        (color::TEXT_ACCENT[1] * 255.0) as u8,
-                        (color::TEXT_ACCENT[2] * 255.0) as u8,
-                    ),
-                });
+                let label = Label::new(&mut self.font_system, &stats.battery, 11.0 * s, color::TEXT_ACCENT);
+                right_x -= label.w;
+                label.draw(&mut self.text_items, right_x, (bar_h - 11.0 * s * 1.4) / 2.0);
             }
 
             // Volume
             if !stats.volume.is_empty() {
                 right_x -= 16.0 * s;
-                let buf = make_text_buffer(&mut self.font_system, &stats.volume, 11.0 * s);
-                let w = buf.layout_runs().next().map(|r| r.line_w).unwrap_or(0.0);
-                right_x -= w;
-                
                 let is_muted = stats.volume.starts_with('🔇');
                 let color_val = if is_muted {
                     color::TEXT_DIM
                 } else {
                     color::TEXT_ACCENT
                 };
-
-                self.text_items.push(TextItem {
-                    buffer: buf,
-                    x: right_x,
-                    y: (bar_h - 11.0 * s * 1.4) / 2.0,
-                    color: glyphon::Color::rgb(
-                        (color_val[0] * 255.0) as u8,
-                        (color_val[1] * 255.0) as u8,
-                        (color_val[2] * 255.0) as u8,
-                    ),
-                });
+                let label = Label::new(&mut self.font_system, &stats.volume, 11.0 * s, color_val);
+                right_x -= label.w;
+                label.draw(&mut self.text_items, right_x, (bar_h - 11.0 * s * 1.4) / 2.0);
             }
 
             // Memory
             right_x -= 16.0 * s;
-            let buf = make_text_buffer(&mut self.font_system, &stats.memory, 11.0 * s);
-            let w = buf.layout_runs().next().map(|r| r.line_w).unwrap_or(0.0);
-            right_x -= w;
-            self.text_items.push(TextItem {
-                buffer: buf,
-                x: right_x,
-                y: (bar_h - 11.0 * s * 1.4) / 2.0,
-                color: glyphon::Color::rgb(
-                    (color::TEXT_DIM[0] * 255.0) as u8,
-                    (color::TEXT_DIM[1] * 255.0) as u8,
-                    (color::TEXT_DIM[2] * 255.0) as u8,
-                ),
-            });
+            let label = Label::new(&mut self.font_system, &stats.memory, 11.0 * s, color::TEXT_DIM);
+            right_x -= label.w;
+            label.draw(&mut self.text_items, right_x, (bar_h - 11.0 * s * 1.4) / 2.0);
 
             // CPU
             right_x -= 16.0 * s;
-            let buf = make_text_buffer(&mut self.font_system, &stats.cpu, 11.0 * s);
-            let w = buf.layout_runs().next().map(|r| r.line_w).unwrap_or(0.0);
-            right_x -= w;
-            self.text_items.push(TextItem {
-                buffer: buf,
-                x: right_x,
-                y: (bar_h - 11.0 * s * 1.4) / 2.0,
-                color: glyphon::Color::rgb(
-                    (color::TEXT_DIM[0] * 255.0) as u8,
-                    (color::TEXT_DIM[1] * 255.0) as u8,
-                    (color::TEXT_DIM[2] * 255.0) as u8,
-                ),
-            });
+            let label = Label::new(&mut self.font_system, &stats.cpu, 11.0 * s, color::TEXT_DIM);
+            right_x -= label.w;
+            label.draw(&mut self.text_items, right_x, (bar_h - 11.0 * s * 1.4) / 2.0);
         }
 
         // 5b. System Tray Icons (render to the left of the CPU/stats block)
@@ -549,10 +521,10 @@ impl StatusApp {
                 // Record bounds for hit-testing
                 self.tray_item_bounds.push(TrayIconBounds {
                     id: item.id.clone(),
-                    x,
-                    y,
-                    w: icon_size,
-                    h: icon_size,
+                    x: x / s,
+                    y: y / s,
+                    w: icon_size / s,
+                    h: icon_size / s,
                     title: item.title.clone(),
                 });
 
@@ -696,7 +668,7 @@ impl StatusApp {
 
                 let tooltip_w = text_w + padding * 2.0;
                 let tooltip_h = font_size * 1.4 + padding * 2.0;
-                let tx = bound.x + (bound.w - tooltip_w) / 2.0;
+                let tx = bound.x * s + (bound.w * s - tooltip_w) / 2.0;
                 let ty = bar_h + 4.0 * s;
 
                 // Tooltip background
@@ -851,6 +823,9 @@ impl ApplicationHandler<CustomEvent> for AppWrapper {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: winit::window::WindowId, event: WindowEvent) {
+        if !matches!(event, WindowEvent::RedrawRequested) {
+            println!("[window_event] Event: {:?}", event);
+        }
         let redraw = match event {
             WindowEvent::CloseRequested => {
                 event_loop.exit();
@@ -865,7 +840,6 @@ impl ApplicationHandler<CustomEvent> for AppWrapper {
             WindowEvent::RedrawRequested => {
                 if let Some(st) = &mut self.state {
                     st.render();
-                    st.window.request_redraw();
                 }
                 true
             }
@@ -887,6 +861,30 @@ impl ApplicationHandler<CustomEvent> for AppWrapper {
                         st.hovered_tray_item = newly_hovered;
                         st.needs_rebuild = true;
                         st.window.request_redraw();
+                    }
+                }
+                true
+            }
+            WindowEvent::MouseInput { state, button, .. } => {
+                if state == winit::event::ElementState::Pressed && button == winit::event::MouseButton::Left {
+                    if let Some(st) = &mut self.state {
+                        let (cx, cy) = st.cursor_pos;
+                        println!("[tags-click] Mouse left click at logical: ({}, {})", cx, cy);
+                        for bound in &st.tag_bounds {
+                            println!("[tags-click] Checking Tag '{}' bounds: x=[{}..{}], y=[{}..{}]", 
+                                bound.name, bound.x, bound.x + bound.w, bound.y, bound.y + bound.h);
+                            if cx >= bound.x as f64 && cx <= (bound.x + bound.w) as f64
+                                && cy >= bound.y as f64 && cy <= (bound.y + bound.h) as f64 {
+                                println!("[tags-click] Tag matched: {}", bound.name);
+                                let name = bound.name.clone();
+                                std::thread::spawn(move || {
+                                    let _ = std::process::Command::new("clearctl")
+                                        .args(["view", &name])
+                                        .spawn();
+                                });
+                                break;
+                            }
+                        }
                     }
                 }
                 true
