@@ -5,6 +5,7 @@ use glyphon::{
     TextAtlas, TextBounds, TextRenderer, Viewport,
 };
 use clear_ui::color;
+use clear_ui::widget::{StyledLabel as Label, TextItem};
 
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
@@ -235,45 +236,6 @@ struct RectWidget {
     color: [f32; 4],
 }
 
-struct TextItem {
-    buffer: Buffer,
-    x: f32, y: f32,
-    color: glyphon::Color,
-}
-
-struct Label {
-    buffer: Buffer,
-    w: f32,
-    color: glyphon::Color,
-}
-
-impl Label {
-    fn new(fs: &mut FontSystem, text: &str, size: f32, color: [f32; 4]) -> Self {
-        let buf = make_text_buffer(fs, text, size);
-        let w = buf.layout_runs().next().map(|r| r.line_w).unwrap_or(0.0);
-        let g_color = glyphon::Color::rgb(
-            (color[0] * 255.0) as u8,
-            (color[1] * 255.0) as u8,
-            (color[2] * 255.0) as u8,
-        );
-        Self {
-            buffer: buf,
-            w,
-            color: g_color,
-        }
-    }
-
-    fn draw(self, text_items: &mut Vec<TextItem>, x: f32, y: f32) -> f32 {
-        let w = self.w;
-        text_items.push(TextItem {
-            buffer: self.buffer,
-            x,
-            y,
-            color: self.color,
-        });
-        w
-    }
-}
 
 struct StatusApp {
     window: XdgWindow,
@@ -535,21 +497,21 @@ impl StatusApp {
                 } else {
                     color::TEXT_ACCENT
                 };
-                let label = Label::new(&mut self.font_system, &stats.volume, 11.0 * s, color_val);
+                let label = Label::new(&mut self.font_system, &stats.volume, 11.0 * s, color_val)
+                    .with_strikethrough(is_muted);
                 right_x -= label.w;
                 let start_x = right_x;
                 let start_y = (bar_h - 11.0 * s * 1.4) / 2.0;
-                let label_w = label.w;
-                label.draw(&mut self.text_items, start_x, start_y);
-                if is_muted {
+                if let Some((sx, sy, sw, sh, scol)) = label.strikethrough_rect(start_x, start_y, s) {
                     self.overlay_rects.push(RectWidget {
-                        x: start_x,
-                        y: start_y + 8.0 * s,
-                        w: label_w,
-                        h: 1.0 * s,
-                        color: color_val,
+                        x: sx,
+                        y: sy,
+                        w: sw,
+                        h: sh,
+                        color: scol,
                     });
                 }
+                label.draw(&mut self.text_items, start_x, start_y);
             }
 
             // Memory
