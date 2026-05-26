@@ -320,8 +320,10 @@ impl StatusApp {
         xdg_shell_state: &XdgShell,
         width: u32,
         height: u32,
+        scale: f64,
     ) -> Self {
         let surface = compositor_state.create_surface(qh);
+        surface.set_buffer_scale(scale as i32);
         let window = xdg_shell_state.create_window(surface.clone(), WindowDecorations::None, qh);
         window.set_title("Clear Status Interface");
         window.set_app_id("clear-status-interface");
@@ -411,7 +413,7 @@ impl StatusApp {
             mapped_at_creation: false,
         });
 
-        let scale_factor = 2.0;
+        let scale_factor = scale;
 
         let mut app = Self {
             window, surface, wgpu_surface, device, queue, config, render_pipeline,
@@ -852,6 +854,9 @@ struct AppState {
     pointer: Option<wl_pointer::WlPointer>,
     keyboard: Option<wl_keyboard::WlKeyboard>,
 
+    window: Option<XdgWindow>,
+    surface: Option<wl_surface::WlSurface>,
+
     state: Option<StatusApp>,
     exit: bool,
     redraw: bool,
@@ -865,9 +870,15 @@ impl CompositorHandler for AppState {
         _surface: &wl_surface::WlSurface,
         scale_factor: i32,
     ) {
+        _surface.set_buffer_scale(scale_factor);
         if let Some(state) = &mut self.state {
-            state.scale_factor = (scale_factor as f32).max(2.0) as f64;
-            state.resize(state.width, state.height);
+            let old_scale = state.scale_factor;
+            state.scale_factor = scale_factor as f64;
+            let logical_w = state.width as f64 / old_scale;
+            let logical_h = state.height as f64 / old_scale;
+            let pw = (logical_w * state.scale_factor) as u32;
+            let ph = (logical_h * state.scale_factor) as u32;
+            state.resize(pw, ph);
         }
         self.redraw = true;
     }
@@ -1097,7 +1108,9 @@ impl WindowHandler for AppState {
             let width = w.get();
             let height = h.get();
             if let Some(state) = &mut self.state {
-                state.resize(width, height);
+                let pw = (width as f64 * state.scale_factor) as u32;
+                let ph = (height as f64 * state.scale_factor) as u32;
+                state.resize(pw, ph);
             }
         }
         self.redraw = true;
@@ -1794,15 +1807,6 @@ fn main() {
         });
     });
 
-    let state = pollster::block_on(StatusApp::new(
-        &conn,
-        &qh,
-        &compositor_state,
-        &xdg_shell_state,
-        1920,
-        28,
-    ));
-
     let mut app = AppState {
         registry_state: RegistryState::new(&globals),
         compositor_state,
@@ -1813,10 +1817,34 @@ fn main() {
         seats: Vec::new(),
         pointer: None,
         keyboard: None,
-        state: Some(state),
+        window: None,
+        surface: None,
+        state: None,
         exit: false,
         redraw: true,
     };
+
+    // Perform a roundtrip to populate output_state with active output scales
+    event_queue.roundtrip(&mut app).unwrap();
+
+    let scale = clear_ui::wayland::detect_scale_factor(&app.output_state);
+
+    let pw = (1920.0 * scale) as u32;
+    let ph = (28.0 * scale) as u32;
+
+    let state = pollster::block_on(StatusApp::new(
+        &conn,
+        &qh,
+        &app.compositor_state,
+        &app.xdg_shell_state,
+        pw,
+        ph,
+        scale,
+    ));
+
+    app.window = Some(state.window.clone());
+    app.surface = Some(state.surface.clone());
+    app.state = Some(state);
 
     let mut event_loop = EventLoop::try_new().unwrap();
     let loop_handle = event_loop.handle();
