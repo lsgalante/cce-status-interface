@@ -525,7 +525,19 @@ impl StatusApp {
                 };
                 let label = Label::new(&mut self.font_system, &stats.volume, 11.0 * s, color_val);
                 right_x -= label.w;
-                label.draw(&mut self.text_items, right_x, (bar_h - 11.0 * s * 1.4) / 2.0);
+                let start_x = right_x;
+                let start_y = (bar_h - 11.0 * s * 1.4) / 2.0;
+                let label_w = label.w;
+                label.draw(&mut self.text_items, start_x, start_y);
+                if is_muted {
+                    self.rects.push(RectWidget {
+                        x: start_x,
+                        y: start_y + 8.0 * s,
+                        w: label_w,
+                        h: 1.0 * s,
+                        color: color_val,
+                    });
+                }
             }
 
             // Memory
