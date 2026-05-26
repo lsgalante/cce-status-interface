@@ -78,6 +78,7 @@ struct SystemStats {
     cpu: String,
     battery: String,
     volume: String,
+    volume_muted: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -491,7 +492,7 @@ impl StatusApp {
             // Volume
             if !stats.volume.is_empty() {
                 right_x -= 16.0 * s;
-                let is_muted = stats.volume.starts_with('🔇');
+                let is_muted = stats.volume_muted;
                 let color_val = if is_muted {
                     color::TEXT_DIM
                 } else {
@@ -1248,7 +1249,7 @@ async fn spawn_status_listener(sub: &'static str, sender: calloop::channel::Send
     }
 }
 
-async fn read_volume() -> Option<String> {
+async fn read_volume() -> Option<(String, bool)> {
     let vol_output = match tokio::process::Command::new("pactl")
         .args(["get-sink-volume", "@DEFAULT_SINK@"])
         .output()
@@ -1293,10 +1294,10 @@ async fn read_volume() -> Option<String> {
     }
 
     match (muted, pct) {
-        (true, Some(p)) => Some(format!("🔇 {}%", p)),
-        (true, None) => Some("🔇 Muted".to_string()),
-        (false, Some(p)) => Some(format!("🔊 {}%", p)),
-        (false, None) => Some("🔊 Vol".to_string()),
+        (true, Some(p)) => Some((format!("Vol {}%", p), true)),
+        (true, None) => Some(("Vol Muted".to_string(), true)),
+        (false, Some(p)) => Some((format!("Vol {}%", p), false)),
+        (false, None) => Some(("Vol N/A".to_string(), false)),
     }
 }
 
@@ -1323,7 +1324,7 @@ async fn spawn_system_stats(sender: calloop::channel::Sender<CustomEvent>) {
         };
 
         let battery = read_battery().unwrap_or_default();
-        let volume = read_volume().await.unwrap_or_default();
+        let (volume, volume_muted) = read_volume().await.unwrap_or_else(|| ("".to_string(), false));
 
         let stats = SystemStats {
             clock,
@@ -1331,6 +1332,7 @@ async fn spawn_system_stats(sender: calloop::channel::Sender<CustomEvent>) {
             cpu: cpu_str,
             battery,
             volume,
+            volume_muted,
         };
         eprintln!("[spawn_system_stats] stats: {:?}", stats);
         let _ = sender.send(CustomEvent::SystemStatsUpdated(stats));
