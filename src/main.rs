@@ -304,6 +304,9 @@ struct StatusApp {
     text_viewport: Viewport,
 
     rects: Vec<RectWidget>,
+    overlay_rects: Vec<RectWidget>,
+    overlay_vertex_buffer: wgpu::Buffer,
+    overlay_vertex_count: u32,
     text_items: Vec<TextItem>,
 
     scale_factor: f64,
@@ -413,11 +416,19 @@ impl StatusApp {
             mapped_at_creation: false,
         });
 
+        let overlay_vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Overlay Vertex Buffer"),
+            size: 1,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         let scale_factor = scale;
 
         let mut app = Self {
             window, surface, wgpu_surface, device, queue, config, render_pipeline,
             vertex_buffer, vertex_count: 0,
+            overlay_vertex_buffer, overlay_vertex_count: 0,
             tags: String::new(),
             layout: String::new(),
             title: String::new(),
@@ -428,7 +439,7 @@ impl StatusApp {
             tray_item_bounds: Vec::new(),
             tag_bounds: Vec::new(),
             font_system, swash_cache, text_atlas, text_renderer, text_viewport,
-            rects: Vec::new(), text_items: Vec::new(),
+            rects: Vec::new(), overlay_rects: Vec::new(), text_items: Vec::new(),
             scale_factor,
             width, height,
             needs_rebuild: true,
@@ -445,6 +456,7 @@ impl StatusApp {
         let bar_h = 28.0 * s;
 
         self.rects.clear();
+        self.overlay_rects.clear();
         self.text_items.clear();
 
         // 1. Background (spans the entire fullscreen area)
@@ -530,7 +542,7 @@ impl StatusApp {
                 let label_w = label.w;
                 label.draw(&mut self.text_items, start_x, start_y);
                 if is_muted {
-                    self.rects.push(RectWidget {
+                    self.overlay_rects.push(RectWidget {
                         x: start_x,
                         y: start_y + 8.0 * s,
                         w: label_w,
@@ -757,7 +769,23 @@ impl StatusApp {
         verts
     }
 
+    fn collect_overlay_vertices(&self) -> Vec<Vertex> {
+        let sw = self.width as f32;
+        let sh = self.height as f32;
+        let mut verts = Vec::new();
+        for r in &self.overlay_rects {
+            println!("[debug-overlay] RectWidget x={} y={} w={} h={} color={:?}", r.x, r.y, r.w, r.h, r.color);
+            let q = quad_vertices(r.x, r.y, r.w, r.h, sw, sh, r.color);
+            for (i, v) in q.iter().enumerate() {
+                println!("[debug-overlay]   V{}: pos={:?}", i, v.position);
+            }
+            verts.extend(q);
+        }
+        verts
+    }
+
     fn upload_vertices(&mut self) {
+        // Base/Background rects
         let verts = self.collect_vertices();
         self.vertex_count = verts.len() as u32;
         let data = bytemuck::cast_slice(&verts);
@@ -771,6 +799,21 @@ impl StatusApp {
             });
         }
         self.queue.write_buffer(&self.vertex_buffer, 0, data);
+
+        // Overlay/Foreground rects
+        let overlay_verts = self.collect_overlay_vertices();
+        self.overlay_vertex_count = overlay_verts.len() as u32;
+        let overlay_data = bytemuck::cast_slice(&overlay_verts);
+        let overlay_needed = overlay_data.len() as wgpu::BufferAddress;
+        if overlay_needed > self.overlay_vertex_buffer.size() {
+            self.overlay_vertex_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Overlay Vertex Buffer"),
+                size: overlay_needed,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+        }
+        self.queue.write_buffer(&self.overlay_vertex_buffer, 0, overlay_data);
     }
 
     fn prepare_text(&mut self) {
@@ -845,6 +888,27 @@ impl StatusApp {
             pass.draw(0..self.vertex_count, 0..1);
 
             self.text_renderer.render(&self.text_atlas, &self.text_viewport, &mut pass).unwrap();
+        }
+
+        if self.overlay_vertex_count > 0 {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Overlay Render Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            pass.set_pipeline(&self.render_pipeline);
+            pass.set_vertex_buffer(0, self.overlay_vertex_buffer.slice(..));
+            pass.draw(0..self.overlay_vertex_count, 0..1);
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
