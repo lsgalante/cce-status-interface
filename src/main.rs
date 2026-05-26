@@ -276,6 +276,7 @@ struct StatusApp {
     width: u32,
     height: u32,
     needs_rebuild: bool,
+    current_bg_color: [f32; 4],
 }
 
 impl StatusApp {
@@ -406,6 +407,7 @@ impl StatusApp {
             scale_factor,
             width, height,
             needs_rebuild: true,
+            current_bg_color: color::STATUS_BG,
         };
 
         app.rebuild_layout();
@@ -416,7 +418,13 @@ impl StatusApp {
         let sw = self.width as f32;
         let sh = self.height as f32;
         let s = self.scale_factor as f32;
-        let bar_h = 28.0 * s;
+        let sw_logical = sw / s;
+        let sh_logical = sh / s;
+        let bar_h = 28.0;
+        eprintln!("[rebuild_layout] sw={}, sh={}, s={}, sw_logical={}, sh_logical={}", sw, sh, s, sw_logical, sh_logical);
+
+        self.current_bg_color = read_bg_color_from_config().unwrap_or(color::STATUS_BG);
+        eprintln!("[rebuild_layout] Using background color: {:?}", self.current_bg_color);
 
         self.rects.clear();
         self.overlay_rects.clear();
@@ -424,43 +432,43 @@ impl StatusApp {
 
         // 1. Background (spans the entire fullscreen area)
         self.rects.push(RectWidget {
-            x: 0.0, y: 0.0, w: sw, h: sh,
-            color: color::STATUS_BG,
+            x: 0.0, y: 0.0, w: sw_logical, h: sh_logical,
+            color: self.current_bg_color,
         });
         // 1b. Accent border at bottom of the status bar area
         self.rects.push(RectWidget {
-            x: 0.0, y: bar_h - 2.0 * s, w: sw, h: 2.0 * s,
+            x: 0.0, y: bar_h - 2.0, w: sw_logical, h: 2.0,
             color: color::STATUS_ACCENT,
         });
 
         self.tag_bounds.clear();
-        let mut left_x = 12.0 * s;
+        let mut left_x = 12.0;
 
         // 2. Tags
         let tags = parse_tags(&self.tags);
         for (col, text) in tags {
             let label_str = format!(" {} ", text);
-            let label = Label::new(&mut self.font_system, &label_str, 11.0 * s, col);
-            let line_w = label.draw(&mut self.text_items, left_x, (bar_h - 11.0 * s * 1.4) / 2.0);
+            let label = Label::new(&mut self.font_system, &label_str, 11.0, col);
+            let line_w = label.draw(&mut self.text_items, left_x, (bar_h - 11.0 * 1.4) / 2.0);
             self.tag_bounds.push(TagBounds {
                 name: text.clone(),
-                x: left_x / s,
+                x: left_x,
                 y: 0.0,
-                w: line_w / s,
-                h: bar_h / s,
+                w: line_w,
+                h: bar_h,
             });
-            left_x += line_w + 4.0 * s;
+            left_x += line_w + 4.0;
         }
 
         // Add padding before Layout
-        left_x += 8.0 * s;
+        left_x += 8.0;
 
         // 3. Layout Mode
         if !self.layout.is_empty() {
             let label_str = format!("[{}]", self.layout);
-            let label = Label::new(&mut self.font_system, &label_str, 11.0 * s, color::TEXT_ACCENT);
-            let line_w = label.draw(&mut self.text_items, left_x, (bar_h - 11.0 * s * 1.4) / 2.0);
-            left_x += line_w + 16.0 * s;
+            let label = Label::new(&mut self.font_system, &label_str, 11.0, color::TEXT_ACCENT);
+            let line_w = label.draw(&mut self.text_items, left_x, (bar_h - 11.0 * 1.4) / 2.0);
+            left_x += line_w + 16.0;
         }
 
         // 4. Focused Title
@@ -469,46 +477,50 @@ impl StatusApp {
             if display_title.chars().count() > 40 {
                 display_title = display_title.chars().take(37).collect::<String>() + "...";
             }
-            let label = Label::new(&mut self.font_system, &display_title, 11.0 * s, color::TEXT_FG);
-            label.draw(&mut self.text_items, left_x, (bar_h - 11.0 * s * 1.4) / 2.0);
+            let label = Label::new(&mut self.font_system, &display_title, 11.0, color::TEXT_FG);
+            label.draw(&mut self.text_items, left_x, (bar_h - 11.0 * 1.4) / 2.0);
         }
 
         // 5. Right Side Stats (CPU, Mem, Bat, Clock)
-        let mut right_x = sw - 12.0 * s;
+        let mut right_x = sw_logical - 12.0;
         if let Some(ref stats) = self.stats {
             // Clock
-            let label = Label::new(&mut self.font_system, &stats.clock, 11.0 * s, color::TEXT_FG);
+            let label = Label::new(&mut self.font_system, &stats.clock, 11.0, color::TEXT_FG);
             right_x -= label.w;
-            label.draw(&mut self.text_items, right_x, (bar_h - 11.0 * s * 1.4) / 2.0);
+            eprintln!("[rebuild_layout] Clock: x={}, w={}", right_x, label.w);
+            label.draw(&mut self.text_items, right_x, (bar_h - 11.0 * 1.4) / 2.0);
 
             // Battery
             if !stats.battery.is_empty() {
-                right_x -= 16.0 * s;
-                let label = Label::new(&mut self.font_system, &stats.battery, 11.0 * s, color::TEXT_ACCENT);
+                right_x -= 16.0;
+                let label = Label::new(&mut self.font_system, &stats.battery, 11.0, color::TEXT_ACCENT);
                 right_x -= label.w;
-                label.draw(&mut self.text_items, right_x, (bar_h - 11.0 * s * 1.4) / 2.0);
+                eprintln!("[rebuild_layout] Battery: x={}, w={}", right_x, label.w);
+                label.draw(&mut self.text_items, right_x, (bar_h - 11.0 * 1.4) / 2.0);
             }
 
             // Volume
             if !stats.volume.is_empty() {
-                right_x -= 16.0 * s;
+                right_x -= 16.0;
                 let is_muted = stats.volume_muted;
                 let color_val = if is_muted {
                     color::TEXT_DIM
                 } else {
                     color::TEXT_ACCENT
                 };
-                let label = Label::new(&mut self.font_system, &stats.volume, 11.0 * s, color_val)
+                let label = Label::new(&mut self.font_system, &stats.volume, 11.0, color_val)
                     .with_strikethrough(is_muted);
                 right_x -= label.w;
                 let start_x = right_x;
-                let start_y = (bar_h - 11.0 * s * 1.4) / 2.0;
-                if let Some((sx, sy, sw, sh, scol)) = label.strikethrough_rect(start_x, start_y, s) {
+                let start_y = (bar_h - 11.0 * 1.4) / 2.0;
+                eprintln!("[rebuild_layout] Volume: x={}, w={}, is_muted={}", start_x, label.w, is_muted);
+                if let Some((sx, sy, sw_rect, sh_rect, scol)) = label.strikethrough_rect(start_x, start_y, 1.0) {
+                    eprintln!("[rebuild_layout] Strikethrough rect: sx={}, sy={}, sw={}, sh={}, scol={:?}", sx, sy, sw_rect, sh_rect, scol);
                     self.overlay_rects.push(RectWidget {
                         x: sx,
                         y: sy,
-                        w: sw,
-                        h: sh,
+                        w: sw_rect,
+                        h: sh_rect,
                         color: scol,
                     });
                 }
@@ -516,29 +528,29 @@ impl StatusApp {
             }
 
             // Memory
-            right_x -= 16.0 * s;
-            let label = Label::new(&mut self.font_system, &stats.memory, 11.0 * s, color::TEXT_DIM);
+            right_x -= 16.0;
+            let label = Label::new(&mut self.font_system, &stats.memory, 11.0, color::TEXT_DIM);
             right_x -= label.w;
-            label.draw(&mut self.text_items, right_x, (bar_h - 11.0 * s * 1.4) / 2.0);
+            eprintln!("[rebuild_layout] Memory: x={}, w={}", right_x, label.w);
+            label.draw(&mut self.text_items, right_x, (bar_h - 11.0 * 1.4) / 2.0);
 
             // CPU
-            right_x -= 16.0 * s;
-            let label = Label::new(&mut self.font_system, &stats.cpu, 11.0 * s, color::TEXT_DIM);
+            right_x -= 16.0;
+            let label = Label::new(&mut self.font_system, &stats.cpu, 11.0, color::TEXT_DIM);
             right_x -= label.w;
-            label.draw(&mut self.text_items, right_x, (bar_h - 11.0 * s * 1.4) / 2.0);
+            eprintln!("[rebuild_layout] CPU: x={}, w={}", right_x, label.w);
+            label.draw(&mut self.text_items, right_x, (bar_h - 11.0 * 1.4) / 2.0);
         }
 
         // 5b. System Tray Icons (render to the left of the CPU/stats block)
         self.tray_item_bounds.clear();
         if !self.tray_items.is_empty() {
-            println!("[status-tray-render] Rendering {} tray items (screen size: {}x{})", self.tray_items.len(), sw, sh);
-            right_x -= 16.0 * s; // Separator padding
+            right_x -= 16.0; // Separator padding
             let mut sorted_tray: Vec<&TrayItem> = self.tray_items.values().collect();
             sorted_tray.sort_by_key(|item| &item.id);
 
             for item in sorted_tray.iter().rev() {
-                println!("[status-tray-render] Item ID: '{}', icon_name: {:?}, pixmaps is Some: {}", item.id, item.icon_name, item.pixmaps.is_some());
-                let icon_size = 16.0 * s;
+                let icon_size = 16.0;
                 right_x -= icon_size;
                 let x = right_x;
                 let y = (bar_h - icon_size) / 2.0;
@@ -546,10 +558,10 @@ impl StatusApp {
                 // Record bounds for hit-testing
                 self.tray_item_bounds.push(TrayIconBounds {
                     id: item.id.clone(),
-                    x: x / s,
-                    y: y / s,
-                    w: icon_size / s,
-                    h: icon_size / s,
+                    x,
+                    y,
+                    w: icon_size,
+                    h: icon_size,
                     title: item.title.clone(),
                 });
 
@@ -557,7 +569,6 @@ impl StatusApp {
                 let mut drawn_pixmap = false;
                 if let Some(ref pixmaps) = item.pixmaps {
                     if !pixmaps.is_empty() {
-                        // Find pixmap closest to 16 pixels wide
                         if let Some(pixmap) = pixmaps.iter().min_by_key(|p| (p.width - 16).abs()) {
                             if pixmap.width > 0 && pixmap.height > 0 {
                                 // Calculate average brightness of visible pixels to see if we need to recolor
@@ -584,15 +595,12 @@ impl StatusApp {
                                 } else {
                                     0.5
                                 };
-                                                                // If the average brightness is dark, recolor it to be light
                                 let recolor_light = avg_brightness < 0.35;
  
-                                // Downsample to 16x16 quads to optimize rendering
                                 let draw_w = 16;
                                 let draw_h = 16;
                                 let pixel_w = icon_size / draw_w as f32;
                                 let pixel_h = icon_size / draw_h as f32;
-                                let mut pushed_pixels = 0;
                                 for row in 0..draw_h {
                                     for col in 0..draw_w {
                                         let src_row = row * pixmap.height / draw_h;
@@ -607,7 +615,6 @@ impl StatusApp {
                                                 
                                                 if recolor_light {
                                                     let l = (r + g + b) / 3.0;
-                                                    // Map 0.0 (black) to 0.85 (light grey), 1.0 stays 1.0
                                                     let new_l = 0.85 + (1.0 - 0.85) * l;
                                                     r = new_l;
                                                     g = new_l;
@@ -621,21 +628,16 @@ impl StatusApp {
                                                     h: pixel_h,
                                                     color: [r, g, b, a],
                                                 });
-                                                pushed_pixels += 1;
                                             }
                                         }
                                     }
                                 }
-                                println!("[status-tray-render] Item '{}' drawing downsampled pixmap width={}, height={}, icon_size={}, x={}, y={}, pixel_size={}x{}, pushed_rects={}", 
-                                    item.id, pixmap.width, pixmap.height, icon_size, x, y, pixel_w, pixel_h, pushed_pixels);
                                 drawn_pixmap = true;
                             }
                         }
                     }
                 }
 
-                println!("[status-tray-render] Item '{}' drawn_pixmap: {}", item.id, drawn_pixmap);
-                // Fallback to text icon symbol
                 if !drawn_pixmap {
                     let symbol = if let Some(ref name) = item.icon_name {
                         let name_lower = name.to_lowercase();
@@ -662,10 +664,10 @@ impl StatusApp {
                         "⚙"
                     };
 
-                    let buf = make_text_buffer(&mut self.font_system, symbol, 11.0 * s);
+                    let buf = make_text_buffer(&mut self.font_system, symbol, 11.0);
                     let tw = buf.layout_runs().next().map(|r| r.line_w).unwrap_or(0.0);
                     let tx = x + (icon_size - tw) / 2.0;
-                    let ty = y + (icon_size - 11.0 * s * 1.4) / 2.0;
+                    let ty = y + (icon_size - 11.0 * 1.4) / 2.0;
                     self.text_items.push(TextItem {
                         buffer: buf,
                         x: tx,
@@ -678,7 +680,7 @@ impl StatusApp {
                     });
                 }
 
-                right_x -= 8.0 * s; // Gap between icons
+                right_x -= 8.0; // Gap between icons
             }
         }
 
@@ -686,15 +688,15 @@ impl StatusApp {
         if let Some(ref hovered_id) = self.hovered_tray_item {
             if let Some(bound) = self.tray_item_bounds.iter().find(|b| &b.id == hovered_id) {
                 let tooltip_text = bound.title.as_deref().unwrap_or(bound.id.as_str());
-                let font_size = 10.0 * s;
+                let font_size = 10.0;
                 let buf = make_text_buffer(&mut self.font_system, tooltip_text, font_size);
                 let text_w = buf.layout_runs().next().map(|r| r.line_w).unwrap_or(0.0);
-                let padding = 6.0 * s;
+                let padding = 6.0;
 
                 let tooltip_w = text_w + padding * 2.0;
                 let tooltip_w_h = font_size * 1.4 + padding * 2.0;
-                let tx = bound.x * s + (bound.w * s - tooltip_w) / 2.0;
-                let ty = bar_h + 4.0 * s;
+                let tx = bound.x + (bound.w - tooltip_w) / 2.0;
+                let ty = bar_h + 4.0;
 
                 // Tooltip background
                 self.rects.push(RectWidget {
@@ -725,9 +727,10 @@ impl StatusApp {
     fn collect_vertices(&self) -> Vec<Vertex> {
         let sw = self.width as f32;
         let sh = self.height as f32;
+        let s = self.scale_factor as f32;
         let mut verts = Vec::new();
         for r in &self.rects {
-            verts.extend(quad_vertices(r.x, r.y, r.w, r.h, sw, sh, r.color));
+            verts.extend(quad_vertices(r.x * s, r.y * s, r.w * s, r.h * s, sw, sh, r.color));
         }
         verts
     }
@@ -735,13 +738,10 @@ impl StatusApp {
     fn collect_overlay_vertices(&self) -> Vec<Vertex> {
         let sw = self.width as f32;
         let sh = self.height as f32;
+        let s = self.scale_factor as f32;
         let mut verts = Vec::new();
         for r in &self.overlay_rects {
-            println!("[debug-overlay] RectWidget x={} y={} w={} h={} color={:?}", r.x, r.y, r.w, r.h, r.color);
-            let q = quad_vertices(r.x, r.y, r.w, r.h, sw, sh, r.color);
-            for (i, v) in q.iter().enumerate() {
-                println!("[debug-overlay]   V{}: pos={:?}", i, v.position);
-            }
+            let q = quad_vertices(r.x * s, r.y * s, r.w * s, r.h * s, sw, sh, r.color);
             verts.extend(q);
         }
         verts
@@ -782,12 +782,13 @@ impl StatusApp {
     fn prepare_text(&mut self) {
         let w = self.width as f32;
         let h = self.height as f32;
+        let s = self.scale_factor as f32;
         let viewport = Resolution { width: w as u32, height: h as u32 };
         self.text_viewport.update(&self.queue, viewport);
         let bounds = TextBounds { left: 0, top: 0, right: w as i32, bottom: h as i32 };
         let areas: Vec<TextArea> = self.text_items.iter().map(|ti| TextArea {
             buffer: &ti.buffer,
-            left: ti.x, top: ti.y, scale: 1.0, bounds,
+            left: ti.x * s, top: ti.y * s, scale: s, bounds,
             default_color: ti.color,
             custom_glyphs: &[],
         }).collect();
@@ -837,7 +838,12 @@ impl StatusApp {
                     view: &view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.06, g: 0.06, b: 0.08, a: 1.0 }),
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: self.current_bg_color[0] as f64,
+                            g: self.current_bg_color[1] as f64,
+                            b: self.current_bg_color[2] as f64,
+                            a: self.current_bg_color[3] as f64,
+                        }),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -1909,5 +1915,39 @@ fn main() {
                 state.render();
             }
         }
+    }
+}
+
+fn read_bg_color_from_config() -> Option<[f32; 4]> {
+    let content = std::fs::read_to_string("/home/lsgalante/.config/clearwm/config.toml").ok()?;
+    parse_color_from_key(&content, "background_color")
+}
+
+fn parse_color_from_key(content: &str, key: &str) -> Option<[f32; 4]> {
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix(key) {
+            let rest = rest.trim_start_matches(|c: char| c == ' ' || c == '=' || c == '"');
+            let hex = rest.trim_end_matches('"').trim();
+            if let Some(rgb) = parse_hex(hex) {
+                let r = (rgb[0] as f32 / 255.0).powf(2.2);
+                let g = (rgb[1] as f32 / 255.0).powf(2.2);
+                let b = (rgb[2] as f32 / 255.0).powf(2.2);
+                return Some([r, g, b, 1.0]);
+            }
+        }
+    }
+    None
+}
+
+fn parse_hex(s: &str) -> Option<[u8; 3]> {
+    let s = s.trim_start_matches('#');
+    if s.len() >= 6 {
+        let r = u8::from_str_radix(&s[0..2], 16).ok()?;
+        let g = u8::from_str_radix(&s[2..4], 16).ok()?;
+        let b = u8::from_str_radix(&s[4..6], 16).ok()?;
+        Some([r, g, b])
+    } else {
+        None
     }
 }
