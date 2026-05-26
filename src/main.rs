@@ -504,7 +504,7 @@ impl StatusApp {
                 right_x -= 16.0;
                 let is_muted = stats.volume_muted;
                 let color_val = if is_muted {
-                    color::TEXT_DIM
+                    read_disabled_color_from_config().unwrap_or(color::TEXT_DIM)
                 } else {
                     color::TEXT_ACCENT
                 };
@@ -1918,9 +1918,32 @@ fn main() {
     }
 }
 
+fn read_disabled_color_from_config() -> Option<[f32; 4]> {
+    let content = std::fs::read_to_string("/home/lsgalante/.config/clearwm/config.toml").ok()?;
+    parse_srgb_color_from_key(&content, "disabled_color")
+}
+
+fn parse_srgb_color_from_key(content: &str, key: &str) -> Option<[f32; 4]> {
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix(key) {
+            let rest = rest.trim_start_matches(|c: char| c == ' ' || c == '=' || c == '"');
+            let hex = rest.trim_end_matches('"').trim();
+            if let Some(rgb) = parse_hex(hex) {
+                let r = rgb[0] as f32 / 255.0;
+                let g = rgb[1] as f32 / 255.0;
+                let b = rgb[2] as f32 / 255.0;
+                return Some([r, g, b, 1.0]);
+            }
+        }
+    }
+    None
+}
+
 fn read_bg_color_from_config() -> Option<[f32; 4]> {
     let content = std::fs::read_to_string("/home/lsgalante/.config/clearwm/config.toml").ok()?;
-    parse_color_from_key(&content, "background_color")
+    parse_color_from_key(&content, "low_color")
+        .or_else(|| parse_color_from_key(&content, "background_color"))
 }
 
 fn parse_color_from_key(content: &str, key: &str) -> Option<[f32; 4]> {
