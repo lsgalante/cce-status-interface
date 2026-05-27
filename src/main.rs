@@ -128,10 +128,11 @@ fn quad_vertices(x: f32, y: f32, w: f32, h: f32, sw: f32, sh: f32, c: [f32; 4]) 
     ]
 }
 
-fn make_text_buffer(fs: &mut FontSystem, text: &str, size: f32) -> Buffer {
+fn make_text_buffer(fs: &mut FontSystem, text: &str, size: f32, font_family: &str) -> Buffer {
     let metrics = Metrics::new(size, size * 1.4);
     let mut buf = Buffer::new(fs, metrics);
-    buf.set_text(fs, text, Attrs::new(), glyphon::Shaping::Advanced);
+    let attrs = Attrs::new().family(glyphon::Family::Name(font_family));
+    buf.set_text(fs, text, attrs, glyphon::Shaping::Advanced);
     buf.shape_until_scroll(fs, true);
     buf
 }
@@ -415,13 +416,14 @@ impl StatusApp {
     }
 
     fn rebuild_layout(&mut self) {
+        let font_family = read_status_font_from_config();
         let sw = self.width as f32;
         let sh = self.height as f32;
         let s = self.scale_factor as f32;
         let sw_logical = sw / s;
         let sh_logical = sh / s;
         let bar_h = 28.0;
-        eprintln!("[rebuild_layout] sw={}, sh={}, s={}, sw_logical={}, sh_logical={}", sw, sh, s, sw_logical, sh_logical);
+        eprintln!("[rebuild_layout] sw={}, sh={}, s={}, sw_logical={}, sh_logical={}, font_family={}", sw, sh, s, sw_logical, sh_logical, font_family);
 
         self.current_bg_color = read_bg_color_from_config().unwrap_or(color::STATUS_BG);
         eprintln!("[rebuild_layout] Using background color: {:?}", self.current_bg_color);
@@ -448,7 +450,7 @@ impl StatusApp {
         let tags = parse_tags(&self.tags);
         for (col, text) in tags {
             let label_str = format!(" {} ", text);
-            let label = Label::new(&mut self.font_system, &label_str, 11.0, col);
+            let label = Label::new_with_family(&mut self.font_system, &label_str, 11.0, col, &font_family);
             let line_w = label.draw(&mut self.text_items, left_x, (bar_h - 11.0 * 1.4) / 2.0);
             self.tag_bounds.push(TagBounds {
                 name: text.clone(),
@@ -466,7 +468,7 @@ impl StatusApp {
         // 3. Layout Mode
         if !self.layout.is_empty() {
             let label_str = format!("[{}]", self.layout);
-            let label = Label::new(&mut self.font_system, &label_str, 11.0, color::TEXT_ACCENT);
+            let label = Label::new_with_family(&mut self.font_system, &label_str, 11.0, color::TEXT_ACCENT, &font_family);
             let line_w = label.draw(&mut self.text_items, left_x, (bar_h - 11.0 * 1.4) / 2.0);
             left_x += line_w + 16.0;
         }
@@ -477,7 +479,7 @@ impl StatusApp {
             if display_title.chars().count() > 40 {
                 display_title = display_title.chars().take(37).collect::<String>() + "...";
             }
-            let label = Label::new(&mut self.font_system, &display_title, 11.0, color::TEXT_FG);
+            let label = Label::new_with_family(&mut self.font_system, &display_title, 11.0, color::TEXT_FG, &font_family);
             label.draw(&mut self.text_items, left_x, (bar_h - 11.0 * 1.4) / 2.0);
         }
 
@@ -485,7 +487,7 @@ impl StatusApp {
         let mut right_x = sw_logical - 12.0;
         if let Some(ref stats) = self.stats {
             // Clock
-            let label = Label::new(&mut self.font_system, &stats.clock, 11.0, color::TEXT_FG);
+            let label = Label::new_with_family(&mut self.font_system, &stats.clock, 11.0, color::TEXT_FG, &font_family);
             right_x -= label.w;
             eprintln!("[rebuild_layout] Clock: x={}, w={}", right_x, label.w);
             label.draw(&mut self.text_items, right_x, (bar_h - 11.0 * 1.4) / 2.0);
@@ -493,7 +495,7 @@ impl StatusApp {
             // Battery
             if !stats.battery.is_empty() {
                 right_x -= 16.0;
-                let label = Label::new(&mut self.font_system, &stats.battery, 11.0, color::TEXT_ACCENT);
+                let label = Label::new_with_family(&mut self.font_system, &stats.battery, 11.0, color::TEXT_ACCENT, &font_family);
                 right_x -= label.w;
                 eprintln!("[rebuild_layout] Battery: x={}, w={}", right_x, label.w);
                 label.draw(&mut self.text_items, right_x, (bar_h - 11.0 * 1.4) / 2.0);
@@ -508,7 +510,7 @@ impl StatusApp {
                 } else {
                     color::TEXT_ACCENT
                 };
-                let label = Label::new(&mut self.font_system, &stats.volume, 11.0, color_val)
+                let label = Label::new_with_family(&mut self.font_system, &stats.volume, 11.0, color_val, &font_family)
                     .with_strikethrough(is_muted);
                 right_x -= label.w;
                 let start_x = right_x;
@@ -529,14 +531,14 @@ impl StatusApp {
 
             // Memory
             right_x -= 16.0;
-            let label = Label::new(&mut self.font_system, &stats.memory, 11.0, color::TEXT_DIM);
+            let label = Label::new_with_family(&mut self.font_system, &stats.memory, 11.0, color::TEXT_DIM, &font_family);
             right_x -= label.w;
             eprintln!("[rebuild_layout] Memory: x={}, w={}", right_x, label.w);
             label.draw(&mut self.text_items, right_x, (bar_h - 11.0 * 1.4) / 2.0);
 
             // CPU
             right_x -= 16.0;
-            let label = Label::new(&mut self.font_system, &stats.cpu, 11.0, color::TEXT_DIM);
+            let label = Label::new_with_family(&mut self.font_system, &stats.cpu, 11.0, color::TEXT_DIM, &font_family);
             right_x -= label.w;
             eprintln!("[rebuild_layout] CPU: x={}, w={}", right_x, label.w);
             label.draw(&mut self.text_items, right_x, (bar_h - 11.0 * 1.4) / 2.0);
@@ -664,7 +666,7 @@ impl StatusApp {
                         "⚙"
                     };
 
-                    let buf = make_text_buffer(&mut self.font_system, symbol, 11.0);
+                    let buf = make_text_buffer(&mut self.font_system, symbol, 11.0, &font_family);
                     let tw = buf.layout_runs().next().map(|r| r.line_w).unwrap_or(0.0);
                     let tx = x + (icon_size - tw) / 2.0;
                     let ty = y + (icon_size - 11.0 * 1.4) / 2.0;
@@ -689,7 +691,7 @@ impl StatusApp {
             if let Some(bound) = self.tray_item_bounds.iter().find(|b| &b.id == hovered_id) {
                 let tooltip_text = bound.title.as_deref().unwrap_or(bound.id.as_str());
                 let font_size = 10.0;
-                let buf = make_text_buffer(&mut self.font_system, tooltip_text, font_size);
+                let buf = make_text_buffer(&mut self.font_system, tooltip_text, font_size, &font_family);
                 let text_w = buf.layout_runs().next().map(|r| r.line_w).unwrap_or(0.0);
                 let padding = 6.0;
 
@@ -1060,25 +1062,74 @@ impl PointerHandler for AppState {
                     }
                 }
                 PointerEventKind::Press { button, .. } => {
-                    if *button != 272 {
+                    if *button != 272 && *button != 273 {
                         continue;
                     }
                     if let Some(st) = &mut self.state {
                         let (cx, cy) = st.cursor_pos;
-                        println!("[tags-click] Mouse left click at logical: ({}, {})", cx, cy);
-                        for bound in &st.tag_bounds {
-                            println!("[tags-click] Checking Tag '{}' bounds: x=[{}..{}], y=[{}..{}]", 
-                                bound.name, bound.x, bound.x + bound.w, bound.y, bound.y + bound.h);
+
+                        // Check if tray icon was clicked
+                        let mut clicked_tray = None;
+                        for bound in &st.tray_item_bounds {
                             if cx >= bound.x as f64 && cx <= (bound.x + bound.w) as f64
                                 && cy >= bound.y as f64 && cy <= (bound.y + bound.h) as f64 {
-                                println!("[tags-click] Tag matched: {}", bound.name);
-                                let name = bound.name.clone();
-                                std::thread::spawn(move || {
-                                    let _ = std::process::Command::new("clearctl")
-                                        .args(["view", &name])
-                                        .spawn();
-                                });
+                                clicked_tray = Some(bound.id.clone());
                                 break;
+                            }
+                        }
+
+                        if let Some(id) = clicked_tray {
+                            let btn = *button;
+                            let cx_i = cx as i32;
+                            let cy_i = cy as i32;
+                            std::thread::spawn(move || {
+                                let rt = tokio::runtime::Builder::new_current_thread()
+                                    .enable_all()
+                                    .build()
+                                    .unwrap();
+                                rt.block_on(async move {
+                                    if let Some((destination, path_part)) = id.split_once('/') {
+                                        let path = format!("/{}", path_part);
+                                        if let Ok(conn) = zbus::Connection::session().await {
+                                            if let Ok(proxy) = StatusNotifierItemProxy::builder(&conn)
+                                                .destination(destination.to_string())
+                                                .unwrap()
+                                                .path(path)
+                                                .unwrap()
+                                                .build()
+                                                .await
+                                            {
+                                                if btn == 272 {
+                                                    println!("[tray-click] Calling Activate on {} at ({}, {})", id, cx_i, cy_i);
+                                                    let _ = proxy.activate(cx_i, cy_i).await;
+                                                } else if btn == 273 {
+                                                    println!("[tray-click] Calling ContextMenu on {} at ({}, {})", id, cx_i, cy_i);
+                                                    let _ = proxy.context_menu(cx_i, cy_i).await;
+                                                }
+                                            }
+                                        }
+                                    }
+                                });
+                            });
+                            continue;
+                        }
+
+                        if *button == 272 {
+                            println!("[tags-click] Mouse left click at logical: ({}, {})", cx, cy);
+                            for bound in &st.tag_bounds {
+                                println!("[tags-click] Checking Tag '{}' bounds: x=[{}..{}], y=[{}..{}]", 
+                                    bound.name, bound.x, bound.x + bound.w, bound.y, bound.y + bound.h);
+                                if cx >= bound.x as f64 && cx <= (bound.x + bound.w) as f64
+                                    && cy >= bound.y as f64 && cy <= (bound.y + bound.h) as f64 {
+                                    println!("[tags-click] Tag matched: {}", bound.name);
+                                    let name = bound.name.clone();
+                                    std::thread::spawn(move || {
+                                        let _ = std::process::Command::new("clearctl")
+                                            .args(["view", &name])
+                                            .spawn();
+                                    });
+                                    break;
+                                }
                             }
                         }
                     }
@@ -1412,6 +1463,9 @@ trait StatusNotifierItem {
 
     #[zbus(signal)]
     fn new_status(&self) -> zbus::Result<()>;
+
+    fn activate(&self, x: i32, y: i32) -> zbus::Result<()>;
+    fn context_menu(&self, x: i32, y: i32) -> zbus::Result<()>;
 }
 
 fn find_icon_file(dir: &std::path::Path, icon_name: &str) -> Option<std::path::PathBuf> {
@@ -1934,6 +1988,41 @@ fn parse_srgb_color_from_key(content: &str, key: &str) -> Option<[f32; 4]> {
                 let g = rgb[1] as f32 / 255.0;
                 let b = rgb[2] as f32 / 255.0;
                 return Some([r, g, b, 1.0]);
+            }
+        }
+    }
+    None
+}
+
+fn read_status_font_from_config() -> String {
+    let font_conf_path = "/home/lsgalante/.config/fontconfig/fonts.conf";
+    if let Ok(content) = std::fs::read_to_string(font_conf_path) {
+        if let Some(font) = parse_font_for_alias(&content, "status-interface") {
+            return font;
+        }
+    }
+    "sans-serif".to_string()
+}
+
+fn parse_font_for_alias(content: &str, alias: &str) -> Option<String> {
+    let lines: Vec<&str> = content.lines().collect();
+    for i in 0..lines.len() {
+        let line = lines[i].trim();
+        if line.contains("<test") && line.contains("name=\"family\"") && line.contains(&format!("<string>{}</string>", alias)) {
+            for j in (i + 1)..(i + 6).min(lines.len()) {
+                let next_line = lines[j].trim();
+                if next_line.contains("<edit") {
+                    for k in (j + 1)..(j + 6).min(lines.len()) {
+                        let str_line = lines[k].trim();
+                        if str_line.contains("<string>") && str_line.contains("</string>") {
+                            if let Some(start) = str_line.find("<string>") {
+                                if let Some(end) = str_line.find("</string>") {
+                                    return Some(str_line[start + 8..end].to_string());
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
