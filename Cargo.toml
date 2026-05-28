@@ -21,7 +21,10 @@ serde_json = "1"
 chrono = "0.4"
 tokio-stream = "0.1"
 zbus = "4"
+resvg = "0.41.0"
 png = "0.17"
+
+
 
 
 

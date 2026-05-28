@@ -417,13 +417,14 @@ impl StatusApp {
 
     fn rebuild_layout(&mut self) {
         let font_family = read_status_font_from_config();
+        let font_size = read_status_font_size_from_config();
         let sw = self.width as f32;
         let sh = self.height as f32;
         let s = self.scale_factor as f32;
         let sw_logical = sw / s;
         let sh_logical = sh / s;
         let bar_h = 28.0;
-        eprintln!("[rebuild_layout] sw={}, sh={}, s={}, sw_logical={}, sh_logical={}, font_family={}", sw, sh, s, sw_logical, sh_logical, font_family);
+        eprintln!("[rebuild_layout] sw={}, sh={}, s={}, sw_logical={}, sh_logical={}, font_family={}, font_size={}", sw, sh, s, sw_logical, sh_logical, font_family, font_size);
 
         self.current_bg_color = read_bg_color_from_config().unwrap_or(color::STATUS_BG);
         eprintln!("[rebuild_layout] Using background color: {:?}", self.current_bg_color);
@@ -450,8 +451,8 @@ impl StatusApp {
         let tags = parse_tags(&self.tags);
         for (col, text) in tags {
             let label_str = format!(" {} ", text);
-            let label = Label::new_with_family(&mut self.font_system, &label_str, 11.0, col, &font_family);
-            let line_w = label.draw(&mut self.text_items, left_x, (bar_h - 11.0 * 1.4) / 2.0);
+            let label = Label::new_with_family(&mut self.font_system, &label_str, font_size, col, &font_family);
+            let line_w = label.draw(&mut self.text_items, left_x, (bar_h - font_size * 1.4) / 2.0);
             self.tag_bounds.push(TagBounds {
                 name: text.clone(),
                 x: left_x,
@@ -468,8 +469,8 @@ impl StatusApp {
         // 3. Layout Mode
         if !self.layout.is_empty() {
             let label_str = format!("[{}]", self.layout);
-            let label = Label::new_with_family(&mut self.font_system, &label_str, 11.0, color::TEXT_ACCENT, &font_family);
-            let line_w = label.draw(&mut self.text_items, left_x, (bar_h - 11.0 * 1.4) / 2.0);
+            let label = Label::new_with_family(&mut self.font_system, &label_str, font_size, color::TEXT_ACCENT, &font_family);
+            let line_w = label.draw(&mut self.text_items, left_x, (bar_h - font_size * 1.4) / 2.0);
             left_x += line_w + 16.0;
         }
 
@@ -479,26 +480,34 @@ impl StatusApp {
             if display_title.chars().count() > 40 {
                 display_title = display_title.chars().take(37).collect::<String>() + "...";
             }
-            let label = Label::new_with_family(&mut self.font_system, &display_title, 11.0, color::TEXT_FG, &font_family);
-            label.draw(&mut self.text_items, left_x, (bar_h - 11.0 * 1.4) / 2.0);
+            let label = Label::new_with_family(&mut self.font_system, &display_title, font_size, color::TEXT_FG, &font_family);
+            label.draw(&mut self.text_items, left_x, (bar_h - font_size * 1.4) / 2.0);
         }
 
         // 5. Right Side Stats (CPU, Mem, Bat, Clock)
         let mut right_x = sw_logical - 12.0;
         if let Some(ref stats) = self.stats {
+            let clock_w = 270.0;
+            let battery_w = 80.0;
+            let volume_w = 80.0;
+            let memory_w = 140.0;
+            let cpu_w = 90.0;
+
             // Clock
-            let label = Label::new_with_family(&mut self.font_system, &stats.clock, 11.0, color::TEXT_FG, &font_family);
-            right_x -= label.w;
-            eprintln!("[rebuild_layout] Clock: x={}, w={}", right_x, label.w);
-            label.draw(&mut self.text_items, right_x, (bar_h - 11.0 * 1.4) / 2.0);
+            let label = Label::new_with_family(&mut self.font_system, &stats.clock, font_size, color::TEXT_FG, &font_family);
+            right_x -= clock_w;
+            let draw_x = right_x + (clock_w - label.w); // right-aligned
+            eprintln!("[rebuild_layout] Clock: x={}, w={}", draw_x, label.w);
+            label.draw(&mut self.text_items, draw_x, (bar_h - font_size * 1.4) / 2.0);
 
             // Battery
             if !stats.battery.is_empty() {
                 right_x -= 16.0;
-                let label = Label::new_with_family(&mut self.font_system, &stats.battery, 11.0, color::TEXT_ACCENT, &font_family);
-                right_x -= label.w;
-                eprintln!("[rebuild_layout] Battery: x={}, w={}", right_x, label.w);
-                label.draw(&mut self.text_items, right_x, (bar_h - 11.0 * 1.4) / 2.0);
+                let label = Label::new_with_family(&mut self.font_system, &stats.battery, font_size, color::TEXT_ACCENT, &font_family);
+                right_x -= battery_w;
+                let draw_x = right_x; // left-aligned
+                eprintln!("[rebuild_layout] Battery: x={}, w={}", draw_x, label.w);
+                label.draw(&mut self.text_items, draw_x, (bar_h - font_size * 1.4) / 2.0);
             }
 
             // Volume
@@ -510,11 +519,11 @@ impl StatusApp {
                 } else {
                     color::TEXT_ACCENT
                 };
-                let label = Label::new_with_family(&mut self.font_system, &stats.volume, 11.0, color_val, &font_family)
+                let label = Label::new_with_family(&mut self.font_system, &stats.volume, font_size, color_val, &font_family)
                     .with_strikethrough(is_muted);
-                right_x -= label.w;
-                let start_x = right_x;
-                let start_y = (bar_h - 11.0 * 1.4) / 2.0;
+                right_x -= volume_w;
+                let start_x = right_x; // left-aligned
+                let start_y = (bar_h - font_size * 1.4) / 2.0;
                 eprintln!("[rebuild_layout] Volume: x={}, w={}, is_muted={}", start_x, label.w, is_muted);
                 if let Some((sx, sy, sw_rect, sh_rect, scol)) = label.strikethrough_rect(start_x, start_y, 1.0) {
                     eprintln!("[rebuild_layout] Strikethrough rect: sx={}, sy={}, sw={}, sh={}, scol={:?}", sx, sy, sw_rect, sh_rect, scol);
@@ -523,7 +532,7 @@ impl StatusApp {
                         y: sy,
                         w: sw_rect,
                         h: sh_rect,
-                        color: scol,
+                        color: color::to_linear(scol),
                     });
                 }
                 label.draw(&mut self.text_items, start_x, start_y);
@@ -531,17 +540,19 @@ impl StatusApp {
 
             // Memory
             right_x -= 16.0;
-            let label = Label::new_with_family(&mut self.font_system, &stats.memory, 11.0, color::TEXT_DIM, &font_family);
-            right_x -= label.w;
-            eprintln!("[rebuild_layout] Memory: x={}, w={}", right_x, label.w);
-            label.draw(&mut self.text_items, right_x, (bar_h - 11.0 * 1.4) / 2.0);
+            let label = Label::new_with_family(&mut self.font_system, &stats.memory, font_size, color::TEXT_DIM, &font_family);
+            right_x -= memory_w;
+            let draw_x = right_x; // left-aligned
+            eprintln!("[rebuild_layout] Memory: x={}, w={}", draw_x, label.w);
+            label.draw(&mut self.text_items, draw_x, (bar_h - font_size * 1.4) / 2.0);
 
             // CPU
             right_x -= 16.0;
-            let label = Label::new_with_family(&mut self.font_system, &stats.cpu, 11.0, color::TEXT_DIM, &font_family);
-            right_x -= label.w;
-            eprintln!("[rebuild_layout] CPU: x={}, w={}", right_x, label.w);
-            label.draw(&mut self.text_items, right_x, (bar_h - 11.0 * 1.4) / 2.0);
+            let label = Label::new_with_family(&mut self.font_system, &stats.cpu, font_size, color::TEXT_DIM, &font_family);
+            right_x -= cpu_w;
+            let draw_x = right_x; // left-aligned
+            eprintln!("[rebuild_layout] CPU: x={}, w={}", draw_x, label.w);
+            label.draw(&mut self.text_items, draw_x, (bar_h - font_size * 1.4) / 2.0);
         }
 
         // 5b. System Tray Icons (render to the left of the CPU/stats block)
@@ -558,6 +569,7 @@ impl StatusApp {
                 let y = (bar_h - icon_size) / 2.0;
 
                 // Record bounds for hit-testing
+                eprintln!("[rebuild_layout] Tray icon bounds: id={}, x={}, y={}, w={}, h={}", item.id, x, y, icon_size, icon_size);
                 self.tray_item_bounds.push(TrayIconBounds {
                     id: item.id.clone(),
                     x,
@@ -571,7 +583,8 @@ impl StatusApp {
                 let mut drawn_pixmap = false;
                 if let Some(ref pixmaps) = item.pixmaps {
                     if !pixmaps.is_empty() {
-                        if let Some(pixmap) = pixmaps.iter().min_by_key(|p| (p.width - 16).abs()) {
+                        let target_pixel_width = (icon_size * self.scale_factor as f32) as i32;
+                        if let Some(pixmap) = pixmaps.iter().min_by_key(|p| (p.width - target_pixel_width).abs()) {
                             if pixmap.width > 0 && pixmap.height > 0 {
                                 // Calculate average brightness of visible pixels to see if we need to recolor
                                 let mut total_brightness = 0.0;
@@ -599,8 +612,12 @@ impl StatusApp {
                                 };
                                 let recolor_light = avg_brightness < 0.35;
  
-                                let draw_w = 16;
-                                let draw_h = 16;
+                                let mut draw_w = pixmap.width;
+                                let mut draw_h = pixmap.height;
+                                if draw_w > 48 {
+                                    draw_w = 48;
+                                    draw_h = 48;
+                                }
                                 let pixel_w = icon_size / draw_w as f32;
                                 let pixel_h = icon_size / draw_h as f32;
                                 for row in 0..draw_h {
@@ -666,10 +683,10 @@ impl StatusApp {
                         "⚙"
                     };
 
-                    let buf = make_text_buffer(&mut self.font_system, symbol, 11.0, &font_family);
+                    let buf = make_text_buffer(&mut self.font_system, symbol, font_size, &font_family);
                     let tw = buf.layout_runs().next().map(|r| r.line_w).unwrap_or(0.0);
                     let tx = x + (icon_size - tw) / 2.0;
-                    let ty = y + (icon_size - 11.0 * 1.4) / 2.0;
+                    let ty = y + (icon_size - font_size * 1.4) / 2.0;
                     self.text_items.push(TextItem {
                         buffer: buf,
                         x: tx,
@@ -690,13 +707,13 @@ impl StatusApp {
         if let Some(ref hovered_id) = self.hovered_tray_item {
             if let Some(bound) = self.tray_item_bounds.iter().find(|b| &b.id == hovered_id) {
                 let tooltip_text = bound.title.as_deref().unwrap_or(bound.id.as_str());
-                let font_size = 10.0;
-                let buf = make_text_buffer(&mut self.font_system, tooltip_text, font_size, &font_family);
+                let tooltip_font_size = font_size - 1.0;
+                let buf = make_text_buffer(&mut self.font_system, tooltip_text, tooltip_font_size, &font_family);
                 let text_w = buf.layout_runs().next().map(|r| r.line_w).unwrap_or(0.0);
                 let padding = 6.0;
 
                 let tooltip_w = text_w + padding * 2.0;
-                let tooltip_w_h = font_size * 1.4 + padding * 2.0;
+                let tooltip_w_h = tooltip_font_size * 1.4 + padding * 2.0;
                 let tx = bound.x + (bound.w - tooltip_w) / 2.0;
                 let ty = bar_h + 4.0;
 
@@ -1036,6 +1053,7 @@ impl PointerHandler for AppState {
         use smithay_client_toolkit::seat::pointer::PointerEventKind;
         for event in events {
             let (x, y) = event.position;
+            eprintln!("[pointer] Event: pos=({:.1}, {:.1}), kind={:?}", x, y, event.kind);
             if let Some(ref mut st) = self.state {
                 st.cursor_pos = (x, y);
             }
@@ -1099,11 +1117,32 @@ impl PointerHandler for AppState {
                                                 .build()
                                                 .await
                                             {
-                                                if btn == 272 {
-                                                    println!("[tray-click] Calling Activate on {} at ({}, {})", id, cx_i, cy_i);
-                                                    let _ = proxy.activate(cx_i, cy_i).await;
+                                                let is_menu = proxy.item_is_menu().await.unwrap_or(false);
+                                                let menu_path = proxy.menu().await.ok();
+
+                                                let should_show_menu = (btn == 273 && menu_path.is_some())
+                                                    || (btn == 272 && is_menu && menu_path.is_some());
+
+                                                if should_show_menu {
+                                                    if let Some(menu_p) = menu_path {
+                                                        eprintln!("[tray-click] Displaying menu for {} at path {}", id, menu_p.as_str());
+                                                        if let Err(e) = show_clear_cloud_menu(&conn, destination, menu_p.as_str()).await {
+                                                            eprintln!("[tray-click] show_clear_cloud_menu failed: {:?}", e);
+                                                        }
+                                                    }
+                                                } else if btn == 272 {
+                                                    eprintln!("[tray-click] Calling Activate on {} at ({}, {})", id, cx_i, cy_i);
+                                                    if let Err(e) = proxy.activate(cx_i, cy_i).await {
+                                                        eprintln!("[tray-click] Activate failed: {:?}", e);
+                                                        if let Some(menu_p) = menu_path {
+                                                            eprintln!("[tray-click] Fallback: Displaying menu for {}", id);
+                                                            if let Err(e) = show_clear_cloud_menu(&conn, destination, menu_p.as_str()).await {
+                                                                eprintln!("[tray-click] Fallback show_clear_cloud_menu failed: {:?}", e);
+                                                            }
+                                                        }
+                                                    }
                                                 } else if btn == 273 {
-                                                    println!("[tray-click] Calling ContextMenu on {} at ({}, {})", id, cx_i, cy_i);
+                                                    eprintln!("[tray-click] Calling ContextMenu on {} at ({}, {})", id, cx_i, cy_i);
                                                     let _ = proxy.context_menu(cx_i, cy_i).await;
                                                 }
                                             }
@@ -1115,13 +1154,13 @@ impl PointerHandler for AppState {
                         }
 
                         if *button == 272 {
-                            println!("[tags-click] Mouse left click at logical: ({}, {})", cx, cy);
+                            eprintln!("[tags-click] Mouse left click at logical: ({}, {})", cx, cy);
                             for bound in &st.tag_bounds {
-                                println!("[tags-click] Checking Tag '{}' bounds: x=[{}..{}], y=[{}..{}]", 
+                                eprintln!("[tags-click] Checking Tag '{}' bounds: x=[{}..{}], y=[{}..{}]", 
                                     bound.name, bound.x, bound.x + bound.w, bound.y, bound.y + bound.h);
                                 if cx >= bound.x as f64 && cx <= (bound.x + bound.w) as f64
                                     && cy >= bound.y as f64 && cy <= (bound.y + bound.h) as f64 {
-                                    println!("[tags-click] Tag matched: {}", bound.name);
+                                    eprintln!("[tags-click] Tag matched: {}", bound.name);
                                     let name = bound.name.clone();
                                     std::thread::spawn(move || {
                                         let _ = std::process::Command::new("clearctl")
@@ -1283,7 +1322,11 @@ async fn spawn_status_listener(sub: &'static str, sender: calloop::channel::Send
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::net::UnixStream;
     loop {
-        if let Ok(mut stream) = UnixStream::connect("/tmp/clearwm-status.sock").await {
+        let socket_path = match std::env::var("WAYLAND_DISPLAY") {
+            Ok(display) => format!("/tmp/clearwm-status-{}.sock", display),
+            Err(_) => "/tmp/clearwm-status.sock".to_string(),
+        };
+        if let Ok(mut stream) = UnixStream::connect(&socket_path).await {
             if stream.write_all(format!("{}\n", sub).as_bytes()).await.is_ok() {
                 let mut reader = BufReader::new(stream);
                 let mut line = String::new();
@@ -1466,7 +1509,143 @@ trait StatusNotifierItem {
 
     fn activate(&self, x: i32, y: i32) -> zbus::Result<()>;
     fn context_menu(&self, x: i32, y: i32) -> zbus::Result<()>;
+
+    #[zbus(property)]
+    fn item_is_menu(&self) -> zbus::Result<bool>;
+
+    #[zbus(property)]
+    fn menu(&self) -> zbus::Result<zbus::zvariant::OwnedObjectPath>;
 }
+
+#[zbus::proxy(
+    interface = "com.canonical.dbusmenu",
+    default_path = "/StatusNotifierItem/menu"
+)]
+trait DBusMenu {
+    fn get_layout(
+        &self,
+        parent_id: i32,
+        recursion_depth: i32,
+        property_names: Vec<String>,
+    ) -> zbus::Result<(u32, (i32, std::collections::HashMap<String, zbus::zvariant::OwnedValue>, Vec<zbus::zvariant::OwnedValue>))>;
+
+    fn event(
+        &self,
+        id: i32,
+        event_id: &str,
+        data: &zbus::zvariant::Value<'_>,
+        timestamp: u32,
+    ) -> zbus::Result<()>;
+
+    fn about_to_show(&self, id: i32) -> zbus::Result<bool>;
+}
+
+fn flatten_menu(
+    id: i32,
+    mut properties: std::collections::HashMap<String, zbus::zvariant::OwnedValue>,
+    children: Vec<zbus::zvariant::OwnedValue>,
+    prefix: &str,
+    out: &mut Vec<(i32, String)>
+) {
+    let label: String = properties.remove("label")
+        .and_then(|v| {
+            let s: Result<String, _> = v.try_into();
+            s.ok()
+        })
+        .unwrap_or_default();
+    let type_: String = properties.remove("type")
+        .and_then(|v| {
+            let s: Result<String, _> = v.try_into();
+            s.ok()
+        })
+        .unwrap_or_default();
+    let enabled: bool = properties.remove("enabled")
+        .and_then(|v| {
+            let b: Result<bool, _> = v.try_into();
+            b.ok()
+        })
+        .unwrap_or(true);
+
+    if type_ == "separator" || !enabled {
+        // Skip
+    } else {
+        let current_path = if prefix.is_empty() {
+            label.clone()
+        } else if !label.is_empty() {
+            format!("{} > {}", prefix, label)
+        } else {
+            prefix.to_string()
+        };
+
+        if !current_path.is_empty() && children.is_empty() {
+            out.push((id, current_path.clone()));
+        }
+
+        for child_val in children {
+            let child_val_inner = zbus::zvariant::Value::from(child_val);
+            if let Ok(child) = <(i32, std::collections::HashMap<String, zbus::zvariant::OwnedValue>, Vec<zbus::zvariant::OwnedValue>)>::try_from(child_val_inner) {
+                flatten_menu(child.0, child.1, child.2, &current_path, out);
+            }
+        }
+    }
+}
+
+async fn show_clear_cloud_menu(conn: &zbus::Connection, destination: &str, menu_path: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let menu_proxy = DBusMenuProxy::builder(conn)
+        .destination(destination)?
+        .path(menu_path)?
+        .build()
+        .await?;
+
+    let _ = menu_proxy.about_to_show(0).await;
+    let (_, layout) = menu_proxy.get_layout(0, 3, vec![]).await?;
+    eprintln!("[tray-click] show_clear_cloud_menu layout: root_id={}, properties={:?}, children_len={}", layout.0, layout.1, layout.2.len());
+
+    let mut items = Vec::new();
+    flatten_menu(layout.0, layout.1, layout.2, "", &mut items);
+    eprintln!("[tray-click] show_clear_cloud_menu flattened items: {:?}", items);
+
+    if items.is_empty() {
+        eprintln!("[tray-click] show_clear_cloud_menu: items is empty, returning early");
+        return Ok(());
+    }
+
+    let mut clear_cloud_input = String::new();
+    for (_, label) in &items {
+        clear_cloud_input.push_str(label);
+        clear_cloud_input.push('\n');
+    }
+
+    let mut child = std::process::Command::new("clear-cloud")
+        .args(["--dmenu", "-p", "Tray Menu:"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        use std::io::Write;
+        stdin.write_all(clear_cloud_input.as_bytes())?;
+    }
+
+    let output = child.wait_with_output()?;
+    if output.status.success() {
+        let selected = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if let Some((id, _)) = items.iter().find(|(_, label)| label == &selected) {
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as u32;
+            let val = zbus::zvariant::Value::from("");
+            let _ = menu_proxy.event(*id, "clicked", &val, timestamp).await;
+        }
+    } else {
+        let stderr_str = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        eprintln!("[tray-click] clear-cloud failed with status: {:?}, stderr: {:?}", output.status, stderr_str);
+    }
+    Ok(())
+}
+
 
 fn find_icon_file(dir: &std::path::Path, icon_name: &str) -> Option<std::path::PathBuf> {
     if let Ok(entries) = std::fs::read_dir(dir) {
@@ -1481,7 +1660,7 @@ fn find_icon_file(dir: &std::path::Path, icon_name: &str) -> Option<std::path::P
                     }
                 } else if file_type.is_file() {
                     if let Some(file_name) = path.file_name().and_then(|f| f.to_str()) {
-                        if file_name == format!("{}.png", icon_name) {
+                        if file_name == format!("{}.png", icon_name) || file_name == format!("{}.svg", icon_name) {
                             return Some(path);
                         }
                     }
@@ -1554,6 +1733,40 @@ fn load_png_as_pixmap(path: &std::path::Path) -> Option<TrayPixmap> {
     })
 }
 
+fn load_svg_as_pixmap(path: &std::path::Path) -> Option<TrayPixmap> {
+    let svg_data = std::fs::read(path).ok()?;
+    let opt = resvg::usvg::Options::default();
+    let fontdb = resvg::usvg::fontdb::Database::new();
+    let tree = resvg::usvg::Tree::from_data(&svg_data, &opt, &fontdb).ok()?;
+    
+    let target_w = 48;
+    let target_h = 48;
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(target_w, target_h)?;
+    
+    let orig_w = tree.size().width();
+    let orig_h = tree.size().height();
+    let sx = target_w as f32 / orig_w;
+    let sy = target_h as f32 / orig_h;
+    let transform = resvg::tiny_skia::Transform::from_scale(sx, sy);
+    
+    resvg::render(&tree, transform, &mut pixmap.as_mut());
+    
+    let raw_pixels = pixmap.data();
+    let mut argb_pixels = Vec::with_capacity((target_w * target_h * 4) as usize);
+    for chunk in raw_pixels.chunks_exact(4) {
+        argb_pixels.push(chunk[3]); // A
+        argb_pixels.push(chunk[0]); // R
+        argb_pixels.push(chunk[1]); // G
+        argb_pixels.push(chunk[2]); // B
+    }
+    
+    Some(TrayPixmap {
+        width: target_w as i32,
+        height: target_h as i32,
+        pixels: argb_pixels,
+    })
+}
+
 fn resolve_icon_path(theme_path: Option<&str>, icon_name: &str) -> Option<std::path::PathBuf> {
     if icon_name.is_empty() {
         return None;
@@ -1586,28 +1799,36 @@ fn resolve_icon_path(theme_path: Option<&str>, icon_name: &str) -> Option<std::p
         "hicolor/24x24/status",
         "hicolor/32x32/status",
         "hicolor/48x48/status",
+        "hicolor/scalable/status",
         "hicolor/16x16/apps",
         "hicolor/22x22/apps",
         "hicolor/24x24/apps",
         "hicolor/32x32/apps",
         "hicolor/48x48/apps",
+        "hicolor/scalable/apps",
         "gnome/16x16/status",
         "gnome/22x22/status",
         "gnome/24x24/status",
         "gnome/32x32/status",
         "gnome/48x48/status",
+        "gnome/scalable/status",
         "gnome/16x16/apps",
         "gnome/22x22/apps",
         "gnome/24x24/apps",
         "gnome/32x32/apps",
         "gnome/48x48/apps",
+        "gnome/scalable/apps",
     ];
 
     for base in &search_dirs {
         for sub in &sub_paths {
-            let path = std::path::Path::new(base).join(sub).join(format!("{}.png", icon_name));
-            if path.exists() && path.is_file() {
-                return Some(path);
+            let path_png = std::path::Path::new(base).join(sub).join(format!("{}.png", icon_name));
+            if path_png.exists() && path_png.is_file() {
+                return Some(path_png);
+            }
+            let path_svg = std::path::Path::new(base).join(sub).join(format!("{}.svg", icon_name));
+            if path_svg.exists() && path_svg.is_file() {
+                return Some(path_svg);
             }
         }
         let base_path = std::path::Path::new(base);
@@ -1652,7 +1873,13 @@ async fn fetch_tray_item(conn: &zbus::Connection, addr: &NotifierAddress) -> Res
             println!("[status-tray] Trying to resolve theme icon for '{}' (theme path: {:?})", name, icon_theme_path);
             if let Some(icon_path) = resolve_icon_path(icon_theme_path.as_deref(), name) {
                 println!("[status-tray] Found icon file at {:?}", icon_path);
-                if let Some(pixmap) = load_png_as_pixmap(&icon_path) {
+                let ext = icon_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                let pixmap = if ext.eq_ignore_ascii_case("svg") {
+                    load_svg_as_pixmap(&icon_path)
+                } else {
+                    load_png_as_pixmap(&icon_path)
+                };
+                if let Some(pixmap) = pixmap {
                     println!("[status-tray] Successfully decoded icon file to pixmap (size: {}x{})", pixmap.width, pixmap.height);
                     pixmaps = Some(vec![pixmap]);
                 } else {
@@ -2003,6 +2230,21 @@ fn read_status_font_from_config() -> String {
     }
     "sans-serif".to_string()
 }
+
+fn read_status_font_size_from_config() -> f32 {
+    let content = std::fs::read_to_string("/home/lsgalante/.config/clearwm/config.toml").unwrap_or_default();
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("status_font_size") {
+            let rest = rest.trim_start_matches(|c: char| c == ' ' || c == '=' || c == '"');
+            if let Ok(val) = rest.trim_end_matches('"').trim().parse::<f32>() {
+                return val;
+            }
+        }
+    }
+    11.0
+}
+
 
 fn parse_font_for_alias(content: &str, alias: &str) -> Option<String> {
     let lines: Vec<&str> = content.lines().collect();
