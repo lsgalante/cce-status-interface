@@ -1,39 +1,13 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use glyphon::{
-    Attrs, Buffer, Cache, FontSystem, Metrics, Resolution, SwashCache, TextArea,
-    TextAtlas, TextBounds, TextRenderer, Viewport,
+    Attrs, Buffer, FontSystem, Metrics,
 };
 use clear_ui::color;
-use clear_ui::widget::{StyledLabel as Label, TextItem, Separator, Widget};
-
-use smithay_client_toolkit::{
-    compositor::{CompositorHandler, CompositorState},
-    delegate_compositor, delegate_keyboard, delegate_pointer, delegate_registry,
-    delegate_seat, delegate_shm, delegate_xdg_shell, delegate_xdg_window, delegate_output,
-    registry::{ProvidesRegistryState, RegistryState},
-    output::{OutputHandler, OutputState},
-    seat::{
-        keyboard::KeyboardHandler,
-        pointer::PointerHandler,
-        Capability, SeatHandler, SeatState,
-    },
-    shell::{
-        xdg::{
-            window::{Window as XdgWindow, WindowConfigure, WindowHandler, WindowDecorations},
-            XdgShell,
-        },
-        WaylandSurface,
-    },
-    shm::{Shm, ShmHandler},
+use clear_ui::widget::{
+    StyledLabel as Label, TextItem, Separator, Widget,
+    MouseButton, ElementState, MouseScrollDelta, KeyEvent,
 };
-use wayland_client::{
-    globals::registry_queue_init,
-    protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface},
-    Connection, QueueHandle, Proxy,
-};
-use calloop::EventLoop;
-use calloop_wayland_source::WaylandSource;
 
 #[derive(Debug, Clone)]
 struct TrayPixmap {
@@ -72,6 +46,14 @@ struct TagBounds {
 }
 
 #[derive(Debug, Clone)]
+struct LayoutBounds {
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+}
+
+#[derive(Debug, Clone)]
 struct SystemStats {
     clock: String,
     memory: String,
@@ -90,43 +72,7 @@ enum CustomEvent {
     SystemStatsUpdated(SystemStats),
     TrayUpdated(TrayItem),
     TrayRemoved(String),
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct Vertex {
-    position: [f32; 2],
-    color: [f32; 4],
-}
-
-impl Vertex {
-    const ATTRIBS: [wgpu::VertexAttribute; 2] = wgpu::vertex_attr_array![
-        0 => Float32x2,
-        1 => Float32x4,
-    ];
-
-    fn desc() -> wgpu::VertexBufferLayout<'static> {
-        wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &Self::ATTRIBS,
-        }
-    }
-}
-
-fn quad_vertices(x: f32, y: f32, w: f32, h: f32, sw: f32, sh: f32, c: [f32; 4]) -> [Vertex; 6] {
-    let x0 = (x / sw) * 2.0 - 1.0;
-    let y0 = 1.0 - (y / sh) * 2.0;
-    let x1 = ((x + w) / sw) * 2.0 - 1.0;
-    let y1 = 1.0 - ((y + h) / sh) * 2.0;
-    [
-        Vertex { position: [x0, y0], color: c },
-        Vertex { position: [x1, y0], color: c },
-        Vertex { position: [x0, y1], color: c },
-        Vertex { position: [x1, y0], color: c },
-        Vertex { position: [x1, y1], color: c },
-        Vertex { position: [x0, y1], color: c },
-    ]
+    LayoutMenuClosed(u32),
 }
 
 fn make_text_buffer(fs: &mut FontSystem, text: &str, size: f32, font_family: &str) -> Buffer {
@@ -263,16 +209,6 @@ struct RectWidget {
 
 
 struct StatusApp {
-    window: XdgWindow,
-    surface: wl_surface::WlSurface,
-    wgpu_surface: wgpu::Surface<'static>,
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-    config: wgpu::SurfaceConfiguration,
-    render_pipeline: wgpu::RenderPipeline,
-    vertex_buffer: wgpu::Buffer,
-    vertex_count: u32,
-
     // Status State
     tags: String,
     layout: String,
@@ -283,18 +219,14 @@ struct StatusApp {
     hovered_tray_item: Option<String>,
     tray_item_bounds: Vec<TrayIconBounds>,
     tag_bounds: Vec<TagBounds>,
+    layout_bounds: Option<LayoutBounds>,
+    layout_menu_pid: Option<u32>,
 
     font_system: FontSystem,
-    swash_cache: SwashCache,
-    text_atlas: TextAtlas,
-    text_renderer: TextRenderer,
-    text_viewport: Viewport,
 
     rects: Vec<RectWidget>,
     overlay_rects: Vec<RectWidget>,
     separators: Vec<Separator>,
-    overlay_vertex_buffer: wgpu::Buffer,
-    overlay_vertex_count: u32,
     text_items: Vec<TextItem>,
 
     scale_factor: f64,
@@ -302,158 +234,21 @@ struct StatusApp {
     height: u32,
     needs_rebuild: bool,
     current_bg_color: [f32; 4],
+    sender: calloop::channel::Sender<CustomEvent>,
 }
 
 impl StatusApp {
-    async fn new(
-        conn: &Connection,
-        qh: &QueueHandle<AppState>,
-        compositor_state: &CompositorState,
-        xdg_shell_state: &XdgShell,
-        width: u32,
-        height: u32,
-        scale: f64,
-    ) -> Self {
-        let surface = compositor_state.create_surface(qh);
-        surface.set_buffer_scale(scale as i32);
-        let window = xdg_shell_state.create_window(surface.clone(), WindowDecorations::None, qh);
-        window.set_title("Clear Status Interface");
-        window.set_app_id("clear-status-interface");
-        window.set_fullscreen(None);
-        window.commit();
-
-        let wayland_handle = Box::leak(Box::new(clear_ui::wayland::WaylandSurfaceHandle {
-            display_ptr: conn.backend().display_id().as_ptr() as *mut std::ffi::c_void,
-            surface_ptr: surface.id().as_ptr() as *mut std::ffi::c_void,
-        }));
-
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::VULKAN,
-            ..Default::default()
-        });
-        let wgpu_surface = instance.create_surface(wayland_handle).expect("surface");
-        let adapter = instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::LowPower,
-            compatible_surface: Some(&wgpu_surface),
-            force_fallback_adapter: false,
-        }).await.expect("adapter");
-        let (device, queue) = adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("GPU Device"),
-            required_features: wgpu::Features::empty(),
-            required_limits: wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter.limits()),
-            memory_hints: wgpu::MemoryHints::MemoryUsage,
-        }, None).await.expect("device");
-        let config = wgpu_surface.get_default_config(&adapter, width.max(1), height.max(1)).expect("config");
-        // Do not configure surface here before the wayland window configure event has been received.
-        // It will be configured inside the WindowHandler::configure callback via state.resize().
-        // wgpu_surface.configure(&device, &config);
-
-        let shader_code = clear_ui::SHADER;
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Shader"),
-            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(shader_code)),
-        });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Pipeline Layout"),
-            bind_group_layouts: &[],
-            push_constant_ranges: &[],
-        });
-        let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Render Pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                buffers: &[Vertex::desc()],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: config.format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: Default::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                unclipped_depth: false,
-                conservative: false,
-                strip_index_format: None,
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState { count: 1, mask: !0, alpha_to_coverage_enabled: false },
-            multiview: None,
-            cache: None,
-        });
-
-        let font_system = FontSystem::new();
-        let swash_cache = SwashCache::new();
-        let cache = Cache::new(&device);
-        let mut text_atlas = TextAtlas::new(&device, &queue, &cache, config.format);
-        let text_renderer = TextRenderer::new(&mut text_atlas, &device, wgpu::MultisampleState::default(), None);
-        let mut text_viewport = Viewport::new(&device, &cache);
-        text_viewport.update(&queue, Resolution { width, height });
-
-        let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Vertex Buffer"),
-            size: 1,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        let overlay_vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Overlay Vertex Buffer"),
-            size: 1,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        let scale_factor = scale;
-
-        let mut app = Self {
-            window, surface, wgpu_surface, device, queue, config, render_pipeline,
-            vertex_buffer, vertex_count: 0,
-            overlay_vertex_buffer, overlay_vertex_count: 0,
-            tags: String::new(),
-            layout: String::new(),
-            title: String::new(),
-            stats: None,
-            tray_items: HashMap::new(),
-            cursor_pos: (0.0, 0.0),
-            hovered_tray_item: None,
-            tray_item_bounds: Vec::new(),
-            tag_bounds: Vec::new(),
-            font_system, swash_cache, text_atlas, text_renderer, text_viewport,
-            rects: Vec::new(), overlay_rects: Vec::new(), separators: Vec::new(), text_items: Vec::new(),
-            scale_factor,
-            width, height,
-            needs_rebuild: true,
-            current_bg_color: color::STATUS_BG,
-        };
-
-        app.rebuild_layout();
-        app
-    }
-
     fn rebuild_layout(&mut self) {
         let font_family = read_status_font_from_config();
         let font_size = read_status_font_size_from_config();
         let show_separators = read_status_separators_from_config();
         let padding = read_status_padding_from_config();
         let separator_color = read_separator_color_from_config().unwrap_or(color::STATUS_ACCENT);
-        let sw = self.width as f32;
-        let sh = self.height as f32;
-        let s = self.scale_factor as f32;
-        let sw_logical = sw / s;
-        let sh_logical = sh / s;
+        let sw_logical = self.width as f32;
+        let sh_logical = self.height as f32;
+        let _s = 1.0f32;
         let bar_h = 28.0;
-        eprintln!("[rebuild_layout] sw={}, sh={}, s={}, sw_logical={}, sh_logical={}, font_family={}, font_size={}", sw, sh, s, sw_logical, sh_logical, font_family, font_size);
+        eprintln!("[rebuild_layout] sw_logical={}, sh_logical={}, font_family={}, font_size={}", sw_logical, sh_logical, font_family, font_size);
 
         self.current_bg_color = read_bg_color_from_config().unwrap_or(color::STATUS_BG);
         eprintln!("[rebuild_layout] Using background color: {:?}", self.current_bg_color);
@@ -479,6 +274,7 @@ impl StatusApp {
         }
 
         self.tag_bounds.clear();
+        self.layout_bounds = None;
         let mut left_x = 12.0;
 
         // 2. Tags
@@ -499,21 +295,16 @@ impl StatusApp {
 
         // Spacing/separator before Layout
         if !self.layout.is_empty() {
-            left_x += padding;
             if show_separators {
                 self.separators.push(Separator::new(
-                    left_x,
+                    left_x + padding,
                     0.0,
                     1.0,
                     bar_h,
                     separator_color,
                 ));
-                left_x += padding + 1.0;
-            } else {
-                left_x += padding;
             }
-        } else {
-            left_x += padding;
+            left_x += padding * 2.0;
         }
 
         // 3. Layout Mode
@@ -521,24 +312,28 @@ impl StatusApp {
             let label_str = self.layout.clone();
             let label = Label::new_with_family(&mut self.font_system, &label_str, font_size, color::TEXT_ACCENT, &font_family);
             let line_w = label.draw(&mut self.text_items, left_x, (bar_h - font_size * 1.4) / 2.0);
+            eprintln!("[rebuild_layout] Layout Mode: '{}', x={}, y={}, w={}, h={}", self.layout, left_x, 0.0, line_w, bar_h);
+            self.layout_bounds = Some(LayoutBounds {
+                x: left_x,
+                y: 0.0,
+                w: line_w,
+                h: bar_h,
+            });
             left_x += line_w;
         }
 
         // Spacing/separator before Title
         if !self.title.is_empty() && self.title != "(none)" {
-            left_x += padding;
             if show_separators {
                 self.separators.push(Separator::new(
-                    left_x,
+                    left_x + padding,
                     0.0,
                     1.0,
                     bar_h,
                     separator_color,
                 ));
-                left_x += padding + 1.0;
-            } else {
-                left_x += padding;
             }
+            left_x += padding * 2.0;
         }
 
         // 4. Focused Title
@@ -879,588 +674,361 @@ impl StatusApp {
 
         self.needs_rebuild = false;
     }
+}
 
-    fn collect_vertices(&self) -> Vec<Vertex> {
-        let sw = self.width as f32;
-        let sh = self.height as f32;
-        let s = self.scale_factor as f32;
-        let mut verts = Vec::new();
+fn get_active_tag_index() -> u32 {
+    let path = if let Ok(display) = std::env::var("WAYLAND_DISPLAY") {
+        format!("/tmp/ccec-tags-{}", display)
+    } else {
+        "/tmp/ccec-tags".to_string()
+    };
+    if let Ok(content) = std::fs::read_to_string(path) {
+        let parts: Vec<&str> = content.split_whitespace().collect();
+        if parts.len() >= 2 {
+            if let Ok(focused_tags) = parts[1].parse::<u32>() {
+                if focused_tags > 0 {
+                    return focused_tags.trailing_zeros() + 1;
+                }
+            }
+        }
+    }
+    1
+}
+
+impl clear_ui::engine::Application for StatusApp {
+    type Message = CustomEvent;
+
+    fn new(_qh: &wayland_client::QueueHandle<clear_ui::engine::EngineState<Self>>, sender: calloop::channel::Sender<Self::Message>) -> Self {
+        let sender_tags = sender.clone();
+        let sender_layout = sender.clone();
+        let sender_title = sender.clone();
+        let sender_stats = sender.clone();
+        let sender_tray = sender.clone();
+
+        tokio::spawn(spawn_status_listener("tags", sender_tags));
+        tokio::spawn(spawn_status_listener("layout", sender_layout));
+        tokio::spawn(spawn_status_listener("title", sender_title));
+        tokio::spawn(spawn_system_stats(sender_stats));
+        tokio::spawn(spawn_status_tray(sender_tray));
+
+        let font_system = FontSystem::new();
+
+        let mut app = Self {
+            tags: String::new(),
+            layout: String::new(),
+            title: String::new(),
+            stats: None,
+            tray_items: HashMap::new(),
+            cursor_pos: (0.0, 0.0),
+            hovered_tray_item: None,
+            tray_item_bounds: Vec::new(),
+            tag_bounds: Vec::new(),
+            layout_bounds: None,
+            layout_menu_pid: None,
+            font_system,
+            rects: Vec::new(),
+            overlay_rects: Vec::new(),
+            separators: Vec::new(),
+            text_items: Vec::new(),
+            scale_factor: 1.0,
+            width: 1920,
+            height: 28,
+            needs_rebuild: true,
+            current_bg_color: color::STATUS_BG,
+            sender,
+        };
+
+        app.rebuild_layout();
+        app
+    }
+
+    fn settings(&self) -> clear_ui::engine::WindowSettings {
+        clear_ui::engine::WindowSettings {
+            title: "Clear Status Interface".to_string(),
+            app_id: "clear-status-interface".to_string(),
+            width: 1920,
+            height: 28,
+            fullscreen: true,
+            min_size: None,
+        }
+    }
+
+    fn update(&mut self, msg: Self::Message, needs_rebuild: &mut bool, _exit: &mut bool) {
+        match msg {
+            CustomEvent::TagsUpdated(t) => {
+                self.tags = t;
+            }
+            CustomEvent::LayoutUpdated(l) => {
+                self.layout = l;
+            }
+            CustomEvent::TitleUpdated(t) => {
+                self.title = t;
+            }
+            CustomEvent::SystemStatsUpdated(s) => {
+                self.stats = Some(s);
+            }
+            CustomEvent::TrayUpdated(item) => {
+                self.tray_items.insert(item.id.clone(), item);
+            }
+            CustomEvent::TrayRemoved(id) => {
+                self.tray_items.remove(&id);
+            }
+            CustomEvent::LayoutMenuClosed(pid) => {
+                if self.layout_menu_pid == Some(pid) {
+                    eprintln!("[layout-click] CustomEvent: clear-cloud (PID {}) closed, clearing tracking PID", pid);
+                    self.layout_menu_pid = None;
+                }
+            }
+        }
+        self.needs_rebuild = true;
+        *needs_rebuild = true;
+    }
+
+    fn tick(&mut self, _dt: f32, _needs_rebuild: &mut bool) {}
+
+    fn view(&mut self, quads: &mut Vec<(f32, f32, f32, f32, [f32; 4])>, size: clear_ui::engine::LogicalSize, scale: f64) {
+        if self.needs_rebuild || self.width != size.width as u32 || self.height != size.height as u32 || self.scale_factor != scale {
+            self.width = size.width as u32;
+            self.height = size.height as u32;
+            self.scale_factor = scale;
+            self.rebuild_layout();
+        }
         for r in &self.rects {
-            verts.extend(quad_vertices(r.x * s, r.y * s, r.w * s, r.h * s, sw, sh, r.color));
+            quads.push((r.x, r.y, r.w, r.h, r.color));
         }
         for sep in &self.separators {
             let (x, y, w, h) = sep.rect();
-            verts.extend(quad_vertices(x * s, y * s, w * s, h * s, sw, sh, sep.color()));
+            quads.push((x, y, w, h, sep.color()));
         }
-        verts
     }
 
-    fn collect_overlay_vertices(&self) -> Vec<Vertex> {
-        let sw = self.width as f32;
-        let sh = self.height as f32;
-        let s = self.scale_factor as f32;
-        let mut verts = Vec::new();
+    fn overlay_quads(&mut self, quads: &mut Vec<(f32, f32, f32, f32, [f32; 4])>, _size: clear_ui::engine::LogicalSize, _scale: f64) {
         for r in &self.overlay_rects {
-            let q = quad_vertices(r.x * s, r.y * s, r.w * s, r.h * s, sw, sh, r.color);
-            verts.extend(q);
+            quads.push((r.x, r.y, r.w, r.h, r.color));
         }
-        verts
     }
 
-    fn upload_vertices(&mut self) {
-        // Base/Background rects
-        let verts = self.collect_vertices();
-        self.vertex_count = verts.len() as u32;
-        let data = bytemuck::cast_slice(&verts);
-        let needed = data.len() as wgpu::BufferAddress;
-        if needed > self.vertex_buffer.size() {
-            self.vertex_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("Vertex Buffer"),
-                size: needed,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-        }
-        self.queue.write_buffer(&self.vertex_buffer, 0, data);
-
-        // Overlay/Foreground rects
-        let overlay_verts = self.collect_overlay_vertices();
-        self.overlay_vertex_count = overlay_verts.len() as u32;
-        let overlay_data = bytemuck::cast_slice(&overlay_verts);
-        let overlay_needed = overlay_data.len() as wgpu::BufferAddress;
-        if overlay_needed > self.overlay_vertex_buffer.size() {
-            self.overlay_vertex_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("Overlay Vertex Buffer"),
-                size: overlay_needed,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-        }
-        self.queue.write_buffer(&self.overlay_vertex_buffer, 0, overlay_data);
+    fn text_items(&self) -> &[TextItem] {
+        &self.text_items
     }
 
-    fn prepare_text(&mut self) {
-        let w = self.width as f32;
-        let h = self.height as f32;
-        let s = self.scale_factor as f32;
-        let viewport = Resolution { width: w as u32, height: h as u32 };
-        self.text_viewport.update(&self.queue, viewport);
-        let bounds = TextBounds { left: 0, top: 0, right: w as i32, bottom: h as i32 };
-        let areas: Vec<TextArea> = self.text_items.iter().map(|ti| TextArea {
-            buffer: &ti.buffer,
-            left: ti.x * s, top: ti.y * s, scale: s, bounds,
-            default_color: ti.color,
-            custom_glyphs: &[],
-        }).collect();
-        self.text_renderer.prepare(
-            &self.device, &self.queue, &mut self.font_system,
-            &mut self.text_atlas, &self.text_viewport, areas, &mut self.swash_cache
-        ).unwrap();
+    fn clear_color(&self) -> [f32; 4] {
+        [
+            self.current_bg_color[0].powf(1.0 / 2.2),
+            self.current_bg_color[1].powf(1.0 / 2.2),
+            self.current_bg_color[2].powf(1.0 / 2.2),
+            self.current_bg_color[3],
+        ]
     }
 
-    fn resize(&mut self, width: u32, height: u32) {
-        if width > 0 && height > 0 {
-            self.width = width;
-            self.height = height;
-            self.config.width = width;
-            self.config.height = height;
-            self.wgpu_surface.configure(&self.device, &self.config);
+    fn handle_pointer_move(&mut self, pos: clear_ui::engine::LogicalPosition, needs_rebuild: &mut bool) {
+        let (lx, ly) = (pos.x, pos.y);
+        self.cursor_pos = (lx as f64, ly as f64);
+        let mut newly_hovered = None;
+        for bound in &self.tray_item_bounds {
+            if lx >= bound.x && lx <= (bound.x + bound.w)
+                && ly >= bound.y && ly <= (bound.y + bound.h) {
+                newly_hovered = Some(bound.id.clone());
+                break;
+            }
+        }
+        if self.hovered_tray_item != newly_hovered {
+            self.hovered_tray_item = newly_hovered;
+            *needs_rebuild = true;
             self.needs_rebuild = true;
         }
     }
 
-    fn render(&mut self) {
-        if self.needs_rebuild {
-            self.rebuild_layout();
-            self.upload_vertices();
-        }
-        self.prepare_text();
+    fn handle_mouse_input(&mut self, button: MouseButton, state: ElementState, pos: clear_ui::engine::LogicalPosition, _needs_rebuild: &mut bool) -> Option<Self::Message> {
+        if state == ElementState::Pressed {
+            let (lx, ly) = (pos.x, pos.y);
+            let cx = lx as f64;
+            let cy = ly as f64;
 
-        let output = match self.wgpu_surface.get_current_texture() {
-            Ok(t) => t,
-            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-                self.wgpu_surface.configure(&self.device, &self.config);
-                return;
-            }
-            Err(wgpu::SurfaceError::Timeout) => return,
-            Err(e) => { eprintln!("Surface error: {e:?}"); return; }
-        };
-
-        let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Encoder"),
-        });
-
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Render Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: self.current_bg_color[0] as f64,
-                            g: self.current_bg_color[1] as f64,
-                            b: self.current_bg_color[2] as f64,
-                            a: self.current_bg_color[3] as f64,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-
-            pass.set_pipeline(&self.render_pipeline);
-            pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            pass.draw(0..self.vertex_count, 0..1);
-
-            self.text_renderer.render(&self.text_atlas, &self.text_viewport, &mut pass).unwrap();
-        }
-
-        if self.overlay_vertex_count > 0 {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Overlay Render Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-
-            pass.set_pipeline(&self.render_pipeline);
-            pass.set_vertex_buffer(0, self.overlay_vertex_buffer.slice(..));
-            pass.draw(0..self.overlay_vertex_count, 0..1);
-        }
-
-        self.queue.submit(std::iter::once(encoder.finish()));
-        output.present();
-    }
-}
-
-// ── CustomEvent & AppState ──
-
-struct AppState {
-    registry_state: RegistryState,
-    compositor_state: CompositorState,
-    xdg_shell_state: XdgShell,
-    shm_state: Shm,
-    seat_state: SeatState,
-    output_state: OutputState,
-
-    seats: Vec<wl_seat::WlSeat>,
-    pointer: Option<wl_pointer::WlPointer>,
-    keyboard: Option<wl_keyboard::WlKeyboard>,
-
-    window: Option<XdgWindow>,
-    surface: Option<wl_surface::WlSurface>,
-
-    state: Option<StatusApp>,
-    exit: bool,
-    redraw: bool,
-    first_configure_received: bool,
-}
-
-impl CompositorHandler for AppState {
-    fn scale_factor_changed(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
-        scale_factor: i32,
-    ) {
-        _surface.set_buffer_scale(scale_factor);
-        if let Some(state) = &mut self.state {
-            let old_scale = state.scale_factor;
-            state.scale_factor = scale_factor as f64;
-            if self.first_configure_received {
-                let logical_w = state.width as f64 / old_scale;
-                let logical_h = state.height as f64 / old_scale;
-                let pw = (logical_w * state.scale_factor) as u32;
-                let ph = (logical_h * state.scale_factor) as u32;
-                state.resize(pw, ph);
-            }
-        }
-        self.redraw = true;
-    }
-
-    fn transform_changed(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
-        _new_transform: wl_output::Transform,
-    ) {}
-
-    fn frame(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
-        _time: u32,
-    ) {}
-
-    fn surface_enter(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
-        _output: &wl_output::WlOutput,
-    ) {}
-
-    fn surface_leave(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
-        _output: &wl_output::WlOutput,
-    ) {}
-}
-
-impl OutputHandler for AppState {
-    fn output_state(&mut self) -> &mut OutputState {
-        &mut self.output_state
-    }
-
-    fn new_output(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _output: wl_output::WlOutput) {}
-    fn update_output(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _output: wl_output::WlOutput) {}
-    fn output_destroyed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _output: wl_output::WlOutput) {}
-}
-
-impl SeatHandler for AppState {
-    fn seat_state(&mut self) -> &mut SeatState {
-        &mut self.seat_state
-    }
-
-    fn new_seat(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, seat: wl_seat::WlSeat) {
-        self.seats.push(seat);
-    }
-
-    fn new_capability(
-        &mut self,
-        _conn: &Connection,
-        qh: &QueueHandle<Self>,
-        seat: wl_seat::WlSeat,
-        capability: Capability,
-    ) {
-        if capability == Capability::Pointer && self.pointer.is_none() {
-            let pointer = self.seat_state.get_pointer(qh, &seat).unwrap();
-            self.pointer = Some(pointer);
-        }
-        if capability == Capability::Keyboard && self.keyboard.is_none() {
-            let keyboard = self.seat_state.get_keyboard(qh, &seat, None).unwrap();
-            self.keyboard = Some(keyboard);
-        }
-    }
-
-    fn remove_capability(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _seat: wl_seat::WlSeat,
-        capability: Capability,
-    ) {
-        if capability == Capability::Pointer {
-            self.pointer = None;
-        }
-        if capability == Capability::Keyboard {
-            self.keyboard = None;
-        }
-    }
-
-    fn remove_seat(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, seat: wl_seat::WlSeat) {
-        self.seats.retain(|s| s != &seat);
-    }
-}
-
-impl ShmHandler for AppState {
-    fn shm_state(&mut self) -> &mut Shm {
-        &mut self.shm_state
-    }
-}
-
-impl PointerHandler for AppState {
-    fn pointer_frame(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _pointer: &wl_pointer::WlPointer,
-        events: &[smithay_client_toolkit::seat::pointer::PointerEvent],
-    ) {
-        use smithay_client_toolkit::seat::pointer::PointerEventKind;
-        for event in events {
-            let (x, y) = event.position;
-            eprintln!("[pointer] Event: pos=({:.1}, {:.1}), kind={:?}", x, y, event.kind);
-            if let Some(ref mut st) = self.state {
-                st.cursor_pos = (x, y);
-            }
-
-            match &event.kind {
-                PointerEventKind::Motion { .. } => {
-                    if let Some(st) = &mut self.state {
-                        let cx = x;
-                        let cy = y;
-                        
-                        let mut newly_hovered = None;
-                        for bound in &st.tray_item_bounds {
-                            if cx >= bound.x as f64 && cx <= (bound.x + bound.w) as f64
-                                && cy >= bound.y as f64 && cy <= (bound.y + bound.h) as f64 {
-                                newly_hovered = Some(bound.id.clone());
-                                break;
-                            }
-                        }
-                        if st.hovered_tray_item != newly_hovered {
-                            st.hovered_tray_item = newly_hovered;
-                            st.needs_rebuild = true;
-                            self.redraw = true;
-                        }
-                    }
+            // Check if tray icon was clicked
+            let mut clicked_tray = None;
+            for bound in &self.tray_item_bounds {
+                if cx >= bound.x as f64 && cx <= (bound.x + bound.w) as f64
+                    && cy >= bound.y as f64 && cy <= (bound.y + bound.h) as f64 {
+                    clicked_tray = Some(bound.id.clone());
+                    break;
                 }
-                PointerEventKind::Press { button, .. } => {
-                    if *button != 272 && *button != 273 {
-                        continue;
-                    }
-                    if let Some(st) = &mut self.state {
-                        let (cx, cy) = st.cursor_pos;
+            }
 
-                        // Check if tray icon was clicked
-                        let mut clicked_tray = None;
-                        for bound in &st.tray_item_bounds {
-                            if cx >= bound.x as f64 && cx <= (bound.x + bound.w) as f64
-                                && cy >= bound.y as f64 && cy <= (bound.y + bound.h) as f64 {
-                                clicked_tray = Some(bound.id.clone());
-                                break;
-                            }
-                        }
-
-                        if let Some(id) = clicked_tray {
-                            let btn = *button;
-                            let cx_i = cx as i32;
-                            let cy_i = cy as i32;
-                            std::thread::spawn(move || {
-                                let rt = tokio::runtime::Builder::new_current_thread()
-                                    .enable_all()
+            if let Some(id) = clicked_tray {
+                let btn_code = match button {
+                    MouseButton::Left => 272,
+                    MouseButton::Right => 273,
+                    _ => 0,
+                };
+                let cx_i = cx as i32;
+                let cy_i = cy as i32;
+                std::thread::spawn(move || {
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .unwrap();
+                    rt.block_on(async move {
+                        if let Some((destination, path_part)) = id.split_once('/') {
+                            let path = format!("/{}", path_part);
+                            if let Ok(conn) = zbus::Connection::session().await {
+                                if let Ok(proxy) = StatusNotifierItemProxy::builder(&conn)
+                                    .destination(destination.to_string())
+                                    .unwrap()
+                                    .path(path)
+                                    .unwrap()
                                     .build()
-                                    .unwrap();
-                                rt.block_on(async move {
-                                    if let Some((destination, path_part)) = id.split_once('/') {
-                                        let path = format!("/{}", path_part);
-                                        if let Ok(conn) = zbus::Connection::session().await {
-                                            if let Ok(proxy) = StatusNotifierItemProxy::builder(&conn)
-                                                .destination(destination.to_string())
-                                                .unwrap()
-                                                .path(path)
-                                                .unwrap()
-                                                .build()
-                                                .await
-                                            {
-                                                let is_menu = proxy.item_is_menu().await.unwrap_or(false);
-                                                let menu_path = proxy.menu().await.ok();
+                                    .await
+                                {
+                                    let is_menu = proxy.item_is_menu().await.unwrap_or(false);
+                                    let menu_path = proxy.menu().await.ok();
 
-                                                let should_show_menu = (btn == 273 && menu_path.is_some())
-                                                    || (btn == 272 && is_menu && menu_path.is_some());
+                                    let should_show_menu = (btn_code == 273 && menu_path.is_some())
+                                        || (btn_code == 272 && is_menu && menu_path.is_some());
 
-                                                if should_show_menu {
-                                                    if let Some(menu_p) = menu_path {
-                                                        eprintln!("[tray-click] Displaying menu for {} at path {}", id, menu_p.as_str());
-                                                        if let Err(e) = show_clear_cloud_menu(&conn, destination, menu_p.as_str()).await {
-                                                            eprintln!("[tray-click] show_clear_cloud_menu failed: {:?}", e);
-                                                        }
-                                                    }
-                                                } else if btn == 272 {
-                                                    eprintln!("[tray-click] Calling Activate on {} at ({}, {})", id, cx_i, cy_i);
-                                                    if let Err(e) = proxy.activate(cx_i, cy_i).await {
-                                                        eprintln!("[tray-click] Activate failed: {:?}", e);
-                                                        if let Some(menu_p) = menu_path {
-                                                            eprintln!("[tray-click] Fallback: Displaying menu for {}", id);
-                                                            if let Err(e) = show_clear_cloud_menu(&conn, destination, menu_p.as_str()).await {
-                                                                eprintln!("[tray-click] Fallback show_clear_cloud_menu failed: {:?}", e);
-                                                            }
-                                                        }
-                                                    }
-                                                } else if btn == 273 {
-                                                    eprintln!("[tray-click] Calling ContextMenu on {} at ({}, {})", id, cx_i, cy_i);
-                                                    let _ = proxy.context_menu(cx_i, cy_i).await;
+                                    if should_show_menu {
+                                        if let Some(menu_p) = menu_path {
+                                            eprintln!("[tray-click] Displaying menu for {} at path {}", id, menu_p.as_str());
+                                            if let Err(e) = show_clear_cloud_menu(&conn, destination, menu_p.as_str()).await {
+                                                eprintln!("[tray-click] show_clear_cloud_menu failed: {:?}", e);
+                                            }
+                                        }
+                                    } else if btn_code == 272 {
+                                        eprintln!("[tray-click] Calling Activate on {} at ({}, {})", id, cx_i, cy_i);
+                                        if let Err(e) = proxy.activate(cx_i, cy_i).await {
+                                            eprintln!("[tray-click] Activate failed: {:?}", e);
+                                            if let Some(menu_p) = menu_path {
+                                                eprintln!("[tray-click] Fallback: Displaying menu for {}", id);
+                                                if let Err(e) = show_clear_cloud_menu(&conn, destination, menu_p.as_str()).await {
+                                                    eprintln!("[tray-click] Fallback show_clear_cloud_menu failed: {:?}", e);
                                                 }
                                             }
                                         }
+                                    } else if btn_code == 273 {
+                                        eprintln!("[tray-click] Calling ContextMenu on {} at ({}, {})", id, cx_i, cy_i);
+                                        let _ = proxy.context_menu(cx_i, cy_i).await;
                                     }
-                                });
-                            });
-                            continue;
+                                }
+                            }
                         }
+                    });
+                });
+                return None;
+            }
 
-                        if *button == 272 {
-                            eprintln!("[tags-click] Mouse left click at logical: ({}, {})", cx, cy);
-                            for bound in &st.tag_bounds {
-                                eprintln!("[tags-click] Checking Tag '{}' bounds: x=[{}..{}], y=[{}..{}]", 
-                                    bound.name, bound.x, bound.x + bound.w, bound.y, bound.y + bound.h);
-                                if cx >= bound.x as f64 && cx <= (bound.x + bound.w) as f64
-                                    && cy >= bound.y as f64 && cy <= (bound.y + bound.h) as f64 {
-                                    eprintln!("[tags-click] Tag matched: {}", bound.name);
-                                    let name = bound.name.clone();
-                                    std::thread::spawn(move || {
-                                        let _ = std::process::Command::new("clearctl")
-                                            .args(["view", &name])
-                                            .spawn();
-                                    });
-                                    break;
+            if button == MouseButton::Left {
+                eprintln!("[tags-click] Mouse left click at logical: ({}, {})", cx, cy);
+                
+                // Check if layout mode was clicked
+                let mut clicked_layout = false;
+                if let Some(ref bounds) = self.layout_bounds {
+                    if cx >= bounds.x as f64 && cx <= (bounds.x + bounds.w) as f64
+                        && cy >= bounds.y as f64 && cy <= (bounds.y + bounds.h) as f64 {
+                        clicked_layout = true;
+                    }
+                }
+
+                if clicked_layout {
+                    eprintln!("[layout-click] Layout mode clicked!");
+                    
+                    // Check if there is an existing, running clear-cloud instance
+                    let mut menu_already_running = false;
+                    if let Some(pid) = self.layout_menu_pid {
+                        if std::path::Path::new(&format!("/proc/{}", pid)).exists() {
+                            if let Ok(comm) = std::fs::read_to_string(format!("/proc/{}/comm", pid)) {
+                                if comm.trim() == "clear-cloud" {
+                                    menu_already_running = true;
                                 }
                             }
                         }
                     }
-                }
-                _ => {}
-            }
-        }
-    }
-}
 
-impl KeyboardHandler for AppState {
-    fn enter(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _keyboard: &wl_keyboard::WlKeyboard,
-        _surface: &wl_surface::WlSurface,
-        _serial: u32,
-        _raw_modifiers: &[u32],
-        _keysyms: &[xkeysym::Keysym],
-    ) {}
-
-    fn leave(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _keyboard: &wl_keyboard::WlKeyboard,
-        _surface: &wl_surface::WlSurface,
-        _serial: u32,
-    ) {}
-
-    fn press_key(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _keyboard: &wl_keyboard::WlKeyboard,
-        _serial: u32,
-        _event: smithay_client_toolkit::seat::keyboard::KeyEvent,
-    ) {}
-
-    fn release_key(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _keyboard: &wl_keyboard::WlKeyboard,
-        _serial: u32,
-        _event: smithay_client_toolkit::seat::keyboard::KeyEvent,
-    ) {}
-
-    fn update_modifiers(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _keyboard: &wl_keyboard::WlKeyboard,
-        _serial: u32,
-        _modifiers: smithay_client_toolkit::seat::keyboard::Modifiers,
-        _layout: u32,
-    ) {}
-}
-
-impl WindowHandler for AppState {
-    fn configure(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _window: &XdgWindow,
-        configure: WindowConfigure,
-        _serial: u32,
-    ) {
-        self.first_configure_received = true;
-        let (w, h) = configure.new_size;
-        if let (Some(w), Some(h)) = (w, h) {
-            let width = w.get();
-            let height = h.get();
-            if let Some(state) = &mut self.state {
-                let pw = (width as f64 * state.scale_factor) as u32;
-                let ph = (height as f64 * state.scale_factor) as u32;
-                state.resize(pw, ph);
-            }
-        }
-        self.redraw = true;
-    }
-
-    fn request_close(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _window: &XdgWindow) {
-        self.exit = true;
-    }
-}
-
-impl ProvidesRegistryState for AppState {
-    fn registry(&mut self) -> &mut RegistryState {
-        &mut self.registry_state
-    }
-    
-    fn runtime_add_global(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _name: u32,
-        _interface: &str,
-        _version: u32,
-    ) {}
-    
-    fn runtime_remove_global(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _name: u32,
-        _interface: &str,
-    ) {}
-}
-
-delegate_compositor!(AppState);
-delegate_xdg_shell!(AppState);
-delegate_xdg_window!(AppState);
-delegate_shm!(AppState);
-delegate_seat!(AppState);
-delegate_pointer!(AppState);
-delegate_keyboard!(AppState);
-delegate_registry!(AppState);
-delegate_output!(AppState);
-
-impl AppState {
-    fn handle_custom_event(&mut self, event: CustomEvent) {
-        if let Some(ref mut st) = self.state {
-            match event {
-                CustomEvent::TagsUpdated(t) => {
-                    st.tags = t;
-                }
-                CustomEvent::LayoutUpdated(l) => {
-                    st.layout = l;
-                }
-                CustomEvent::TitleUpdated(t) => {
-                    st.title = t;
-                }
-                CustomEvent::SystemStatsUpdated(s) => {
-                    st.stats = Some(s);
-                }
-                CustomEvent::TrayUpdated(item) => {
-                    st.tray_items.insert(item.id.clone(), item);
-                }
-                CustomEvent::TrayRemoved(id) => {
-                    st.tray_items.remove(&id);
+                    if menu_already_running {
+                        if let Some(pid) = self.layout_menu_pid {
+                            eprintln!("[layout-click] clear-cloud (PID {}) is already running, killing it to close the menu", pid);
+                            let _ = std::process::Command::new("kill").arg(pid.to_string()).status();
+                        }
+                        self.layout_menu_pid = None;
+                    } else {
+                        let x_pos = self.layout_bounds.as_ref().map(|b| b.x as i32).unwrap_or(0);
+                        let y_pos = self.layout_bounds.as_ref().map(|b| b.h as i32).unwrap_or(28);
+                        let current_layout = self.layout.clone();
+                        
+                        // Spawn the child on the main thread so we can capture its PID
+                        if let Ok(mut child) = std::process::Command::new("clear-cloud")
+                            .args([
+                                "--dmenu",
+                                "-p",
+                                "Window Mode:",
+                                "-x",
+                                &x_pos.to_string(),
+                                "-y",
+                                &y_pos.to_string(),
+                                "--select",
+                                &current_layout,
+                            ])
+                            .stdin(std::process::Stdio::piped())
+                            .stdout(std::process::Stdio::piped())
+                            .stderr(std::process::Stdio::piped())
+                            .spawn()
+                        {
+                            let pid = child.id();
+                            self.layout_menu_pid = Some(pid);
+                            eprintln!("[layout-click] Spawned clear-cloud with PID {}", pid);
+                            
+                            let thread_sender = self.sender.clone();
+                            std::thread::spawn(move || {
+                                let active_tag = get_active_tag_index();
+                                eprintln!("[layout-click] Active tag is {}", active_tag);
+                                if let Some(mut stdin) = child.stdin.take() {
+                                    use std::io::Write;
+                                    let _ = stdin.write_all(b"Cascade\nGrid\nFullscreen\nFloating\nPopup\n");
+                                }
+                                if let Ok(output) = child.wait_with_output() {
+                                    let err_str = String::from_utf8_lossy(&output.stderr);
+                                    if !err_str.is_empty() {
+                                        eprintln!("[clear-cloud stderr] {}", err_str);
+                                    }
+                                    if output.status.success() {
+                                        let selected = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                                        if !selected.is_empty() {
+                                            let selected_lower = selected.to_lowercase();
+                                            eprintln!("[layout-click] Selected mode: {}, setting for tag {}", selected_lower, active_tag);
+                                            let _ = std::process::Command::new("clearctl")
+                                                .args(["tag-layout", &active_tag.to_string(), &selected_lower])
+                                                .spawn();
+                                        }
+                                    }
+                                }
+                                let _ = thread_sender.send(CustomEvent::LayoutMenuClosed(pid));
+                            });
+                        }
+                    }
+                } else {
+                    for bound in &self.tag_bounds {
+                        eprintln!("[tags-click] Checking Tag '{}' bounds: x=[{}..{}], y=[{}..{}]", 
+                            bound.name, bound.x, bound.x + bound.w, bound.y, bound.y + bound.h);
+                        if cx >= bound.x as f64 && cx <= (bound.x + bound.w) as f64
+                            && cy >= bound.y as f64 && cy <= (bound.y + bound.h) as f64 {
+                            eprintln!("[tags-click] Tag matched: {}", bound.name);
+                            let name = bound.name.clone();
+                            std::thread::spawn(move || {
+                                let _ = std::process::Command::new("clearctl")
+                                    .args(["view", &name])
+                                    .spawn();
+                            });
+                            break;
+                        }
+                    }
                 }
             }
-            st.needs_rebuild = true;
-            self.redraw = true;
         }
+        None
     }
+
+    fn handle_mouse_wheel(&mut self, _delta: &MouseScrollDelta, _pos: clear_ui::engine::LogicalPosition, _needs_rebuild: &mut bool) {}
+
+    fn handle_key_input(&mut self, _event: &KeyEvent, _needs_rebuild: &mut bool) -> Option<Self::Message> { None }
 }
 
 async fn spawn_status_listener(sub: &'static str, sender: calloop::channel::Sender<CustomEvent>) {
@@ -1472,16 +1040,18 @@ async fn spawn_status_listener(sub: &'static str, sender: calloop::channel::Send
             Err(_) => "/tmp/ccec-status.sock".to_string(),
         };
         if let Ok(mut stream) = UnixStream::connect(&socket_path).await {
+            eprintln!("[status-listener] connected to {} for sub '{}'", socket_path, sub);
             if stream.write_all(format!("{}\n", sub).as_bytes()).await.is_ok() {
                 let mut reader = BufReader::new(stream);
                 let mut line = String::new();
                 while reader.read_line(&mut line).await.unwrap_or(0) > 0 {
                     let val = line.trim().to_string();
+                    eprintln!("[status-listener] received '{}' update: '{}'", sub, val);
                     if !val.is_empty() {
                         let ev = match sub {
-                            "tags" => CustomEvent::TagsUpdated(val),
-                            "layout" => CustomEvent::LayoutUpdated(val),
-                            "title" => CustomEvent::TitleUpdated(val),
+                            "tags" => CustomEvent::TagsUpdated(val.clone()),
+                            "layout" => CustomEvent::LayoutUpdated(val.clone()),
+                            "title" => CustomEvent::TitleUpdated(val.clone()),
                             _ => unreachable!(),
                         };
                         let _ = sender.send(ev);
@@ -2246,110 +1816,10 @@ async fn spawn_status_tray(sender: calloop::channel::Sender<CustomEvent>) {
 }
 
 fn main() {
-    let conn = Connection::connect_to_env().unwrap();
-    let (globals, mut event_queue) = registry_queue_init(&conn).unwrap();
-    let qh = event_queue.handle();
+    let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+    let _guard = rt.enter();
 
-    let compositor_state = CompositorState::bind(&globals, &qh).unwrap();
-    let xdg_shell_state = XdgShell::bind(&globals, &qh).unwrap();
-    let shm_state = Shm::bind(&globals, &qh).unwrap();
-    let seat_state = SeatState::new(&globals, &qh);
-    let output_state = OutputState::new(&globals, &qh);
-
-    let (sender, channel) = calloop::channel::channel::<CustomEvent>();
-
-    let sender_tags = sender.clone();
-    let sender_layout = sender.clone();
-    let sender_title = sender.clone();
-    let sender_stats = sender.clone();
-    let sender_tray = sender.clone();
-
-    // Spawn Tokio Runtime for async listeners
-    std::thread::spawn(move || {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            tokio::spawn(spawn_status_listener("tags", sender_tags));
-            tokio::spawn(spawn_status_listener("layout", sender_layout));
-            tokio::spawn(spawn_status_listener("title", sender_title));
-            tokio::spawn(spawn_system_stats(sender_stats));
-            tokio::spawn(spawn_status_tray(sender_tray));
-            
-            // Keep the runtime thread alive
-            loop {
-                tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
-            }
-        });
-    });
-
-    let mut app = AppState {
-        registry_state: RegistryState::new(&globals),
-        compositor_state,
-        xdg_shell_state,
-        shm_state,
-        seat_state,
-        output_state,
-        seats: Vec::new(),
-        pointer: None,
-        keyboard: None,
-        window: None,
-        surface: None,
-        state: None,
-        exit: false,
-        redraw: false,
-        first_configure_received: false,
-    };
-
-    // Perform a roundtrip to populate output_state with active output scales
-    event_queue.roundtrip(&mut app).unwrap();
-
-    let scale = clear_ui::wayland::detect_scale_factor(&app.output_state);
-
-    let pw = (1920.0 * scale) as u32;
-    let ph = (28.0 * scale) as u32;
-
-    let state = pollster::block_on(StatusApp::new(
-        &conn,
-        &qh,
-        &app.compositor_state,
-        &app.xdg_shell_state,
-        pw,
-        ph,
-        scale,
-    ));
-
-    app.window = Some(state.window.clone());
-    app.surface = Some(state.surface.clone());
-    app.state = Some(state);
-
-    let mut event_loop = EventLoop::try_new().unwrap();
-    let loop_handle = event_loop.handle();
-    WaylandSource::new(conn, event_queue).insert(loop_handle.clone()).unwrap();
-
-    loop_handle.insert_source(channel, |event, _metadata, app_state: &mut AppState| {
-        if let calloop::channel::Event::Msg(msg) = event {
-            app_state.handle_custom_event(msg);
-        }
-    }).unwrap();
-
-    loop {
-        event_loop
-            .dispatch(std::time::Duration::from_millis(16), &mut app)
-            .unwrap();
-        if app.exit {
-            break;
-        }
-        if app.redraw {
-            app.redraw = false;
-            if app.first_configure_received {
-                if let Some(state) = &mut app.state {
-                    state.render();
-                }
-            }
-        }
-    }
-
-    // Drop app explicitly while Wayland connection is still open to prevent SIGSEGV in wgpu drop/unconfigure
-    drop(app);
+    clear_ui::engine::run::<StatusApp>();
 }
 
 fn read_disabled_color_from_config() -> Option<[f32; 4]> {
