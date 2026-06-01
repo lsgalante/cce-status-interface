@@ -385,9 +385,12 @@ dependencies = [
  "pollster",
  "raw-window-handle",
  "resvg",
+ "serde",
  "smithay-client-toolkit",
  "tokio",
+ "wayland-backend",
  "wayland-client",
+ "wayland-scanner",
  "wgpu",
  "xkeysym",
 ]

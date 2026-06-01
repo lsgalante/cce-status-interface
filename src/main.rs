@@ -5,7 +5,7 @@ use glyphon::{
     TextAtlas, TextBounds, TextRenderer, Viewport,
 };
 use clear_ui::color;
-use clear_ui::widget::{StyledLabel as Label, TextItem};
+use clear_ui::widget::{StyledLabel as Label, TextItem, Separator, Widget};
 
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
@@ -79,6 +79,7 @@ struct SystemStats {
     battery: String,
     volume: String,
     volume_muted: bool,
+    brightness: String,
 }
 
 #[derive(Debug, Clone)]
@@ -233,6 +234,28 @@ fn read_battery() -> Option<String> {
     None
 }
 
+fn read_brightness() -> Option<String> {
+    let dir = std::fs::read_dir("/sys/class/backlight").ok()?;
+    for entry in dir {
+        if let Ok(entry) = entry {
+            let path = entry.path();
+            let cur_path = path.join("brightness");
+            let max_path = path.join("max_brightness");
+            if cur_path.exists() && max_path.exists() {
+                let cur_str = std::fs::read_to_string(cur_path).ok()?;
+                let max_str = std::fs::read_to_string(max_path).ok()?;
+                let cur = cur_str.trim().parse::<f32>().ok()?;
+                let max = max_str.trim().parse::<f32>().ok()?;
+                if max > 0.0 {
+                    let pct = (cur / max * 100.0).round() as i32;
+                    return Some(format!("Bri {}%", pct));
+                }
+            }
+        }
+    }
+    None
+}
+
 struct RectWidget {
     x: f32, y: f32, w: f32, h: f32,
     color: [f32; 4],
@@ -269,6 +292,7 @@ struct StatusApp {
 
     rects: Vec<RectWidget>,
     overlay_rects: Vec<RectWidget>,
+    separators: Vec<Separator>,
     overlay_vertex_buffer: wgpu::Buffer,
     overlay_vertex_count: u32,
     text_items: Vec<TextItem>,
@@ -309,7 +333,7 @@ impl StatusApp {
         });
         let wgpu_surface = instance.create_surface(wayland_handle).expect("surface");
         let adapter = instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
+            power_preference: wgpu::PowerPreference::LowPower,
             compatible_surface: Some(&wgpu_surface),
             force_fallback_adapter: false,
         }).await.expect("adapter");
@@ -320,7 +344,9 @@ impl StatusApp {
             memory_hints: wgpu::MemoryHints::MemoryUsage,
         }, None).await.expect("device");
         let config = wgpu_surface.get_default_config(&adapter, width.max(1), height.max(1)).expect("config");
-        wgpu_surface.configure(&device, &config);
+        // Do not configure surface here before the wayland window configure event has been received.
+        // It will be configured inside the WindowHandler::configure callback via state.resize().
+        // wgpu_surface.configure(&device, &config);
 
         let shader_code = clear_ui::SHADER;
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -404,7 +430,7 @@ impl StatusApp {
             tray_item_bounds: Vec::new(),
             tag_bounds: Vec::new(),
             font_system, swash_cache, text_atlas, text_renderer, text_viewport,
-            rects: Vec::new(), overlay_rects: Vec::new(), text_items: Vec::new(),
+            rects: Vec::new(), overlay_rects: Vec::new(), separators: Vec::new(), text_items: Vec::new(),
             scale_factor,
             width, height,
             needs_rebuild: true,
@@ -418,6 +444,9 @@ impl StatusApp {
     fn rebuild_layout(&mut self) {
         let font_family = read_status_font_from_config();
         let font_size = read_status_font_size_from_config();
+        let show_separators = read_status_separators_from_config();
+        let padding = read_status_padding_from_config();
+        let separator_color = read_separator_color_from_config().unwrap_or(color::STATUS_ACCENT);
         let sw = self.width as f32;
         let sh = self.height as f32;
         let s = self.scale_factor as f32;
@@ -431,6 +460,7 @@ impl StatusApp {
 
         self.rects.clear();
         self.overlay_rects.clear();
+        self.separators.clear();
         self.text_items.clear();
 
         // 1. Background (spans the entire fullscreen area)
@@ -438,11 +468,15 @@ impl StatusApp {
             x: 0.0, y: 0.0, w: sw_logical, h: sh_logical,
             color: self.current_bg_color,
         });
-        // 1b. Accent border at bottom of the status bar area
-        self.rects.push(RectWidget {
-            x: 0.0, y: bar_h - 2.0, w: sw_logical, h: 2.0,
-            color: color::STATUS_ACCENT,
-        });
+        
+        let show_underline = read_status_underline_from_config();
+        if show_underline {
+            // 1b. Accent border at bottom of the status bar area
+            self.rects.push(RectWidget {
+                x: 0.0, y: bar_h - 2.0, w: sw_logical, h: 2.0,
+                color: separator_color,
+            });
+        }
 
         self.tag_bounds.clear();
         let mut left_x = 12.0;
@@ -463,15 +497,48 @@ impl StatusApp {
             left_x += line_w + 4.0;
         }
 
-        // Add padding before Layout
-        left_x += 8.0;
+        // Spacing/separator before Layout
+        if !self.layout.is_empty() {
+            left_x += padding;
+            if show_separators {
+                self.separators.push(Separator::new(
+                    left_x,
+                    0.0,
+                    1.0,
+                    bar_h,
+                    separator_color,
+                ));
+                left_x += padding + 1.0;
+            } else {
+                left_x += padding;
+            }
+        } else {
+            left_x += padding;
+        }
 
         // 3. Layout Mode
         if !self.layout.is_empty() {
-            let label_str = format!("[{}]", self.layout);
+            let label_str = self.layout.clone();
             let label = Label::new_with_family(&mut self.font_system, &label_str, font_size, color::TEXT_ACCENT, &font_family);
             let line_w = label.draw(&mut self.text_items, left_x, (bar_h - font_size * 1.4) / 2.0);
-            left_x += line_w + 16.0;
+            left_x += line_w;
+        }
+
+        // Spacing/separator before Title
+        if !self.title.is_empty() && self.title != "(none)" {
+            left_x += padding;
+            if show_separators {
+                self.separators.push(Separator::new(
+                    left_x,
+                    0.0,
+                    1.0,
+                    bar_h,
+                    separator_color,
+                ));
+                left_x += padding + 1.0;
+            } else {
+                left_x += padding;
+            }
         }
 
         // 4. Focused Title
@@ -490,29 +557,48 @@ impl StatusApp {
             let clock_w = 270.0;
             let battery_w = 80.0;
             let volume_w = 80.0;
+            let brightness_w = 80.0;
             let memory_w = 140.0;
             let cpu_w = 90.0;
 
             // Clock
             let label = Label::new_with_family(&mut self.font_system, &stats.clock, font_size, color::TEXT_FG, &font_family);
             right_x -= clock_w;
-            let draw_x = right_x + (clock_w - label.w); // right-aligned
+            let draw_x = right_x + (clock_w - label.w) / 2.0; // centered
             eprintln!("[rebuild_layout] Clock: x={}, w={}", draw_x, label.w);
             label.draw(&mut self.text_items, draw_x, (bar_h - font_size * 1.4) / 2.0);
 
             // Battery
             if !stats.battery.is_empty() {
-                right_x -= 16.0;
+                right_x -= padding * 2.0;
+                if show_separators {
+                    self.separators.push(Separator::new(
+                        right_x + padding,
+                        0.0,
+                        1.0,
+                        bar_h,
+                        separator_color,
+                    ));
+                }
                 let label = Label::new_with_family(&mut self.font_system, &stats.battery, font_size, color::TEXT_ACCENT, &font_family);
                 right_x -= battery_w;
-                let draw_x = right_x; // left-aligned
+                let draw_x = right_x + (battery_w - label.w) / 2.0; // centered
                 eprintln!("[rebuild_layout] Battery: x={}, w={}", draw_x, label.w);
                 label.draw(&mut self.text_items, draw_x, (bar_h - font_size * 1.4) / 2.0);
             }
 
             // Volume
             if !stats.volume.is_empty() {
-                right_x -= 16.0;
+                right_x -= padding * 2.0;
+                if show_separators {
+                    self.separators.push(Separator::new(
+                        right_x + padding,
+                        0.0,
+                        1.0,
+                        bar_h,
+                        separator_color,
+                    ));
+                }
                 let is_muted = stats.volume_muted;
                 let color_val = if is_muted {
                     read_disabled_color_from_config().unwrap_or(color::TEXT_DIM)
@@ -522,10 +608,10 @@ impl StatusApp {
                 let label = Label::new_with_family(&mut self.font_system, &stats.volume, font_size, color_val, &font_family)
                     .with_strikethrough(is_muted);
                 right_x -= volume_w;
-                let start_x = right_x; // left-aligned
+                let draw_x = right_x + (volume_w - label.w) / 2.0; // centered
                 let start_y = (bar_h - font_size * 1.4) / 2.0;
-                eprintln!("[rebuild_layout] Volume: x={}, w={}, is_muted={}", start_x, label.w, is_muted);
-                if let Some((sx, sy, sw_rect, sh_rect, scol)) = label.strikethrough_rect(start_x, start_y, 1.0) {
+                eprintln!("[rebuild_layout] Volume: x={}, w={}, is_muted={}", draw_x, label.w, is_muted);
+                if let Some((sx, sy, sw_rect, sh_rect, scol)) = label.strikethrough_rect(draw_x, start_y, 1.0) {
                     eprintln!("[rebuild_layout] Strikethrough rect: sx={}, sy={}, sw={}, sh={}, scol={:?}", sx, sy, sw_rect, sh_rect, scol);
                     self.overlay_rects.push(RectWidget {
                         x: sx,
@@ -535,22 +621,59 @@ impl StatusApp {
                         color: color::to_linear(scol),
                     });
                 }
-                label.draw(&mut self.text_items, start_x, start_y);
+                label.draw(&mut self.text_items, draw_x, start_y);
+            }
+
+            // Brightness
+            if !stats.brightness.is_empty() {
+                right_x -= padding * 2.0;
+                if show_separators {
+                    self.separators.push(Separator::new(
+                        right_x + padding,
+                        0.0,
+                        1.0,
+                        bar_h,
+                        separator_color,
+                    ));
+                }
+                let label = Label::new_with_family(&mut self.font_system, &stats.brightness, font_size, color::TEXT_ACCENT, &font_family);
+                right_x -= brightness_w;
+                let draw_x = right_x + (brightness_w - label.w) / 2.0; // centered
+                eprintln!("[rebuild_layout] Brightness: x={}, w={}", draw_x, label.w);
+                label.draw(&mut self.text_items, draw_x, (bar_h - font_size * 1.4) / 2.0);
             }
 
             // Memory
-            right_x -= 16.0;
+            right_x -= padding * 2.0;
+            if show_separators {
+                self.separators.push(Separator::new(
+                    right_x + padding,
+                    0.0,
+                    1.0,
+                    bar_h,
+                    separator_color,
+                ));
+            }
             let label = Label::new_with_family(&mut self.font_system, &stats.memory, font_size, color::TEXT_DIM, &font_family);
             right_x -= memory_w;
-            let draw_x = right_x; // left-aligned
+            let draw_x = right_x + (memory_w - label.w) / 2.0; // centered
             eprintln!("[rebuild_layout] Memory: x={}, w={}", draw_x, label.w);
             label.draw(&mut self.text_items, draw_x, (bar_h - font_size * 1.4) / 2.0);
 
             // CPU
-            right_x -= 16.0;
+            right_x -= padding * 2.0;
+            if show_separators {
+                self.separators.push(Separator::new(
+                    right_x + padding,
+                    0.0,
+                    1.0,
+                    bar_h,
+                    separator_color,
+                ));
+            }
             let label = Label::new_with_family(&mut self.font_system, &stats.cpu, font_size, color::TEXT_DIM, &font_family);
             right_x -= cpu_w;
-            let draw_x = right_x; // left-aligned
+            let draw_x = right_x + (cpu_w - label.w) / 2.0; // centered
             eprintln!("[rebuild_layout] CPU: x={}, w={}", draw_x, label.w);
             label.draw(&mut self.text_items, draw_x, (bar_h - font_size * 1.4) / 2.0);
         }
@@ -558,11 +681,22 @@ impl StatusApp {
         // 5b. System Tray Icons (render to the left of the CPU/stats block)
         self.tray_item_bounds.clear();
         if !self.tray_items.is_empty() {
-            right_x -= 16.0; // Separator padding
+            right_x -= padding * 2.0; // Separator padding
+            if show_separators {
+                self.separators.push(Separator::new(
+                    right_x + padding,
+                    0.0,
+                    1.0,
+                    bar_h,
+                    separator_color,
+                ));
+            }
             let mut sorted_tray: Vec<&TrayItem> = self.tray_items.values().collect();
             sorted_tray.sort_by_key(|item| &item.id);
 
-            for item in sorted_tray.iter().rev() {
+            right_x -= 8.0; // Right margin for tray block to match visual padding of other modules
+            let len = sorted_tray.len();
+            for (idx, item) in sorted_tray.iter().rev().enumerate() {
                 let icon_size = 16.0;
                 right_x -= icon_size;
                 let x = right_x;
@@ -699,8 +833,11 @@ impl StatusApp {
                     });
                 }
 
-                right_x -= 8.0; // Gap between icons
+                if idx < len - 1 {
+                    right_x -= 8.0; // Gap between icons
+                }
             }
+            right_x -= 8.0; // Left margin for tray block to match visual padding of other modules
         }
 
         // 5c. Tooltip Rendering (if hovered)
@@ -750,6 +887,10 @@ impl StatusApp {
         let mut verts = Vec::new();
         for r in &self.rects {
             verts.extend(quad_vertices(r.x * s, r.y * s, r.w * s, r.h * s, sw, sh, r.color));
+        }
+        for sep in &self.separators {
+            let (x, y, w, h) = sep.rect();
+            verts.extend(quad_vertices(x * s, y * s, w * s, h * s, sw, sh, sep.color()));
         }
         verts
     }
@@ -924,6 +1065,7 @@ struct AppState {
     state: Option<StatusApp>,
     exit: bool,
     redraw: bool,
+    first_configure_received: bool,
 }
 
 impl CompositorHandler for AppState {
@@ -938,11 +1080,13 @@ impl CompositorHandler for AppState {
         if let Some(state) = &mut self.state {
             let old_scale = state.scale_factor;
             state.scale_factor = scale_factor as f64;
-            let logical_w = state.width as f64 / old_scale;
-            let logical_h = state.height as f64 / old_scale;
-            let pw = (logical_w * state.scale_factor) as u32;
-            let ph = (logical_h * state.scale_factor) as u32;
-            state.resize(pw, ph);
+            if self.first_configure_received {
+                let logical_w = state.width as f64 / old_scale;
+                let logical_h = state.height as f64 / old_scale;
+                let pw = (logical_w * state.scale_factor) as u32;
+                let ph = (logical_h * state.scale_factor) as u32;
+                state.resize(pw, ph);
+            }
         }
         self.redraw = true;
     }
@@ -1238,6 +1382,7 @@ impl WindowHandler for AppState {
         configure: WindowConfigure,
         _serial: u32,
     ) {
+        self.first_configure_received = true;
         let (w, h) = configure.new_size;
         if let (Some(w), Some(h)) = (w, h) {
             let width = w.get();
@@ -1323,8 +1468,8 @@ async fn spawn_status_listener(sub: &'static str, sender: calloop::channel::Send
     use tokio::net::UnixStream;
     loop {
         let socket_path = match std::env::var("WAYLAND_DISPLAY") {
-            Ok(display) => format!("/tmp/clearwm-status-{}.sock", display),
-            Err(_) => "/tmp/clearwm-status.sock".to_string(),
+            Ok(display) => format!("/tmp/ccec-status-{}.sock", display),
+            Err(_) => "/tmp/ccec-status.sock".to_string(),
         };
         if let Ok(mut stream) = UnixStream::connect(&socket_path).await {
             if stream.write_all(format!("{}\n", sub).as_bytes()).await.is_ok() {
@@ -1425,6 +1570,7 @@ async fn spawn_system_stats(sender: calloop::channel::Sender<CustomEvent>) {
 
         let battery = read_battery().unwrap_or_default();
         let (volume, volume_muted) = read_volume().await.unwrap_or_else(|| ("".to_string(), false));
+        let brightness = read_brightness().unwrap_or_default();
 
         let stats = SystemStats {
             clock,
@@ -1433,6 +1579,7 @@ async fn spawn_system_stats(sender: calloop::channel::Sender<CustomEvent>) {
             battery,
             volume,
             volume_muted,
+            brightness,
         };
         eprintln!("[spawn_system_stats] stats: {:?}", stats);
         let _ = sender.send(CustomEvent::SystemStatsUpdated(stats));
@@ -2148,7 +2295,8 @@ fn main() {
         surface: None,
         state: None,
         exit: false,
-        redraw: true,
+        redraw: false,
+        first_configure_received: false,
     };
 
     // Perform a roundtrip to populate output_state with active output scales
@@ -2192,15 +2340,20 @@ fn main() {
         }
         if app.redraw {
             app.redraw = false;
-            if let Some(state) = &mut app.state {
-                state.render();
+            if app.first_configure_received {
+                if let Some(state) = &mut app.state {
+                    state.render();
+                }
             }
         }
     }
+
+    // Drop app explicitly while Wayland connection is still open to prevent SIGSEGV in wgpu drop/unconfigure
+    drop(app);
 }
 
 fn read_disabled_color_from_config() -> Option<[f32; 4]> {
-    let content = std::fs::read_to_string("/home/lsgalante/.config/clearwm/config.toml").ok()?;
+    let content = std::fs::read_to_string("/home/lsgalante/.config/ccec/config.toml").ok()?;
     parse_srgb_color_from_key(&content, "disabled_color")
 }
 
@@ -2232,7 +2385,7 @@ fn read_status_font_from_config() -> String {
 }
 
 fn read_status_font_size_from_config() -> f32 {
-    let content = std::fs::read_to_string("/home/lsgalante/.config/clearwm/config.toml").unwrap_or_default();
+    let content = std::fs::read_to_string("/home/lsgalante/.config/ccec/config.toml").unwrap_or_default();
     for line in content.lines() {
         let trimmed = line.trim();
         if let Some(rest) = trimmed.strip_prefix("status_font_size") {
@@ -2244,6 +2397,54 @@ fn read_status_font_size_from_config() -> f32 {
     }
     11.0
 }
+
+fn read_status_separators_from_config() -> bool {
+    let content = std::fs::read_to_string("/home/lsgalante/.config/ccec/config.toml").unwrap_or_default();
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("status_separators") {
+            let rest = rest.trim_start_matches(|c: char| c == ' ' || c == '=' || c == '"');
+            if let Ok(val) = rest.trim_end_matches('"').trim().parse::<bool>() {
+                return val;
+            }
+        }
+    }
+    true
+}
+
+fn read_status_underline_from_config() -> bool {
+    let content = std::fs::read_to_string("/home/lsgalante/.config/ccec/config.toml").unwrap_or_default();
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("status_underline") {
+            let rest = rest.trim_start_matches(|c: char| c == ' ' || c == '=' || c == '"');
+            if let Ok(val) = rest.trim_end_matches('"').trim().parse::<bool>() {
+                return val;
+            }
+        }
+    }
+    true
+}
+
+fn read_status_padding_from_config() -> f32 {
+    let content = std::fs::read_to_string("/home/lsgalante/.config/ccec/config.toml").unwrap_or_default();
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("status_padding") {
+            let rest = rest.trim_start_matches(|c: char| c == ' ' || c == '=' || c == '"');
+            if let Ok(val) = rest.trim_end_matches('"').trim().parse::<f32>() {
+                return val;
+            }
+        }
+    }
+    8.0
+}
+
+fn read_separator_color_from_config() -> Option<[f32; 4]> {
+    let content = std::fs::read_to_string("/home/lsgalante/.config/ccec/config.toml").ok()?;
+    parse_color_from_key(&content, "status_separator_color")
+}
+
 
 
 fn parse_font_for_alias(content: &str, alias: &str) -> Option<String> {
@@ -2272,7 +2473,7 @@ fn parse_font_for_alias(content: &str, alias: &str) -> Option<String> {
 }
 
 fn read_bg_color_from_config() -> Option<[f32; 4]> {
-    let content = std::fs::read_to_string("/home/lsgalante/.config/clearwm/config.toml").ok()?;
+    let content = std::fs::read_to_string("/home/lsgalante/.config/ccec/config.toml").ok()?;
     parse_color_from_key(&content, "low_color")
         .or_else(|| parse_color_from_key(&content, "background_color"))
 }
