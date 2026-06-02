@@ -59,6 +59,8 @@ struct SystemStats {
     memory: String,
     cpu: String,
     battery: String,
+    battery_capacity: i32,
+    battery_charging: bool,
     volume: String,
     volume_muted: bool,
     brightness: String,
@@ -166,15 +168,17 @@ fn read_memory_usage() -> Option<String> {
     }
 }
 
-fn read_battery() -> Option<String> {
+fn read_battery_details() -> Option<(String, i32, bool)> {
     for bat in &["BAT0", "BAT1"] {
         let cap_path = format!("/sys/class/power_supply/{}/capacity", bat);
         let status_path = format!("/sys/class/power_supply/{}/status", bat);
         if let Ok(cap_str) = std::fs::read_to_string(&cap_path) {
-            let cap = cap_str.trim();
+            let cap_trimmed = cap_str.trim();
+            let cap = cap_trimmed.parse::<i32>().unwrap_or(0);
             let status = std::fs::read_to_string(&status_path).unwrap_or_default();
-            let charge_symbol = if status.trim() == "Charging" { "⚡" } else { "Bat" };
-            return Some(format!("{} {}%", charge_symbol, cap));
+            let is_charging = status.trim() == "Charging";
+            let charge_symbol = if is_charging { "⚡" } else { "Bat" };
+            return Some((format!("{} {}%", charge_symbol, cap_trimmed), cap, is_charging));
         }
     }
     None
@@ -244,10 +248,11 @@ impl StatusApp {
         let show_separators = read_status_separators_from_config();
         let padding = read_status_padding_from_config();
         let separator_color = read_separator_color_from_config().unwrap_or(color::STATUS_ACCENT);
+        let normal_color = read_normal_color_from_config().unwrap_or(color::TEXT_FG);
         let sw_logical = self.width as f32;
         let sh_logical = self.height as f32;
         let _s = 1.0f32;
-        let bar_h = 28.0;
+        let bar_h = read_status_height_from_config();
         eprintln!("[rebuild_layout] sw_logical={}, sh_logical={}, font_family={}, font_size={}", sw_logical, sh_logical, font_family, font_size);
 
         self.current_bg_color = read_bg_color_from_config().unwrap_or(color::STATUS_BG);
@@ -310,7 +315,7 @@ impl StatusApp {
         // 3. Layout Mode
         if !self.layout.is_empty() {
             let label_str = self.layout.clone();
-            let label = Label::new_with_family(&mut self.font_system, &label_str, font_size, color::TEXT_ACCENT, &font_family);
+            let label = Label::new_with_family(&mut self.font_system, &label_str, font_size, normal_color, &font_family);
             let line_w = label.draw(&mut self.text_items, left_x, (bar_h - font_size * 1.4) / 2.0);
             eprintln!("[rebuild_layout] Layout Mode: '{}', x={}, y={}, w={}, h={}", self.layout, left_x, 0.0, line_w, bar_h);
             self.layout_bounds = Some(LayoutBounds {
@@ -342,7 +347,7 @@ impl StatusApp {
             if display_title.chars().count() > 40 {
                 display_title = display_title.chars().take(37).collect::<String>() + "...";
             }
-            let label = Label::new_with_family(&mut self.font_system, &display_title, font_size, color::TEXT_FG, &font_family);
+            let label = Label::new_with_family(&mut self.font_system, &display_title, font_size, normal_color, &font_family);
             label.draw(&mut self.text_items, left_x, (bar_h - font_size * 1.4) / 2.0);
         }
 
@@ -357,7 +362,7 @@ impl StatusApp {
             let cpu_w = 90.0;
 
             // Clock
-            let label = Label::new_with_family(&mut self.font_system, &stats.clock, font_size, color::TEXT_FG, &font_family);
+            let label = Label::new_with_family(&mut self.font_system, &stats.clock, font_size, normal_color, &font_family);
             right_x -= clock_w;
             let draw_x = right_x + (clock_w - label.w) / 2.0; // centered
             eprintln!("[rebuild_layout] Clock: x={}, w={}", draw_x, label.w);
@@ -375,7 +380,12 @@ impl StatusApp {
                         separator_color,
                     ));
                 }
-                let label = Label::new_with_family(&mut self.font_system, &stats.battery, font_size, color::TEXT_ACCENT, &font_family);
+                let bat_color = if !stats.battery_charging && stats.battery_capacity > 10 {
+                    normal_color
+                } else {
+                    color::TEXT_ACCENT
+                };
+                let label = Label::new_with_family(&mut self.font_system, &stats.battery, font_size, bat_color, &font_family);
                 right_x -= battery_w;
                 let draw_x = right_x + (battery_w - label.w) / 2.0; // centered
                 eprintln!("[rebuild_layout] Battery: x={}, w={}", draw_x, label.w);
@@ -398,7 +408,7 @@ impl StatusApp {
                 let color_val = if is_muted {
                     read_disabled_color_from_config().unwrap_or(color::TEXT_DIM)
                 } else {
-                    color::TEXT_ACCENT
+                    normal_color
                 };
                 let label = Label::new_with_family(&mut self.font_system, &stats.volume, font_size, color_val, &font_family)
                     .with_strikethrough(is_muted);
@@ -431,7 +441,7 @@ impl StatusApp {
                         separator_color,
                     ));
                 }
-                let label = Label::new_with_family(&mut self.font_system, &stats.brightness, font_size, color::TEXT_ACCENT, &font_family);
+                let label = Label::new_with_family(&mut self.font_system, &stats.brightness, font_size, normal_color, &font_family);
                 right_x -= brightness_w;
                 let draw_x = right_x + (brightness_w - label.w) / 2.0; // centered
                 eprintln!("[rebuild_layout] Brightness: x={}, w={}", draw_x, label.w);
@@ -449,7 +459,7 @@ impl StatusApp {
                     separator_color,
                 ));
             }
-            let label = Label::new_with_family(&mut self.font_system, &stats.memory, font_size, color::TEXT_DIM, &font_family);
+            let label = Label::new_with_family(&mut self.font_system, &stats.memory, font_size, normal_color, &font_family);
             right_x -= memory_w;
             let draw_x = right_x + (memory_w - label.w) / 2.0; // centered
             eprintln!("[rebuild_layout] Memory: x={}, w={}", draw_x, label.w);
@@ -466,7 +476,7 @@ impl StatusApp {
                     separator_color,
                 ));
             }
-            let label = Label::new_with_family(&mut self.font_system, &stats.cpu, font_size, color::TEXT_DIM, &font_family);
+            let label = Label::new_with_family(&mut self.font_system, &stats.cpu, font_size, normal_color, &font_family);
             right_x -= cpu_w;
             let draw_x = right_x + (cpu_w - label.w) / 2.0; // centered
             eprintln!("[rebuild_layout] CPU: x={}, w={}", draw_x, label.w);
@@ -732,7 +742,7 @@ impl clear_ui::engine::Application for StatusApp {
             text_items: Vec::new(),
             scale_factor: 1.0,
             width: 1920,
-            height: 28,
+            height: read_status_height_from_config() as u32,
             needs_rebuild: true,
             current_bg_color: color::STATUS_BG,
             sender,
@@ -747,7 +757,7 @@ impl clear_ui::engine::Application for StatusApp {
             title: "Clear Status Interface".to_string(),
             app_id: "clear-status-interface".to_string(),
             width: 1920,
-            height: 28,
+            height: read_status_height_from_config() as u32,
             fullscreen: true,
             min_size: None,
         }
@@ -951,21 +961,30 @@ impl clear_ui::engine::Application for StatusApp {
                         self.layout_menu_pid = None;
                     } else {
                         let x_pos = self.layout_bounds.as_ref().map(|b| b.x as i32).unwrap_or(0);
-                        let y_pos = self.layout_bounds.as_ref().map(|b| b.h as i32).unwrap_or(28);
-                        let current_layout = self.layout.clone();
+                        let y_pos = self.layout_bounds.as_ref().map(|b| b.h as i32).unwrap_or_else(|| read_status_height_from_config() as i32);
                         
                         // Spawn the child on the main thread so we can capture its PID
+                        let layout_json = serde_json::json!({
+                            "width": 240,
+                            "height": 320,
+                            "widgets": [
+                                { "type": "label", "text": "Window Mode" },
+                                { "id": "apply_all", "type": "checkbox", "text": "Apply to all sharing mode", "checked": false },
+                                { "id": "cascade", "type": "button", "text": "Cascade" },
+                                { "id": "grid", "type": "button", "text": "Grid" },
+                                { "id": "fullscreen", "type": "button", "text": "Fullscreen" },
+                                { "id": "floating", "type": "button", "text": "Floating" },
+                                { "id": "popup", "type": "button", "text": "Popup" }
+                            ]
+                        }).to_string();
+
                         if let Ok(mut child) = std::process::Command::new("clear-cloud")
                             .args([
-                                "--dmenu",
-                                "-p",
-                                "Window Mode:",
+                                "--json",
                                 "-x",
                                 &x_pos.to_string(),
                                 "-y",
                                 &y_pos.to_string(),
-                                "--select",
-                                &current_layout,
                             ])
                             .stdin(std::process::Stdio::piped())
                             .stdout(std::process::Stdio::piped())
@@ -982,7 +1001,7 @@ impl clear_ui::engine::Application for StatusApp {
                                 eprintln!("[layout-click] Active tag is {}", active_tag);
                                 if let Some(mut stdin) = child.stdin.take() {
                                     use std::io::Write;
-                                    let _ = stdin.write_all(b"Cascade\nGrid\nFullscreen\nFloating\nPopup\n");
+                                    let _ = stdin.write_all(layout_json.as_bytes());
                                 }
                                 if let Ok(output) = child.wait_with_output() {
                                     let err_str = String::from_utf8_lossy(&output.stderr);
@@ -990,13 +1009,35 @@ impl clear_ui::engine::Application for StatusApp {
                                         eprintln!("[clear-cloud stderr] {}", err_str);
                                     }
                                     if output.status.success() {
-                                        let selected = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                                        if !selected.is_empty() {
-                                            let selected_lower = selected.to_lowercase();
-                                            eprintln!("[layout-click] Selected mode: {}, setting for tag {}", selected_lower, active_tag);
-                                            let _ = std::process::Command::new("clearctl")
-                                                .args(["tag-layout", &active_tag.to_string(), &selected_lower])
-                                                .spawn();
+                                        let out_str = String::from_utf8_lossy(&output.stdout);
+                                        #[derive(serde::Deserialize)]
+                                        struct LayoutMenuOutput {
+                                            button: String,
+                                            checkboxes: std::collections::HashMap<String, bool>,
+                                        }
+                                        if let Ok(val) = serde_json::from_str::<LayoutMenuOutput>(out_str.trim()) {
+                                            let selected_mode = val.button.to_lowercase();
+                                            let apply_all = val.checkboxes.get("apply_all").copied().unwrap_or(false);
+                                            if apply_all {
+                                                eprintln!("[layout-click] Selected mode: {}, applying to all windows sharing mode", selected_mode);
+                                                let _ = std::process::Command::new("clearctl")
+                                                    .args(["apply-mode-sharing", &selected_mode])
+                                                    .spawn();
+                                            } else {
+                                                eprintln!("[layout-click] Selected mode: {}, setting for tag {}", selected_mode, active_tag);
+                                                let _ = std::process::Command::new("clearctl")
+                                                    .args(["tag-layout", &active_tag.to_string(), &selected_mode])
+                                                    .spawn();
+                                            }
+                                        } else {
+                                            // Fallback
+                                            let selected = out_str.trim().to_string();
+                                            if !selected.is_empty() {
+                                                let selected_lower = selected.to_lowercase();
+                                                let _ = std::process::Command::new("clearctl")
+                                                    .args(["tag-layout", &active_tag.to_string(), &selected_lower])
+                                                    .spawn();
+                                            }
                                         }
                                     }
                                 }
@@ -1138,7 +1179,11 @@ async fn spawn_system_stats(sender: calloop::channel::Sender<CustomEvent>) {
             "Cpu N/A".to_string()
         };
 
-        let battery = read_battery().unwrap_or_default();
+        let (battery_str, battery_capacity, battery_charging) = if let Some((s, cap, chg)) = read_battery_details() {
+            (s, cap, chg)
+        } else {
+            ("".to_string(), 0, false)
+        };
         let (volume, volume_muted) = read_volume().await.unwrap_or_else(|| ("".to_string(), false));
         let brightness = read_brightness().unwrap_or_default();
 
@@ -1146,7 +1191,9 @@ async fn spawn_system_stats(sender: calloop::channel::Sender<CustomEvent>) {
             clock,
             memory,
             cpu: cpu_str,
-            battery,
+            battery: battery_str,
+            battery_capacity,
+            battery_charging,
             volume,
             volume_muted,
             brightness,
@@ -1729,6 +1776,25 @@ impl Watcher {
     }
 }
 
+struct StatusInterface;
+
+#[zbus::interface(name = "org.clear.StatusInterface")]
+impl StatusInterface {
+    async fn notify_attention(&self, app_id: String, title: String) {
+        eprintln!("[status-interface] Received NotifyAttention: app_id={}, title={}", app_id, title);
+        let title_escaped = title.replace('\'', "'\\''");
+        let app_id_escaped = app_id.replace('\'', "'\\''");
+        let cmd = format!(
+            "notify-send -a '{}' '{} needs attention' 'This window has requested activation.'",
+            app_id_escaped, title_escaped
+        );
+        std::process::Command::new("sh")
+            .args(["-c", &cmd])
+            .spawn()
+            .ok();
+    }
+}
+
 async fn spawn_status_tray(sender: calloop::channel::Sender<CustomEvent>) {
     let registered_items = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
     let tokio_handle = tokio::runtime::Handle::current();
@@ -1745,6 +1811,8 @@ async fn spawn_status_tray(sender: calloop::channel::Sender<CustomEvent>) {
                 .name("org.kde.StatusNotifierWatcher")
                 .unwrap()
                 .serve_at("/StatusNotifierWatcher", watcher)
+                .unwrap()
+                .serve_at("/StatusInterface", StatusInterface)
                 .unwrap()
                 .build()
                 .await
@@ -1822,6 +1890,11 @@ fn main() {
     clear_ui::engine::run::<StatusApp>();
 }
 
+fn read_normal_color_from_config() -> Option<[f32; 4]> {
+    let content = std::fs::read_to_string("/home/lsgalante/.config/ccec/config.toml").ok()?;
+    parse_srgb_color_from_key(&content, "status_normal_color")
+}
+
 fn read_disabled_color_from_config() -> Option<[f32; 4]> {
     let content = std::fs::read_to_string("/home/lsgalante/.config/ccec/config.toml").ok()?;
     parse_srgb_color_from_key(&content, "disabled_color")
@@ -1852,6 +1925,20 @@ fn read_status_font_from_config() -> String {
         }
     }
     "sans-serif".to_string()
+}
+
+fn read_status_height_from_config() -> f32 {
+    let content = std::fs::read_to_string("/home/lsgalante/.config/ccec/config.toml").unwrap_or_default();
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("bar_height") {
+            let rest = rest.trim_start_matches(|c: char| c == ' ' || c == '=' || c == '"');
+            if let Ok(val) = rest.trim_end_matches('"').trim().parse::<f32>() {
+                return val;
+            }
+        }
+    }
+    28.0
 }
 
 fn read_status_font_size_from_config() -> f32 {
