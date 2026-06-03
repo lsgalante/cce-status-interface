@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use glyphon::{
-    Attrs, Buffer, FontSystem, Metrics,
+    Attrs, Buffer, FontSystem, Metrics, TextArea, TextBounds,
 };
 use clear_ui::color;
 use clear_ui::widget::{
@@ -227,6 +227,7 @@ struct StatusApp {
     layout_menu_pid: Option<u32>,
 
     font_system: FontSystem,
+    status_bar: clear_ui::widget::StatusBar,
 
     rects: Vec<RectWidget>,
     overlay_rects: Vec<RectWidget>,
@@ -263,11 +264,9 @@ impl StatusApp {
         self.separators.clear();
         self.text_items.clear();
 
-        // 1. Background (spans the entire fullscreen area)
-        self.rects.push(RectWidget {
-            x: 0.0, y: 0.0, w: sw_logical, h: sh_logical,
-            color: self.current_bg_color,
-        });
+        // 1. Background (using StatusBar widget)
+        self.status_bar.set_rect(0.0, 0.0, sw_logical, bar_h);
+        self.status_bar.set_bg_color(self.current_bg_color);
         
         let show_underline = read_status_underline_from_config();
         if show_underline {
@@ -341,14 +340,17 @@ impl StatusApp {
             left_x += padding * 2.0;
         }
 
-        // 4. Focused Title
+        // 4. Focused Title (using StatusBar widget)
         if !self.title.is_empty() && self.title != "(none)" {
             let mut display_title = self.title.clone();
             if display_title.chars().count() > 40 {
                 display_title = display_title.chars().take(37).collect::<String>() + "...";
             }
-            let label = Label::new_with_family(&mut self.font_system, &display_title, font_size, normal_color, &font_family);
-            label.draw(&mut self.text_items, left_x, (bar_h - font_size * 1.4) / 2.0);
+            self.status_bar.set_text_offset_x(left_x);
+            self.status_bar.set_text_color(normal_color);
+            self.status_bar.set_text(&display_title);
+        } else {
+            self.status_bar.set_text("");
         }
 
         // 5. Right Side Stats (CPU, Mem, Bat, Clock)
@@ -736,6 +738,7 @@ impl clear_ui::engine::Application for StatusApp {
             layout_bounds: None,
             layout_menu_pid: None,
             font_system,
+            status_bar: clear_ui::widget::StatusBar::new(),
             rects: Vec::new(),
             overlay_rects: Vec::new(),
             separators: Vec::new(),
@@ -794,7 +797,9 @@ impl clear_ui::engine::Application for StatusApp {
         *needs_rebuild = true;
     }
 
-    fn tick(&mut self, _dt: f32, _needs_rebuild: &mut bool) {}
+    fn tick(&mut self, _dt: f32, _needs_rebuild: &mut bool) {
+        self.status_bar.prepare_text(&mut self.font_system);
+    }
 
     fn view(&mut self, quads: &mut Vec<(f32, f32, f32, f32, [f32; 4])>, size: clear_ui::engine::LogicalSize, scale: f64) {
         if self.needs_rebuild || self.width != size.width as u32 || self.height != size.height as u32 || self.scale_factor != scale {
@@ -803,6 +808,8 @@ impl clear_ui::engine::Application for StatusApp {
             self.scale_factor = scale;
             self.rebuild_layout();
         }
+        let (sb_x, sb_y, sb_w, sb_h) = self.status_bar.rect();
+        quads.push((sb_x, sb_y, sb_w, sb_h, self.status_bar.color()));
         for r in &self.rects {
             quads.push((r.x, r.y, r.w, r.h, r.color));
         }
@@ -820,6 +827,32 @@ impl clear_ui::engine::Application for StatusApp {
 
     fn text_items(&self) -> &[TextItem] {
         &self.text_items
+    }
+
+    fn text_areas(&self, scale_f32: f32, bounds: TextBounds) -> Vec<TextArea<'_>> {
+        let mut areas = self.text_items().iter().map(|ti| TextArea {
+            buffer: &ti.buffer,
+            left: ti.x * scale_f32,
+            top: ti.y * scale_f32,
+            scale: scale_f32,
+            bounds,
+            default_color: ti.color,
+            custom_glyphs: &[],
+        }).collect::<Vec<_>>();
+
+        for (buf, x, y, col) in self.status_bar.get_text_items() {
+            areas.push(TextArea {
+                buffer: buf,
+                left: x * scale_f32,
+                top: y * scale_f32,
+                scale: scale_f32,
+                bounds,
+                default_color: col,
+                custom_glyphs: &[],
+            });
+        }
+
+        areas
     }
 
     fn clear_color(&self) -> [f32; 4] {
