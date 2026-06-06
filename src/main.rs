@@ -5,7 +5,7 @@ use glyphon::{
 };
 use clear_ui::color;
 use clear_ui::widget::{
-    StyledLabel as Label, TextItem, Separator, Widget,
+    StyledLabel as Label, TextItem, Separator, Element,
     MouseButton, ElementState, MouseScrollDelta, KeyEvent,
 };
 
