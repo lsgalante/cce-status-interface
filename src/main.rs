@@ -80,7 +80,13 @@ enum CustomEvent {
 fn make_text_buffer(fs: &mut FontSystem, text: &str, size: f32, font_family: &str) -> Buffer {
     let metrics = Metrics::new(size, size * 1.4);
     let mut buf = Buffer::new(fs, metrics);
-    let attrs = Attrs::new().family(glyphon::Family::Name(font_family));
+    let family = match font_family {
+        "monospace" => glyphon::Family::Monospace,
+        "sans-serif" => glyphon::Family::SansSerif,
+        "serif" => glyphon::Family::Serif,
+        _ => glyphon::Family::Name(font_family),
+    };
+    let attrs = Attrs::new().family(family);
     buf.set_text(fs, text, attrs, glyphon::Shaping::Advanced);
     buf.shape_until_scroll(fs, true);
     buf
@@ -637,6 +643,7 @@ impl StatusApp {
                             (color::TEXT_ACCENT[1] * 255.0) as u8,
                             (color::TEXT_ACCENT[2] * 255.0) as u8,
                         ),
+                        bounds: None,
                     });
                 }
 
@@ -680,6 +687,7 @@ impl StatusApp {
                         (color::TEXT_FG[1] * 255.0) as u8,
                         (color::TEXT_FG[2] * 255.0) as u8,
                     ),
+                    bounds: None,
                 });
             }
         }
@@ -856,12 +864,16 @@ impl clear_ui::engine::Application for StatusApp {
     }
 
     fn clear_color(&self) -> [f32; 4] {
-        [
+        let mut color = [
             self.current_bg_color[0].powf(1.0 / 2.2),
             self.current_bg_color[1].powf(1.0 / 2.2),
             self.current_bg_color[2].powf(1.0 / 2.2),
             self.current_bg_color[3],
-        ]
+        ];
+        if let Some(opacity) = clear_ui::color::read_opacity_if_configured() {
+            color[3] = opacity;
+        }
+        color
     }
 
     fn handle_pointer_move(&mut self, pos: clear_ui::engine::LogicalPosition, needs_rebuild: &mut bool) {
