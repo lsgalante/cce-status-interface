@@ -325,6 +325,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "cce-status-interface"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "calloop",
+ "calloop-wayland-source",
+ "chrono",
+ "clear-ui",
+ "glyphon",
+ "png",
+ "pollster",
+ "raw-window-handle",
+ "resvg",
+ "serde",
+ "serde_json",
+ "smithay-client-toolkit",
+ "tokio",
+ "tokio-stream",
+ "wayland-client",
+ "wgpu",
+ "xkeysym",
+ "zbus",
+]
+
+[[package]]
 name = "cfg-if"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -347,31 +372,6 @@ dependencies = [
  "num-traits",
  "wasm-bindgen",
  "windows-link",
-]
-
-[[package]]
-name = "clear-status-interface"
-version = "0.1.0"
-dependencies = [
- "bytemuck",
- "calloop",
- "calloop-wayland-source",
- "chrono",
- "clear-ui",
- "glyphon",
- "png",
- "pollster",
- "raw-window-handle",
- "resvg",
- "serde",
- "serde_json",
- "smithay-client-toolkit",
- "tokio",
- "tokio-stream",
- "wayland-client",
- "wgpu",
- "xkeysym",
- "zbus",
 ]
 
 [[package]]

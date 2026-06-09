@@ -78,15 +78,28 @@ enum CustomEvent {
 }
 
 fn make_text_buffer(fs: &mut FontSystem, text: &str, size: f32, font_family: &str) -> Buffer {
-    let metrics = Metrics::new(size, size * 1.4);
+    let scale = clear_ui::scale::scale_factor();
+    let mut font_size = size;
+
+    let (parsed_family, parsed_size) = clear_ui::layout::parse_font_string(font_family);
+    if let Some(ps) = parsed_size {
+        font_size = ps;
+    }
+    let family_name = Some(parsed_family);
+
+    let physical_size = font_size * scale;
+    let metrics = Metrics::new(physical_size, physical_size * 1.4);
     let mut buf = Buffer::new(fs, metrics);
-    let family = match font_family {
-        "monospace" => glyphon::Family::Monospace,
-        "sans-serif" => glyphon::Family::SansSerif,
-        "serif" => glyphon::Family::Serif,
-        _ => glyphon::Family::Name(font_family),
-    };
-    let attrs = Attrs::new().family(family);
+    let mut attrs = Attrs::new();
+    if let Some(ref font_name) = family_name {
+        let family = match font_name.as_str() {
+            "monospace" => glyphon::Family::Monospace,
+            "sans-serif" => glyphon::Family::SansSerif,
+            "serif" => glyphon::Family::Serif,
+            name => glyphon::Family::Name(name),
+        };
+        attrs = attrs.family(family);
+    }
     buf.set_text(fs, text, attrs, glyphon::Shaping::Advanced);
     buf.shape_until_scroll(fs, true);
     buf
@@ -631,7 +644,8 @@ impl StatusApp {
                     };
 
                     let buf = make_text_buffer(&mut self.font_system, symbol, font_size, &font_family);
-                    let tw = buf.layout_runs().next().map(|r| r.line_w).unwrap_or(0.0);
+                    let scale = clear_ui::scale::scale_factor();
+                    let tw = buf.layout_runs().next().map(|r| r.line_w).unwrap_or(0.0) / scale;
                     let tx = x + (icon_size - tw) / 2.0;
                     let ty = y + (icon_size - font_size * 1.4) / 2.0;
                     self.text_items.push(TextItem {
@@ -660,7 +674,8 @@ impl StatusApp {
                 let tooltip_text = bound.title.as_deref().unwrap_or(bound.id.as_str());
                 let tooltip_font_size = font_size - 1.0;
                 let buf = make_text_buffer(&mut self.font_system, tooltip_text, tooltip_font_size, &font_family);
-                let text_w = buf.layout_runs().next().map(|r| r.line_w).unwrap_or(0.0);
+                let scale = clear_ui::scale::scale_factor();
+                let text_w = buf.layout_runs().next().map(|r| r.line_w).unwrap_or(0.0) / scale;
                 let padding = 6.0;
 
                 let tooltip_w = text_w + padding * 2.0;
@@ -698,9 +713,9 @@ impl StatusApp {
 
 fn get_active_tag_index() -> u32 {
     let path = if let Ok(display) = std::env::var("WAYLAND_DISPLAY") {
-        format!("/tmp/ccec-tags-{}", display)
+        format!("/tmp/cce-client-tags-{}", display)
     } else {
-        "/tmp/ccec-tags".to_string()
+        "/tmp/cce-client-tags".to_string()
     };
     if let Ok(content) = std::fs::read_to_string(path) {
         let parts: Vec<&str> = content.split_whitespace().collect();
@@ -766,7 +781,7 @@ impl clear_ui::engine::Application for StatusApp {
     fn settings(&self) -> clear_ui::engine::WindowSettings {
         clear_ui::engine::WindowSettings {
             title: "Clear Status Interface".to_string(),
-            app_id: "clear-status-interface".to_string(),
+            app_id: "cce-status-interface".to_string(),
             width: 1920,
             height: read_status_height_from_config() as u32,
             fullscreen: true,
@@ -814,6 +829,7 @@ impl clear_ui::engine::Application for StatusApp {
             self.width = size.width as u32;
             self.height = size.height as u32;
             self.scale_factor = scale;
+            clear_ui::scale::set_scale_factor(scale as f32);
             self.rebuild_layout();
         }
         let (sb_x, sb_y, sb_w, sb_h) = self.status_bar.rect();
@@ -840,9 +856,9 @@ impl clear_ui::engine::Application for StatusApp {
     fn text_areas(&self, scale_f32: f32, bounds: TextBounds) -> Vec<TextArea<'_>> {
         let mut areas = self.text_items().iter().map(|ti| TextArea {
             buffer: &ti.buffer,
-            left: ti.x * scale_f32,
-            top: ti.y * scale_f32,
-            scale: scale_f32,
+            left: (ti.x * scale_f32).round(),
+            top: (ti.y * scale_f32).round(),
+            scale: 1.0,
             bounds,
             default_color: ti.color,
             custom_glyphs: &[],
@@ -851,9 +867,9 @@ impl clear_ui::engine::Application for StatusApp {
         for (buf, x, y, col) in self.status_bar.get_text_items() {
             areas.push(TextArea {
                 buffer: buf,
-                left: x * scale_f32,
-                top: y * scale_f32,
-                scale: scale_f32,
+                left: (x * scale_f32).round(),
+                top: (y * scale_f32).round(),
+                scale: 1.0,
                 bounds,
                 default_color: col,
                 custom_glyphs: &[],
@@ -1122,8 +1138,8 @@ async fn spawn_status_listener(sub: &'static str, sender: calloop::channel::Send
     use tokio::net::UnixStream;
     loop {
         let socket_path = match std::env::var("WAYLAND_DISPLAY") {
-            Ok(display) => format!("/tmp/ccec-status-{}.sock", display),
-            Err(_) => "/tmp/ccec-status.sock".to_string(),
+            Ok(display) => format!("/tmp/cce-client-status-{}.sock", display),
+            Err(_) => "/tmp/cce-client-status.sock".to_string(),
         };
         if let Ok(mut stream) = UnixStream::connect(&socket_path).await {
             eprintln!("[status-listener] connected to {} for sub '{}'", socket_path, sub);
@@ -1936,12 +1952,12 @@ fn main() {
 }
 
 fn read_normal_color_from_config() -> Option<[f32; 4]> {
-    let content = std::fs::read_to_string("/home/lsgalante/.config/ccec/config.toml").ok()?;
+    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.toml").ok()?;
     parse_srgb_color_from_key(&content, "status_normal_color")
 }
 
 fn read_disabled_color_from_config() -> Option<[f32; 4]> {
-    let content = std::fs::read_to_string("/home/lsgalante/.config/ccec/config.toml").ok()?;
+    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.toml").ok()?;
     parse_srgb_color_from_key(&content, "disabled_color")
 }
 
@@ -1973,7 +1989,7 @@ fn read_status_font_from_config() -> String {
 }
 
 fn read_status_height_from_config() -> f32 {
-    let content = std::fs::read_to_string("/home/lsgalante/.config/ccec/config.toml").unwrap_or_default();
+    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.toml").unwrap_or_default();
     for line in content.lines() {
         let trimmed = line.trim();
         if let Some(rest) = trimmed.strip_prefix("bar_height") {
@@ -1987,7 +2003,7 @@ fn read_status_height_from_config() -> f32 {
 }
 
 fn read_status_font_size_from_config() -> f32 {
-    let content = std::fs::read_to_string("/home/lsgalante/.config/ccec/config.toml").unwrap_or_default();
+    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.toml").unwrap_or_default();
     for line in content.lines() {
         let trimmed = line.trim();
         if let Some(rest) = trimmed.strip_prefix("status_font_size") {
@@ -2001,7 +2017,7 @@ fn read_status_font_size_from_config() -> f32 {
 }
 
 fn read_status_separators_from_config() -> bool {
-    let content = std::fs::read_to_string("/home/lsgalante/.config/ccec/config.toml").unwrap_or_default();
+    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.toml").unwrap_or_default();
     for line in content.lines() {
         let trimmed = line.trim();
         if let Some(rest) = trimmed.strip_prefix("status_separators") {
@@ -2015,7 +2031,7 @@ fn read_status_separators_from_config() -> bool {
 }
 
 fn read_status_underline_from_config() -> bool {
-    let content = std::fs::read_to_string("/home/lsgalante/.config/ccec/config.toml").unwrap_or_default();
+    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.toml").unwrap_or_default();
     for line in content.lines() {
         let trimmed = line.trim();
         if let Some(rest) = trimmed.strip_prefix("status_underline") {
@@ -2029,7 +2045,7 @@ fn read_status_underline_from_config() -> bool {
 }
 
 fn read_status_padding_from_config() -> f32 {
-    let content = std::fs::read_to_string("/home/lsgalante/.config/ccec/config.toml").unwrap_or_default();
+    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.toml").unwrap_or_default();
     for line in content.lines() {
         let trimmed = line.trim();
         if let Some(rest) = trimmed.strip_prefix("status_padding") {
@@ -2043,7 +2059,7 @@ fn read_status_padding_from_config() -> f32 {
 }
 
 fn read_separator_color_from_config() -> Option<[f32; 4]> {
-    let content = std::fs::read_to_string("/home/lsgalante/.config/ccec/config.toml").ok()?;
+    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.toml").ok()?;
     parse_color_from_key(&content, "status_separator_color")
 }
 
@@ -2075,7 +2091,7 @@ fn parse_font_for_alias(content: &str, alias: &str) -> Option<String> {
 }
 
 fn read_bg_color_from_config() -> Option<[f32; 4]> {
-    let content = std::fs::read_to_string("/home/lsgalante/.config/ccec/config.toml").ok()?;
+    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.toml").ok()?;
     parse_color_from_key(&content, "low_color")
         .or_else(|| parse_color_from_key(&content, "background_color"))
 }
