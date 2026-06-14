@@ -24,6 +24,7 @@ struct TrayItem {
     icon_theme_path: Option<String>,
     pixmaps: Option<Vec<TrayPixmap>>,
     title: Option<String>,
+    dbus_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -34,6 +35,7 @@ struct TrayIconBounds {
     w: f32,
     h: f32,
     title: Option<String>,
+    dbus_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -93,7 +95,7 @@ fn make_text_buffer(fs: &mut FontSystem, text: &str, size: f32, font_family: &st
     let mut attrs = Attrs::new();
     if let Some(ref font_name) = family_name {
         let family = match font_name.as_str() {
-            "monospace" => glyphon::Family::Monospace,
+            "monospace" => glyphon::Family::Name(clear_ui::layout::get_system_monospace_font()),
             "sans-serif" => glyphon::Family::SansSerif,
             "serif" => glyphon::Family::Serif,
             name => glyphon::Family::Name(name),
@@ -181,7 +183,7 @@ fn read_memory_usage() -> Option<String> {
     }
     if total > 0.0 {
         let used = total - free - buffers - cached;
-        Some(format!("Mem {:.1}G/{:.1}G", used, total))
+        Some(format!("Mem {:.1}/{:.1}G", used, total))
     } else {
         None
     }
@@ -276,6 +278,9 @@ impl StatusApp {
         eprintln!("[rebuild_layout] sw_logical={}, sh_logical={}, font_family={}, font_size={}", sw_logical, sh_logical, font_family, font_size);
 
         self.current_bg_color = read_bg_color_from_config().unwrap_or(color::STATUS_BG);
+        if let Some(opacity) = clear_ui::color::read_opacity_if_configured() {
+            self.current_bg_color[3] = opacity;
+        }
         eprintln!("[rebuild_layout] Using background color: {:?}", self.current_bg_color);
 
         self.rects.clear();
@@ -437,7 +442,7 @@ impl StatusApp {
                 let draw_x = right_x + (volume_w - label.w) / 2.0; // centered
                 let start_y = (bar_h - font_size * 1.4) / 2.0;
                 eprintln!("[rebuild_layout] Volume: x={}, w={}, is_muted={}", draw_x, label.w, is_muted);
-                if let Some((sx, sy, sw_rect, sh_rect, scol)) = label.strikethrough_rect(draw_x, start_y, 1.0) {
+                if let Some((sx, sy, sw_rect, sh_rect, scol)) = label.strikethrough_rect(draw_x, start_y, self.scale_factor as f32) {
                     eprintln!("[rebuild_layout] Strikethrough rect: sx={}, sy={}, sw={}, sh={}, scol={:?}", sx, sy, sw_rect, sh_rect, scol);
                     self.overlay_rects.push(RectWidget {
                         x: sx,
@@ -537,6 +542,7 @@ impl StatusApp {
                     w: icon_size,
                     h: icon_size,
                     title: item.title.clone(),
+                    dbus_id: item.dbus_id.clone(),
                 });
 
                 // Attempt to draw pixmap
@@ -671,9 +677,58 @@ impl StatusApp {
         // 5c. Tooltip Rendering (if hovered)
         if let Some(ref hovered_id) = self.hovered_tray_item {
             if let Some(bound) = self.tray_item_bounds.iter().find(|b| &b.id == hovered_id) {
-                let tooltip_text = bound.title.as_deref().unwrap_or(bound.id.as_str());
+                let clean_tooltip = |title: Option<&str>, dbus_id: Option<&str>, fallback_id: &str| -> String {
+                    if let Some(t) = title {
+                        let trimmed = t.trim();
+                        if !trimmed.is_empty() {
+                            return trimmed.to_string();
+                        }
+                    }
+                    if let Some(id) = dbus_id {
+                        let trimmed = id.trim();
+                        if !trimmed.is_empty() {
+                            let cleaned = trimmed
+                                .split('_')
+                                .next()
+                                .unwrap_or(trimmed)
+                                .split('-')
+                                .next()
+                                .unwrap_or(trimmed);
+                            if !cleaned.is_empty() && cleaned.chars().any(|c| c.is_alphabetic()) {
+                                let mut chars = cleaned.chars();
+                                if let Some(first) = chars.next() {
+                                    return first.to_uppercase().collect::<String>() + chars.as_str();
+                                }
+                                return cleaned.to_string();
+                            }
+                            return trimmed.to_string();
+                        }
+                    }
+                    let last_segment = fallback_id.split('/').last().unwrap_or(fallback_id);
+                    let cleaned = last_segment
+                        .split('_')
+                        .next()
+                        .unwrap_or(last_segment)
+                        .split('-')
+                        .next()
+                        .unwrap_or(last_segment);
+                    if !cleaned.is_empty() && cleaned.chars().any(|c| c.is_alphabetic()) {
+                        let mut chars = cleaned.chars();
+                        if let Some(first) = chars.next() {
+                            return first.to_uppercase().collect::<String>() + chars.as_str();
+                        }
+                        return cleaned.to_string();
+                    }
+                    last_segment.to_string()
+                };
+
+                let tooltip_text = clean_tooltip(
+                    bound.title.as_deref(),
+                    bound.dbus_id.as_deref(),
+                    bound.id.as_str(),
+                );
                 let tooltip_font_size = font_size - 1.0;
-                let buf = make_text_buffer(&mut self.font_system, tooltip_text, tooltip_font_size, &font_family);
+                let buf = make_text_buffer(&mut self.font_system, &tooltip_text, tooltip_font_size, &font_family);
                 let scale = clear_ui::scale::scale_factor();
                 let text_w = buf.layout_runs().next().map(|r| r.line_w).unwrap_or(0.0) / scale;
                 let padding = 6.0;
@@ -880,16 +935,7 @@ impl clear_ui::engine::Application for StatusApp {
     }
 
     fn clear_color(&self) -> [f32; 4] {
-        let mut color = [
-            self.current_bg_color[0].powf(1.0 / 2.2),
-            self.current_bg_color[1].powf(1.0 / 2.2),
-            self.current_bg_color[2].powf(1.0 / 2.2),
-            self.current_bg_color[3],
-        ];
-        if let Some(opacity) = clear_ui::color::read_opacity_if_configured() {
-            color[3] = opacity;
-        }
-        color
+        [0.0, 0.0, 0.0, 0.0]
     }
 
     fn handle_pointer_move(&mut self, pos: clear_ui::engine::LogicalPosition, needs_rebuild: &mut bool) {
@@ -921,12 +967,13 @@ impl clear_ui::engine::Application for StatusApp {
             for bound in &self.tray_item_bounds {
                 if cx >= bound.x as f64 && cx <= (bound.x + bound.w) as f64
                     && cy >= bound.y as f64 && cy <= (bound.y + bound.h) as f64 {
-                    clicked_tray = Some(bound.id.clone());
+                    clicked_tray = Some(bound.clone());
                     break;
                 }
             }
 
-            if let Some(id) = clicked_tray {
+            if let Some(bound) = clicked_tray {
+                let id = bound.id.clone();
                 let btn_code = match button {
                     MouseButton::Left => 272,
                     MouseButton::Right => 273,
@@ -934,6 +981,10 @@ impl clear_ui::engine::Application for StatusApp {
                 };
                 let cx_i = cx as i32;
                 let cy_i = cy as i32;
+                let screen_width = self.width as i32;
+                let bar_height = read_status_height_from_config() as i32;
+                let bound_x = bound.x;
+                let bound_w = bound.w;
                 std::thread::spawn(move || {
                     let rt = tokio::runtime::Builder::new_current_thread()
                         .enable_all()
@@ -942,45 +993,56 @@ impl clear_ui::engine::Application for StatusApp {
                     rt.block_on(async move {
                         if let Some((destination, path_part)) = id.split_once('/') {
                             let path = format!("/{}", path_part);
-                            if let Ok(conn) = zbus::Connection::session().await {
-                                if let Ok(proxy) = StatusNotifierItemProxy::builder(&conn)
-                                    .destination(destination.to_string())
-                                    .unwrap()
-                                    .path(path)
-                                    .unwrap()
-                                    .build()
-                                    .await
-                                {
-                                    let is_menu = proxy.item_is_menu().await.unwrap_or(false);
-                                    let menu_path = proxy.menu().await.ok();
+                            match zbus::Connection::session().await {
+                                Ok(conn) => {
+                                    match StatusNotifierItemProxy::builder(&conn)
+                                        .destination(destination.to_string())
+                                        .unwrap()
+                                        .path(path)
+                                        .unwrap()
+                                        .build()
+                                        .await
+                                    {
+                                        Ok(proxy) => {
+                                            let is_menu = proxy.item_is_menu().await.unwrap_or(false);
+                                            let menu_path = proxy.menu().await.ok();
 
-                                    let should_show_menu = (btn_code == 273 && menu_path.is_some())
-                                        || (btn_code == 272 && is_menu && menu_path.is_some());
+                                            let should_show_menu = (btn_code == 273 && menu_path.is_some())
+                                                || (btn_code == 272 && is_menu && menu_path.is_some());
 
-                                    if should_show_menu {
-                                        if let Some(menu_p) = menu_path {
-                                            eprintln!("[tray-click] Displaying menu for {} at path {}", id, menu_p.as_str());
-                                            if let Err(e) = show_clear_cloud_menu(&conn, destination, menu_p.as_str()).await {
-                                                eprintln!("[tray-click] show_clear_cloud_menu failed: {:?}", e);
-                                            }
-                                        }
-                                    } else if btn_code == 272 {
-                                        eprintln!("[tray-click] Calling Activate on {} at ({}, {})", id, cx_i, cy_i);
-                                        if let Err(e) = proxy.activate(cx_i, cy_i).await {
-                                            eprintln!("[tray-click] Activate failed: {:?}", e);
-                                            if let Some(menu_p) = menu_path {
-                                                eprintln!("[tray-click] Fallback: Displaying menu for {}", id);
-                                                if let Err(e) = show_clear_cloud_menu(&conn, destination, menu_p.as_str()).await {
-                                                    eprintln!("[tray-click] Fallback show_clear_cloud_menu failed: {:?}", e);
+                                            let x_pos = screen_width - (bound_x + bound_w) as i32;
+                                            let y_pos = bar_height;
+
+                                            if should_show_menu {
+                                                if let Some(menu_p) = menu_path {
+                                                    if let Err(e) = show_clear_cloud_menu(&conn, destination, menu_p.as_str(), x_pos, y_pos, true).await {
+                                                        eprintln!("[tray-click] show_clear_cloud_menu failed: {:?}", e);
+                                                    }
                                                 }
+                                            } else if btn_code == 272 {
+                                                if let Err(e) = proxy.activate(cx_i, cy_i).await {
+                                                    eprintln!("[tray-click] Activate failed: {:?}", e);
+                                                    if let Some(menu_p) = menu_path {
+                                                        if let Err(e) = show_clear_cloud_menu(&conn, destination, menu_p.as_str(), x_pos, y_pos, true).await {
+                                                            eprintln!("[tray-click] Fallback show_clear_cloud_menu failed: {:?}", e);
+                                                        }
+                                                    }
+                                                }
+                                            } else if btn_code == 273 {
+                                                let _ = proxy.context_menu(cx_i, cy_i).await;
                                             }
                                         }
-                                    } else if btn_code == 273 {
-                                        eprintln!("[tray-click] Calling ContextMenu on {} at ({}, {})", id, cx_i, cy_i);
-                                        let _ = proxy.context_menu(cx_i, cy_i).await;
+                                        Err(e) => {
+                                            eprintln!("[tray-click] Failed to build proxy: {:?}", e);
+                                        }
                                     }
                                 }
+                                Err(e) => {
+                                    eprintln!("[tray-click] Failed to connect to session bus: {:?}", e);
+                                }
                             }
+                        } else {
+                            eprintln!("[tray-click] Failed to split id: {}", id);
                         }
                     });
                 });
@@ -1039,7 +1101,7 @@ impl clear_ui::engine::Application for StatusApp {
                             ]
                         }).to_string();
 
-                        if let Ok(mut child) = std::process::Command::new("clear-cloud")
+                        if let Ok(mut child) = std::process::Command::new(get_clear_cloud_cmd())
                             .args([
                                 "--json",
                                 "-x",
@@ -1365,25 +1427,35 @@ trait DBusMenu {
     fn about_to_show(&self, id: i32) -> zbus::Result<bool>;
 }
 
-fn flatten_menu(
+struct MenuItem {
+    id: i32,
+    label: String,
+    enabled: bool,
+    is_separator: bool,
+    toggle_state: i32, // -1 if not toggleable, 0 if unchecked, 1 if checked
+    children: Vec<MenuItem>,
+}
+
+fn parse_menu_item(
     id: i32,
     mut properties: std::collections::HashMap<String, zbus::zvariant::OwnedValue>,
-    children: Vec<zbus::zvariant::OwnedValue>,
-    prefix: &str,
-    out: &mut Vec<(i32, String)>
-) {
-    let label: String = properties.remove("label")
-        .and_then(|v| {
-            let s: Result<String, _> = v.try_into();
-            s.ok()
-        })
-        .unwrap_or_default();
+    children_vals: Vec<zbus::zvariant::OwnedValue>,
+) -> Option<MenuItem> {
     let type_: String = properties.remove("type")
         .and_then(|v| {
             let s: Result<String, _> = v.try_into();
             s.ok()
         })
         .unwrap_or_default();
+    let is_separator = type_ == "separator";
+
+    let label: String = properties.remove("label")
+        .and_then(|v| {
+            let s: Result<String, _> = v.try_into();
+            s.ok()
+        })
+        .unwrap_or_default();
+
     let enabled: bool = properties.remove("enabled")
         .and_then(|v| {
             let b: Result<bool, _> = v.try_into();
@@ -1391,31 +1463,51 @@ fn flatten_menu(
         })
         .unwrap_or(true);
 
-    if type_ == "separator" || !enabled {
-        // Skip
-    } else {
-        let current_path = if prefix.is_empty() {
-            label.clone()
-        } else if !label.is_empty() {
-            format!("{} > {}", prefix, label)
-        } else {
-            prefix.to_string()
-        };
+    let toggle_state: i32 = properties.remove("toggle-state")
+        .and_then(|v| {
+            let i: Result<i32, _> = v.try_into();
+            i.ok()
+        })
+        .unwrap_or(-1);
 
-        if !current_path.is_empty() && children.is_empty() {
-            out.push((id, current_path.clone()));
-        }
-
-        for child_val in children {
-            let child_val_inner = zbus::zvariant::Value::from(child_val);
-            if let Ok(child) = <(i32, std::collections::HashMap<String, zbus::zvariant::OwnedValue>, Vec<zbus::zvariant::OwnedValue>)>::try_from(child_val_inner) {
-                flatten_menu(child.0, child.1, child.2, &current_path, out);
+    let mut children = Vec::new();
+    for child_val in children_vals {
+        let child_val_inner = zbus::zvariant::Value::from(child_val);
+        if let Ok(child) = <(i32, std::collections::HashMap<String, zbus::zvariant::OwnedValue>, Vec<zbus::zvariant::OwnedValue>)>::try_from(child_val_inner) {
+            if let Some(parsed) = parse_menu_item(child.0, child.1, child.2) {
+                children.push(parsed);
             }
         }
     }
+
+    Some(MenuItem {
+        id,
+        label,
+        enabled,
+        is_separator,
+        toggle_state,
+        children,
+    })
 }
 
-async fn show_clear_cloud_menu(conn: &zbus::Connection, destination: &str, menu_path: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+fn get_clear_cloud_cmd() -> String {
+    if let Ok(home) = std::env::var("HOME") {
+        let path = format!("{}/.local/bin/clear-cloud", home);
+        if std::path::Path::new(&path).exists() {
+            return path;
+        }
+    }
+    "clear-cloud".to_string()
+}
+
+async fn show_clear_cloud_menu(
+    conn: &zbus::Connection,
+    destination: &str,
+    menu_path: &str,
+    x_pos: i32,
+    y_pos: i32,
+    align_right: bool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let menu_proxy = DBusMenuProxy::builder(conn)
         .destination(destination)?
         .path(menu_path)?
@@ -1423,51 +1515,117 @@ async fn show_clear_cloud_menu(conn: &zbus::Connection, destination: &str, menu_
         .await?;
 
     let _ = menu_proxy.about_to_show(0).await;
-    let (_, layout) = menu_proxy.get_layout(0, 3, vec![]).await?;
-    eprintln!("[tray-click] show_clear_cloud_menu layout: root_id={}, properties={:?}, children_len={}", layout.0, layout.1, layout.2.len());
+    let (_, layout) = menu_proxy.get_layout(0, 5, vec![]).await?;
 
-    let mut items = Vec::new();
-    flatten_menu(layout.0, layout.1, layout.2, "", &mut items);
-    eprintln!("[tray-click] show_clear_cloud_menu flattened items: {:?}", items);
+    let root_item = match parse_menu_item(layout.0, layout.1, layout.2) {
+        Some(item) => item,
+        None => return Ok(()),
+    };
 
-    if items.is_empty() {
-        eprintln!("[tray-click] show_clear_cloud_menu: items is empty, returning early");
-        return Ok(());
+    let mut menu_stack: Vec<&MenuItem> = vec![&root_item];
+
+    enum MenuOption<'a> {
+        Back,
+        Item(&'a MenuItem),
     }
 
-    let mut clear_cloud_input = String::new();
-    for (_, label) in &items {
-        clear_cloud_input.push_str(label);
-        clear_cloud_input.push('\n');
-    }
+    loop {
+        let current_item = *menu_stack.last().unwrap();
+        let mut display_list = Vec::new();
 
-    let mut child = std::process::Command::new("clear-cloud")
-        .args(["--dmenu", "-p", "Tray Menu:"])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()?;
-
-    if let Some(mut stdin) = child.stdin.take() {
-        use std::io::Write;
-        stdin.write_all(clear_cloud_input.as_bytes())?;
-    }
-
-    let output = child.wait_with_output()?;
-    if output.status.success() {
-        let selected = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if let Some((id, _)) = items.iter().find(|(_, label)| label == &selected) {
-            let timestamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs() as u32;
-            let val = zbus::zvariant::Value::from("");
-            let _ = menu_proxy.event(*id, "clicked", &val, timestamp).await;
+        if menu_stack.len() > 1 {
+            display_list.push(("< Back".to_string(), MenuOption::Back));
         }
-    } else {
-        let stderr_str = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        eprintln!("[tray-click] clear-cloud failed with status: {:?}, stderr: {:?}", output.status, stderr_str);
+
+        for child in &current_item.children {
+            if child.is_separator || !child.enabled {
+                continue;
+            }
+
+            let mut display_label = if child.toggle_state == 1 {
+                format!("[x] {}", child.label)
+            } else if child.toggle_state == 0 {
+                format!("[ ] {}", child.label)
+            } else {
+                child.label.clone()
+            };
+
+            if !child.children.is_empty() {
+                display_label = format!("{} >", display_label);
+            }
+
+            display_list.push((display_label, MenuOption::Item(child)));
+        }
+
+        if display_list.is_empty() {
+            break;
+        }
+
+        let mut clear_cloud_input = String::new();
+        for (label, _) in &display_list {
+            clear_cloud_input.push_str(label);
+            clear_cloud_input.push('\n');
+        }
+
+        let mut cmd_args = vec![
+            "--dmenu".to_string(),
+            "-p".to_string(),
+            "Tray Menu:".to_string(),
+            "-x".to_string(),
+            x_pos.to_string(),
+            "-y".to_string(),
+            y_pos.to_string(),
+        ];
+        if align_right {
+            cmd_args.push("--align-right".to_string());
+        }
+
+        let mut child = std::process::Command::new(get_clear_cloud_cmd())
+            .args(&cmd_args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()?;
+
+        if let Some(mut stdin) = child.stdin.take() {
+            use std::io::Write;
+            stdin.write_all(clear_cloud_input.as_bytes())?;
+        }
+
+        let output = child.wait_with_output()?;
+        if !output.status.success() {
+            break;
+        }
+
+        let selected = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if selected.is_empty() {
+            break;
+        }
+
+        if let Some((_, opt)) = display_list.iter().find(|(label, _)| label == &selected) {
+            match opt {
+                MenuOption::Back => {
+                    menu_stack.pop();
+                }
+                MenuOption::Item(menu_item) => {
+                    if !menu_item.children.is_empty() {
+                        menu_stack.push(menu_item);
+                    } else {
+                        let timestamp = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs() as u32;
+                        let val = zbus::zvariant::Value::from("");
+                        let _ = menu_proxy.event(menu_item.id, "clicked", &val, timestamp).await;
+                        break;
+                    }
+                }
+            }
+        } else {
+            break;
+        }
     }
+
     Ok(())
 }
 
@@ -1678,6 +1836,7 @@ async fn fetch_tray_item(conn: &zbus::Connection, addr: &NotifierAddress) -> Res
     let icon_name = proxy.icon_name().await.ok();
     let icon_theme_path = proxy.icon_theme_path().await.ok();
     let title = proxy.title().await.ok();
+    let dbus_id = proxy.id().await.ok();
 
     let mut pixmaps = proxy.icon_pixmap().await.ok().and_then(|v| {
         if v.is_empty() || (v.len() == 1 && v[0].0 == 0 && v[0].1 == 0) {
@@ -1724,6 +1883,7 @@ async fn fetch_tray_item(conn: &zbus::Connection, addr: &NotifierAddress) -> Res
         icon_theme_path,
         pixmaps,
         title,
+        dbus_id,
     })
 }
 
