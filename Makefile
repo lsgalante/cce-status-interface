@@ -5,7 +5,7 @@ build:
 
 install: build
 	mkdir -p ~/.local/bin
-	install -m 755 target/release/cce-status-interface ~/.local/bin/cce-status-interface
+	install -m 755 ../target/release/cce-status-interface ~/.local/bin/cce-status-interface
 
 run:
 	cargo run

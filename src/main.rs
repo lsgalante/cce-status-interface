@@ -839,7 +839,7 @@ impl clear_ui::engine::Application for StatusApp {
             app_id: "cce-status-interface".to_string(),
             width: 1920,
             height: read_status_height_from_config() as u32,
-            fullscreen: true,
+            fullscreen: false,
             min_size: None,
         }
     }
