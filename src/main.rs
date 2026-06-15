@@ -364,18 +364,16 @@ impl StatusApp {
             left_x += padding * 2.0;
         }
 
-        // 4. Focused Title (using StatusBar widget)
+        // 4. Focused Title (drawn as a Label)
         if !self.title.is_empty() && self.title != "(none)" {
             let mut display_title = self.title.clone();
             if display_title.chars().count() > 40 {
                 display_title = display_title.chars().take(37).collect::<String>() + "...";
             }
-            self.status_bar.set_text_offset_x(left_x);
-            self.status_bar.set_text_color(normal_color);
-            self.status_bar.set_text(&display_title);
-        } else {
-            self.status_bar.set_text("");
+            let label = Label::new_with_family(&mut self.font_system, &display_title, font_size, normal_color, &font_family);
+            label.draw(&mut self.text_items, left_x, (bar_h - font_size * 1.4) / 2.0);
         }
+        self.status_bar.set_text("");
 
         // 5. Right Side Stats (CPU, Mem, Bat, Clock)
         let mut right_x = sw_logical - 12.0;
