@@ -3,8 +3,8 @@ use std::sync::Arc;
 use glyphon::{
     Attrs, Buffer, FontSystem, Metrics, TextArea, TextBounds,
 };
-use clear_ui::color;
-use clear_ui::widget::{
+use cce_ui::color;
+use cce_ui::widget::{
     StyledLabel as Label, TextItem, Separator, Element,
     MouseButton, ElementState, MouseScrollDelta, KeyEvent,
 };
@@ -80,10 +80,10 @@ enum CustomEvent {
 }
 
 fn make_text_buffer(fs: &mut FontSystem, text: &str, size: f32, font_family: &str) -> Buffer {
-    let scale = clear_ui::scale::scale_factor();
+    let scale = cce_ui::scale::scale_factor();
     let mut font_size = size;
 
-    let (parsed_family, parsed_size) = clear_ui::layout::parse_font_string(font_family);
+    let (parsed_family, parsed_size) = cce_ui::layout::parse_font_string(font_family);
     if let Some(ps) = parsed_size {
         font_size = ps;
     }
@@ -95,7 +95,7 @@ fn make_text_buffer(fs: &mut FontSystem, text: &str, size: f32, font_family: &st
     let mut attrs = Attrs::new();
     if let Some(ref font_name) = family_name {
         let family = match font_name.as_str() {
-            "monospace" => glyphon::Family::Name(clear_ui::layout::get_system_monospace_font()),
+            "monospace" => glyphon::Family::Name(cce_ui::layout::get_system_monospace_font()),
             "sans-serif" => glyphon::Family::SansSerif,
             "serif" => glyphon::Family::Serif,
             name => glyphon::Family::Name(name),
@@ -248,7 +248,7 @@ struct StatusApp {
     layout_menu_pid: Option<u32>,
 
     font_system: FontSystem,
-    status_bar: clear_ui::widget::StatusBar,
+    status_bar: cce_ui::widget::StatusBar,
 
     rects: Vec<RectWidget>,
     overlay_rects: Vec<RectWidget>,
@@ -278,7 +278,7 @@ impl StatusApp {
         eprintln!("[rebuild_layout] sw_logical={}, sh_logical={}, font_family={}, font_size={}", sw_logical, sh_logical, font_family, font_size);
 
         self.current_bg_color = read_bg_color_from_config().unwrap_or(color::STATUS_BG);
-        if let Some(opacity) = clear_ui::color::read_opacity_if_configured() {
+        if let Some(opacity) = cce_ui::color::read_opacity_if_configured() {
             self.current_bg_color[3] = opacity;
         }
         eprintln!("[rebuild_layout] Using background color: {:?}", self.current_bg_color);
@@ -648,7 +648,7 @@ impl StatusApp {
                     };
 
                     let buf = make_text_buffer(&mut self.font_system, symbol, font_size, &font_family);
-                    let scale = clear_ui::scale::scale_factor();
+                    let scale = cce_ui::scale::scale_factor();
                     let tw = buf.layout_runs().next().map(|r| r.line_w).unwrap_or(0.0) / scale;
                     let tx = x + (icon_size - tw) / 2.0;
                     let ty = y + (icon_size - font_size * 1.4) / 2.0;
@@ -727,7 +727,7 @@ impl StatusApp {
                 );
                 let tooltip_font_size = font_size - 1.0;
                 let buf = make_text_buffer(&mut self.font_system, &tooltip_text, tooltip_font_size, &font_family);
-                let scale = clear_ui::scale::scale_factor();
+                let scale = cce_ui::scale::scale_factor();
                 let text_w = buf.layout_runs().next().map(|r| r.line_w).unwrap_or(0.0) / scale;
                 let padding = 6.0;
 
@@ -766,9 +766,9 @@ impl StatusApp {
 
 fn get_active_tag_index() -> u32 {
     let path = if let Ok(display) = std::env::var("WAYLAND_DISPLAY") {
-        format!("/tmp/cce-client-tags-{}", display)
+        format!("/tmp/cce-tags-{}", display)
     } else {
-        "/tmp/cce-client-tags".to_string()
+        "/tmp/cce-tags".to_string()
     };
     if let Ok(content) = std::fs::read_to_string(path) {
         let parts: Vec<&str> = content.split_whitespace().collect();
@@ -783,10 +783,10 @@ fn get_active_tag_index() -> u32 {
     1
 }
 
-impl clear_ui::engine::Application for StatusApp {
+impl cce_ui::engine::Application for StatusApp {
     type Message = CustomEvent;
 
-    fn new(_qh: &wayland_client::QueueHandle<clear_ui::engine::EngineState<Self>>, sender: calloop::channel::Sender<Self::Message>) -> Self {
+    fn new(_qh: &wayland_client::QueueHandle<cce_ui::engine::EngineState<Self>>, sender: calloop::channel::Sender<Self::Message>) -> Self {
         let sender_tags = sender.clone();
         let sender_layout = sender.clone();
         let sender_title = sender.clone();
@@ -814,7 +814,7 @@ impl clear_ui::engine::Application for StatusApp {
             layout_bounds: None,
             layout_menu_pid: None,
             font_system,
-            status_bar: clear_ui::widget::StatusBar::new(),
+            status_bar: cce_ui::widget::StatusBar::new(),
             rects: Vec::new(),
             overlay_rects: Vec::new(),
             separators: Vec::new(),
@@ -831,8 +831,8 @@ impl clear_ui::engine::Application for StatusApp {
         app
     }
 
-    fn settings(&self) -> clear_ui::engine::WindowSettings {
-        clear_ui::engine::WindowSettings {
+    fn settings(&self) -> cce_ui::engine::WindowSettings {
+        cce_ui::engine::WindowSettings {
             title: "Clear Status Interface".to_string(),
             app_id: "cce-status-interface".to_string(),
             width: 1920,
@@ -877,12 +877,12 @@ impl clear_ui::engine::Application for StatusApp {
         self.status_bar.prepare_text(&mut self.font_system);
     }
 
-    fn view(&mut self, quads: &mut Vec<(f32, f32, f32, f32, [f32; 4])>, size: clear_ui::engine::LogicalSize, scale: f64) {
+    fn view(&mut self, quads: &mut Vec<(f32, f32, f32, f32, [f32; 4])>, size: cce_ui::engine::LogicalSize, scale: f64) {
         if self.needs_rebuild || self.width != size.width as u32 || self.height != size.height as u32 || self.scale_factor != scale {
             self.width = size.width as u32;
             self.height = size.height as u32;
             self.scale_factor = scale;
-            clear_ui::scale::set_scale_factor(scale as f32);
+            cce_ui::scale::set_scale_factor(scale as f32);
             self.rebuild_layout();
         }
         let (sb_x, sb_y, sb_w, sb_h) = self.status_bar.rect();
@@ -896,7 +896,7 @@ impl clear_ui::engine::Application for StatusApp {
         }
     }
 
-    fn overlay_quads(&mut self, quads: &mut Vec<(f32, f32, f32, f32, [f32; 4])>, _size: clear_ui::engine::LogicalSize, _scale: f64) {
+    fn overlay_quads(&mut self, quads: &mut Vec<(f32, f32, f32, f32, [f32; 4])>, _size: cce_ui::engine::LogicalSize, _scale: f64) {
         for r in &self.overlay_rects {
             quads.push((r.x, r.y, r.w, r.h, r.color));
         }
@@ -936,7 +936,7 @@ impl clear_ui::engine::Application for StatusApp {
         [0.0, 0.0, 0.0, 0.0]
     }
 
-    fn handle_pointer_move(&mut self, pos: clear_ui::engine::LogicalPosition, needs_rebuild: &mut bool) {
+    fn handle_pointer_move(&mut self, pos: cce_ui::engine::LogicalPosition, needs_rebuild: &mut bool) {
         let (lx, ly) = (pos.x, pos.y);
         self.cursor_pos = (lx as f64, ly as f64);
         let mut newly_hovered = None;
@@ -954,7 +954,7 @@ impl clear_ui::engine::Application for StatusApp {
         }
     }
 
-    fn handle_mouse_input(&mut self, button: MouseButton, state: ElementState, pos: clear_ui::engine::LogicalPosition, _needs_rebuild: &mut bool) -> Option<Self::Message> {
+    fn handle_mouse_input(&mut self, button: MouseButton, state: ElementState, pos: cce_ui::engine::LogicalPosition, _needs_rebuild: &mut bool) -> Option<Self::Message> {
         if state == ElementState::Pressed {
             let (lx, ly) = (pos.x, pos.y);
             let cx = lx as f64;
@@ -1188,7 +1188,7 @@ impl clear_ui::engine::Application for StatusApp {
         None
     }
 
-    fn handle_mouse_wheel(&mut self, _delta: &MouseScrollDelta, _pos: clear_ui::engine::LogicalPosition, _needs_rebuild: &mut bool) {}
+    fn handle_mouse_wheel(&mut self, _delta: &MouseScrollDelta, _pos: cce_ui::engine::LogicalPosition, _needs_rebuild: &mut bool) {}
 
     fn handle_key_input(&mut self, _event: &KeyEvent, _needs_rebuild: &mut bool) -> Option<Self::Message> { None }
 }
@@ -1198,8 +1198,8 @@ async fn spawn_status_listener(sub: &'static str, sender: calloop::channel::Send
     use tokio::net::UnixStream;
     loop {
         let socket_path = match std::env::var("WAYLAND_DISPLAY") {
-            Ok(display) => format!("/tmp/cce-client-status-{}.sock", display),
-            Err(_) => "/tmp/cce-client-status.sock".to_string(),
+            Ok(display) => format!("/tmp/cce-status-{}.sock", display),
+            Err(_) => "/tmp/cce-status.sock".to_string(),
         };
         if let Ok(mut stream) = UnixStream::connect(&socket_path).await {
             eprintln!("[status-listener] connected to {} for sub '{}'", socket_path, sub);
@@ -2106,7 +2106,7 @@ fn main() {
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     let _guard = rt.enter();
 
-    clear_ui::engine::run::<StatusApp>();
+    cce_ui::engine::run::<StatusApp>();
 }
 
 fn read_normal_color_from_config() -> Option<[f32; 4]> {
