@@ -2109,28 +2109,41 @@ fn main() {
     cce_ui::engine::run::<StatusApp>();
 }
 
+fn parse_json(content: &str) -> serde_json::Value {
+    serde_json::from_str(content).unwrap_or_default()
+}
+
+fn json_find_key<'a>(val: &'a serde_json::Value, key: &str) -> Option<&'a serde_json::Value> {
+    if let Some(obj) = val.as_object() {
+        for (_, sec_val) in obj.iter() {
+            if let Some(sec_obj) = sec_val.as_object() {
+                if let Some(v) = sec_obj.get(key) {
+                    return Some(v);
+                }
+            }
+        }
+    }
+    None
+}
+
 fn read_normal_color_from_config() -> Option<[f32; 4]> {
-    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.toml").ok()?;
+    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.json").ok()?;
     parse_srgb_color_from_key(&content, "status_normal_color")
 }
 
 fn read_disabled_color_from_config() -> Option<[f32; 4]> {
-    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.toml").ok()?;
+    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.json").ok()?;
     parse_srgb_color_from_key(&content, "disabled_color")
 }
 
 fn parse_srgb_color_from_key(content: &str, key: &str) -> Option<[f32; 4]> {
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix(key) {
-            let rest = rest.trim_start_matches(|c: char| c == ' ' || c == '=' || c == '"');
-            let hex = rest.trim_end_matches('"').trim();
-            if let Some(rgb) = parse_hex(hex) {
-                let r = rgb[0] as f32 / 255.0;
-                let g = rgb[1] as f32 / 255.0;
-                let b = rgb[2] as f32 / 255.0;
-                return Some([r, g, b, 1.0]);
-            }
+    let val = parse_json(content);
+    if let Some(s) = json_find_key(&val, key).and_then(|v| v.as_str()) {
+        if let Some(rgb) = parse_hex(s) {
+            let r = rgb[0] as f32 / 255.0;
+            let g = rgb[1] as f32 / 255.0;
+            let b = rgb[2] as f32 / 255.0;
+            return Some([r, g, b, 1.0]);
         }
     }
     None
@@ -2147,77 +2160,37 @@ fn read_status_font_from_config() -> String {
 }
 
 fn read_status_height_from_config() -> f32 {
-    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.toml").unwrap_or_default();
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("bar_height") {
-            let rest = rest.trim_start_matches(|c: char| c == ' ' || c == '=' || c == '"');
-            if let Ok(val) = rest.trim_end_matches('"').trim().parse::<f32>() {
-                return val;
-            }
-        }
-    }
-    28.0
+    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.json").unwrap_or_default();
+    let val = parse_json(&content);
+    json_find_key(&val, "bar_height").and_then(|v| v.as_f64()).map(|n| n as f32).unwrap_or(28.0)
 }
 
 fn read_status_font_size_from_config() -> f32 {
-    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.toml").unwrap_or_default();
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("status_font_size") {
-            let rest = rest.trim_start_matches(|c: char| c == ' ' || c == '=' || c == '"');
-            if let Ok(val) = rest.trim_end_matches('"').trim().parse::<f32>() {
-                return val;
-            }
-        }
-    }
-    11.0
+    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.json").unwrap_or_default();
+    let val = parse_json(&content);
+    json_find_key(&val, "status_font_size").and_then(|v| v.as_f64()).map(|n| n as f32).unwrap_or(11.0)
 }
 
 fn read_status_separators_from_config() -> bool {
-    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.toml").unwrap_or_default();
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("status_separators") {
-            let rest = rest.trim_start_matches(|c: char| c == ' ' || c == '=' || c == '"');
-            if let Ok(val) = rest.trim_end_matches('"').trim().parse::<bool>() {
-                return val;
-            }
-        }
-    }
-    true
+    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.json").unwrap_or_default();
+    let val = parse_json(&content);
+    json_find_key(&val, "status_separators").and_then(|v| v.as_bool()).unwrap_or(true)
 }
 
 fn read_status_underline_from_config() -> bool {
-    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.toml").unwrap_or_default();
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("status_underline") {
-            let rest = rest.trim_start_matches(|c: char| c == ' ' || c == '=' || c == '"');
-            if let Ok(val) = rest.trim_end_matches('"').trim().parse::<bool>() {
-                return val;
-            }
-        }
-    }
-    true
+    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.json").unwrap_or_default();
+    let val = parse_json(&content);
+    json_find_key(&val, "status_underline").and_then(|v| v.as_bool()).unwrap_or(true)
 }
 
 fn read_status_padding_from_config() -> f32 {
-    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.toml").unwrap_or_default();
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("status_padding") {
-            let rest = rest.trim_start_matches(|c: char| c == ' ' || c == '=' || c == '"');
-            if let Ok(val) = rest.trim_end_matches('"').trim().parse::<f32>() {
-                return val;
-            }
-        }
-    }
-    8.0
+    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.json").unwrap_or_default();
+    let val = parse_json(&content);
+    json_find_key(&val, "status_padding").and_then(|v| v.as_f64()).map(|n| n as f32).unwrap_or(8.0)
 }
 
 fn read_separator_color_from_config() -> Option<[f32; 4]> {
-    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.toml").ok()?;
+    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.json").ok()?;
     parse_color_from_key(&content, "status_separator_color")
 }
 
@@ -2249,23 +2222,19 @@ fn parse_font_for_alias(content: &str, alias: &str) -> Option<String> {
 }
 
 fn read_bg_color_from_config() -> Option<[f32; 4]> {
-    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.toml").ok()?;
+    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.json").ok()?;
     parse_color_from_key(&content, "low_color")
         .or_else(|| parse_color_from_key(&content, "background_color"))
 }
 
 fn parse_color_from_key(content: &str, key: &str) -> Option<[f32; 4]> {
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix(key) {
-            let rest = rest.trim_start_matches(|c: char| c == ' ' || c == '=' || c == '"');
-            let hex = rest.trim_end_matches('"').trim();
-            if let Some(rgb) = parse_hex(hex) {
-                let r = (rgb[0] as f32 / 255.0).powf(2.2);
-                let g = (rgb[1] as f32 / 255.0).powf(2.2);
-                let b = (rgb[2] as f32 / 255.0).powf(2.2);
-                return Some([r, g, b, 1.0]);
-            }
+    let val = parse_json(content);
+    if let Some(s) = json_find_key(&val, key).and_then(|v| v.as_str()) {
+        if let Some(rgb) = parse_hex(s) {
+            let r = (rgb[0] as f32 / 255.0).powf(2.2);
+            let g = (rgb[1] as f32 / 255.0).powf(2.2);
+            let b = (rgb[2] as f32 / 255.0).powf(2.2);
+            return Some([r, g, b, 1.0]);
         }
     }
     None
