@@ -264,6 +264,7 @@ struct StatusApp {
 }
 
 impl StatusApp {
+    #[allow(unused_assignments)]
     fn rebuild_layout(&mut self) {
         let font_family = read_status_font_from_config();
         let font_size = read_status_font_size_from_config();

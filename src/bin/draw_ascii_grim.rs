@@ -20,9 +20,9 @@ fn main() {
     };
 
     // The actual status bar background color is R=69, G=69, B=89
-    let bg_r = 69;
-    let bg_g = 69;
-    let bg_b = 89;
+    let _bg_r = 69;
+    let _bg_g = 69;
+    let _bg_b = 89;
 
     println!("Strikethrough line pixels at y=30, x=3266..3344 (step by 8):");
     for x in (3266..3344).step_by(8) {
