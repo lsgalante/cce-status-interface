@@ -232,6 +232,13 @@ struct RectWidget {
     color: [f32; 4],
 }
 
+struct RoundedBox {
+    x: f32, y: f32, w: f32, h: f32,
+    radius: f32,
+    color: [f32; 4],
+    corners: (bool, bool, bool, bool),
+}
+
 
 struct StatusApp {
     // Status State
@@ -252,6 +259,7 @@ struct StatusApp {
 
     rects: Vec<RectWidget>,
     overlay_rects: Vec<RectWidget>,
+    rounded_boxes: Vec<RoundedBox>,
     separators: Vec<Separator>,
     text_items: Vec<TextItem>,
 
@@ -286,8 +294,12 @@ impl StatusApp {
 
         self.rects.clear();
         self.overlay_rects.clear();
+        self.rounded_boxes.clear();
         self.separators.clear();
         self.text_items.clear();
+
+        let box_bg_color = read_status_box_background_color_from_config();
+        let status_box_radius = read_status_box_corner_radius_from_config();
 
         // 1. Background (using StatusBar widget)
         self.status_bar.set_rect(0.0, 0.0, sw_logical, bar_h);
@@ -312,6 +324,17 @@ impl StatusApp {
             let label_str = format!(" {} ", text);
             let label = Label::new_with_family(&mut self.font_system, &label_str, font_size, col, &font_family);
             let line_w = label.draw(&mut self.text_items, left_x, (bar_h - font_size * 1.4) / 2.0);
+            if let Some(color) = box_bg_color {
+                self.rounded_boxes.push(RoundedBox {
+                    x: left_x,
+                    y: 0.0,
+                    w: line_w,
+                    h: bar_h,
+                    radius: status_box_radius,
+                    color,
+                    corners: (false, false, true, true),
+                });
+            }
             self.tag_bounds.push(TagBounds {
                 name: text.clone(),
                 x: left_x,
@@ -341,6 +364,17 @@ impl StatusApp {
             let label_str = self.layout.clone();
             let label = Label::new_with_family(&mut self.font_system, &label_str, font_size, normal_color, &font_family);
             let line_w = label.draw(&mut self.text_items, left_x, (bar_h - font_size * 1.4) / 2.0);
+            if let Some(color) = box_bg_color {
+                self.rounded_boxes.push(RoundedBox {
+                    x: left_x,
+                    y: 0.0,
+                    w: line_w,
+                    h: bar_h,
+                    radius: status_box_radius,
+                    color,
+                    corners: (false, false, true, true),
+                });
+            }
             eprintln!("[rebuild_layout] Layout Mode: '{}', x={}, y={}, w={}, h={}", self.layout, left_x, 0.0, line_w, bar_h);
             self.layout_bounds = Some(LayoutBounds {
                 x: left_x,
@@ -372,6 +406,17 @@ impl StatusApp {
                 display_title = display_title.chars().take(37).collect::<String>() + "...";
             }
             let label = Label::new_with_family(&mut self.font_system, &display_title, font_size, normal_color, &font_family);
+            if let Some(color) = box_bg_color {
+                self.rounded_boxes.push(RoundedBox {
+                    x: left_x,
+                    y: 0.0,
+                    w: label.w,
+                    h: bar_h,
+                    radius: status_box_radius,
+                    color,
+                    corners: (false, false, true, true),
+                });
+            }
             label.draw(&mut self.text_items, left_x, (bar_h - font_size * 1.4) / 2.0);
         }
         self.status_bar.set_text("");
@@ -389,6 +434,17 @@ impl StatusApp {
             // Clock
             let label = Label::new_with_family(&mut self.font_system, &stats.clock, font_size, normal_color, &font_family);
             right_x -= clock_w;
+            if let Some(color) = box_bg_color {
+                self.rounded_boxes.push(RoundedBox {
+                    x: right_x,
+                    y: 0.0,
+                    w: clock_w,
+                    h: bar_h,
+                    radius: status_box_radius,
+                    color,
+                    corners: (false, false, true, true),
+                });
+            }
             let draw_x = right_x + (clock_w - label.w) / 2.0; // centered
             eprintln!("[rebuild_layout] Clock: x={}, w={}", draw_x, label.w);
             label.draw(&mut self.text_items, draw_x, (bar_h - font_size * 1.4) / 2.0);
@@ -412,6 +468,17 @@ impl StatusApp {
                 };
                 let label = Label::new_with_family(&mut self.font_system, &stats.battery, font_size, bat_color, &font_family);
                 right_x -= battery_w;
+                if let Some(color) = box_bg_color {
+                    self.rounded_boxes.push(RoundedBox {
+                        x: right_x,
+                        y: 0.0,
+                        w: battery_w,
+                        h: bar_h,
+                        radius: status_box_radius,
+                        color,
+                        corners: (false, false, true, true),
+                    });
+                }
                 let draw_x = right_x + (battery_w - label.w) / 2.0; // centered
                 eprintln!("[rebuild_layout] Battery: x={}, w={}", draw_x, label.w);
                 label.draw(&mut self.text_items, draw_x, (bar_h - font_size * 1.4) / 2.0);
@@ -438,6 +505,17 @@ impl StatusApp {
                 let label = Label::new_with_family(&mut self.font_system, &stats.volume, font_size, color_val, &font_family)
                     .with_strikethrough(is_muted);
                 right_x -= volume_w;
+                if let Some(color) = box_bg_color {
+                    self.rounded_boxes.push(RoundedBox {
+                        x: right_x,
+                        y: 0.0,
+                        w: volume_w,
+                        h: bar_h,
+                        radius: status_box_radius,
+                        color,
+                        corners: (false, false, true, true),
+                    });
+                }
                 let draw_x = right_x + (volume_w - label.w) / 2.0; // centered
                 let start_y = (bar_h - font_size * 1.4) / 2.0;
                 eprintln!("[rebuild_layout] Volume: x={}, w={}, is_muted={}", draw_x, label.w, is_muted);
@@ -468,6 +546,17 @@ impl StatusApp {
                 }
                 let label = Label::new_with_family(&mut self.font_system, &stats.brightness, font_size, normal_color, &font_family);
                 right_x -= brightness_w;
+                if let Some(color) = box_bg_color {
+                    self.rounded_boxes.push(RoundedBox {
+                        x: right_x,
+                        y: 0.0,
+                        w: brightness_w,
+                        h: bar_h,
+                        radius: status_box_radius,
+                        color,
+                        corners: (false, false, true, true),
+                    });
+                }
                 let draw_x = right_x + (brightness_w - label.w) / 2.0; // centered
                 eprintln!("[rebuild_layout] Brightness: x={}, w={}", draw_x, label.w);
                 label.draw(&mut self.text_items, draw_x, (bar_h - font_size * 1.4) / 2.0);
@@ -486,6 +575,17 @@ impl StatusApp {
             }
             let label = Label::new_with_family(&mut self.font_system, &stats.memory, font_size, normal_color, &font_family);
             right_x -= memory_w;
+            if let Some(color) = box_bg_color {
+                self.rounded_boxes.push(RoundedBox {
+                    x: right_x,
+                    y: 0.0,
+                    w: memory_w,
+                    h: bar_h,
+                    radius: status_box_radius,
+                    color,
+                    corners: (false, false, true, true),
+                });
+            }
             let draw_x = right_x + (memory_w - label.w) / 2.0; // centered
             eprintln!("[rebuild_layout] Memory: x={}, w={}", draw_x, label.w);
             label.draw(&mut self.text_items, draw_x, (bar_h - font_size * 1.4) / 2.0);
@@ -503,6 +603,17 @@ impl StatusApp {
             }
             let label = Label::new_with_family(&mut self.font_system, &stats.cpu, font_size, normal_color, &font_family);
             right_x -= cpu_w;
+            if let Some(color) = box_bg_color {
+                self.rounded_boxes.push(RoundedBox {
+                    x: right_x,
+                    y: 0.0,
+                    w: cpu_w,
+                    h: bar_h,
+                    radius: status_box_radius,
+                    color,
+                    corners: (false, false, true, true),
+                });
+            }
             let draw_x = right_x + (cpu_w - label.w) / 2.0; // centered
             eprintln!("[rebuild_layout] CPU: x={}, w={}", draw_x, label.w);
             label.draw(&mut self.text_items, draw_x, (bar_h - font_size * 1.4) / 2.0);
@@ -830,6 +941,7 @@ impl cce_ui::engine::Application for StatusApp {
             status_bar: cce_ui::widget::StatusBar::new(),
             rects: Vec::new(),
             overlay_rects: Vec::new(),
+            rounded_boxes: Vec::new(),
             separators: Vec::new(),
             text_items: Vec::new(),
             scale_factor: 1.0,
@@ -846,7 +958,7 @@ impl cce_ui::engine::Application for StatusApp {
 
     fn settings(&self) -> cce_ui::engine::WindowSettings {
         cce_ui::engine::WindowSettings {
-            title: "Clear Status Interface".to_string(),
+            title: "Status Interface".to_string(),
             app_id: "cce-status-interface".to_string(),
             width: 1920,
             height: read_status_height_from_config() as u32,
@@ -906,6 +1018,12 @@ impl cce_ui::engine::Application for StatusApp {
         for sep in &self.separators {
             let (x, y, w, h) = sep.rect();
             quads.push((x, y, w, h, sep.color()));
+        }
+    }
+
+    fn view_rounded_quads(&mut self, quads: &mut Vec<(f32, f32, f32, f32, f32, [f32; 4], (bool, bool, bool, bool))>, _size: cce_ui::engine::LogicalSize, _scale: f64) {
+        for rb in &self.rounded_boxes {
+            quads.push((rb.x, rb.y, rb.w, rb.h, rb.radius, rb.color, rb.corners));
         }
     }
 
@@ -2264,4 +2382,21 @@ fn parse_hex(s: &str) -> Option<[u8; 3]> {
     } else {
         None
     }
+}
+
+fn read_status_box_background_color_from_config() -> Option<[f32; 4]> {
+    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.json").unwrap_or_default();
+    parse_color_from_key(&content, "status_box_background_color")
+        .or_else(|| {
+            let r = (0x15 as f32 / 255.0).powf(2.2);
+            let g = (0x15 as f32 / 255.0).powf(2.2);
+            let b = (0x20 as f32 / 255.0).powf(2.2);
+            Some([r, g, b, 1.0])
+        })
+}
+
+fn read_status_box_corner_radius_from_config() -> f32 {
+    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.json").unwrap_or_default();
+    let val = parse_json(&content);
+    json_find_key(&val, "status_box_corner_radius").and_then(|v| v.as_f64()).map(|n| n as f32).unwrap_or(4.0)
 }
