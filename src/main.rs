@@ -765,19 +765,31 @@ impl StatusApp {
     }
 }
 
-fn get_active_tag_index() -> u32 {
-    let path = if let Ok(display) = std::env::var("WAYLAND_DISPLAY") {
-        format!("/tmp/cce-tags-{}", display)
-    } else {
-        "/tmp/cce-tags".to_string()
-    };
-    if let Ok(content) = std::fs::read_to_string(path) {
-        let parts: Vec<&str> = content.split_whitespace().collect();
-        if parts.len() >= 2 {
-            if let Ok(focused_tags) = parts[1].parse::<u32>() {
-                if focused_tags > 0 {
-                    return focused_tags.trailing_zeros() + 1;
-                }
+fn get_closest_tag(x: f64, y: f64) -> i32 {
+    let centers = [(0.0, 0.0), (2000.0, 0.0), (0.0, 2000.0), (2000.0, 2000.0)];
+    let mut min_dist = f64::MAX;
+    let mut best_tag = 1;
+    for (i, &(cx, cy)) in centers.iter().enumerate() {
+        let dx = x - cx;
+        let dy = y - cy;
+        let dist = dx * dx + dy * dy;
+        if dist < min_dist {
+            min_dist = dist;
+            best_tag = (i + 1) as i32;
+        }
+    }
+    best_tag
+}
+
+fn get_active_tag_from_camera(tags_json: &str) -> u32 {
+    if let Some(pan_idx) = tags_json.find("Pan: (") {
+        let coords_str = &tags_json[pan_idx + "Pan: (".len()..];
+        if let Some(end_idx) = coords_str.find(")") {
+            let parts: Vec<&str> = coords_str[..end_idx].split(',').collect();
+            if parts.len() == 2 {
+                let pan_x = parts[0].trim().parse::<f64>().unwrap_or(0.0);
+                let pan_y = parts[1].trim().parse::<f64>().unwrap_or(0.0);
+                return get_closest_tag(pan_x, pan_y) as u32;
             }
         }
     }
@@ -1117,9 +1129,9 @@ impl cce_ui::engine::Application for StatusApp {
                             self.layout_menu_pid = Some(pid);
                             eprintln!("[layout-click] Spawned clear-cloud with PID {}", pid);
                             
+                            let active_tag = get_active_tag_from_camera(&self.tags);
                             let thread_sender = self.sender.clone();
                             std::thread::spawn(move || {
-                                let active_tag = get_active_tag_index();
                                 eprintln!("[layout-click] Active tag is {}", active_tag);
                                 if let Some(mut stdin) = child.stdin.take() {
                                     use std::io::Write;
