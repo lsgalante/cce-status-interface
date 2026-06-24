@@ -1,3 +1,6 @@
+mod modules;
+use modules::{StatusModule, TagsModule, LayoutModule, TitleModule, ClockModule, BatteryModule, VolumeModule, BrightnessModule, MemoryModule, CpuModule, TrayModule};
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use glyphon::{
@@ -5,67 +8,67 @@ use glyphon::{
 };
 use cce_ui::color;
 use cce_ui::widget::{
-    StyledLabel as Label, TextItem, Separator, Element,
+    TextItem, Separator, Element,
     MouseButton, ElementState, MouseScrollDelta, KeyEvent,
 };
 
 #[derive(Debug, Clone)]
-struct TrayPixmap {
-    width: i32,
-    height: i32,
-    pixels: Vec<u8>,
+pub struct TrayPixmap {
+    pub width: i32,
+    pub height: i32,
+    pub pixels: Vec<u8>,
 }
 
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
-struct TrayItem {
-    id: String,
-    icon_name: Option<String>,
-    icon_theme_path: Option<String>,
-    pixmaps: Option<Vec<TrayPixmap>>,
-    title: Option<String>,
-    dbus_id: Option<String>,
+pub struct TrayItem {
+    pub id: String,
+    pub icon_name: Option<String>,
+    pub icon_theme_path: Option<String>,
+    pub pixmaps: Option<Vec<TrayPixmap>>,
+    pub title: Option<String>,
+    pub dbus_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
-struct TrayIconBounds {
-    id: String,
-    x: f32,
-    y: f32,
-    w: f32,
-    h: f32,
-    title: Option<String>,
-    dbus_id: Option<String>,
+pub struct TrayIconBounds {
+    pub id: String,
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    pub title: Option<String>,
+    pub dbus_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
-struct TagBounds {
-    name: String,
-    x: f32,
-    y: f32,
-    w: f32,
-    h: f32,
+pub struct TagBounds {
+    pub name: String,
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
 }
 
 #[derive(Debug, Clone)]
-struct LayoutBounds {
-    x: f32,
-    y: f32,
-    w: f32,
-    h: f32,
+pub struct LayoutBounds {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
 }
 
 #[derive(Debug, Clone)]
-struct SystemStats {
-    clock: String,
-    memory: String,
-    cpu: String,
-    battery: String,
-    battery_capacity: i32,
-    battery_charging: bool,
-    volume: String,
-    volume_muted: bool,
-    brightness: String,
+pub struct SystemStats {
+    pub clock: String,
+    pub memory: String,
+    pub cpu: String,
+    pub battery: String,
+    pub battery_capacity: i32,
+    pub battery_charging: bool,
+    pub volume: String,
+    pub volume_muted: bool,
+    pub brightness: String,
 }
 
 #[derive(Debug, Clone)]
@@ -79,7 +82,7 @@ enum CustomEvent {
     LayoutMenuClosed(u32),
 }
 
-fn make_text_buffer(fs: &mut FontSystem, text: &str, size: f32, font_family: &str) -> Buffer {
+pub(crate) fn make_text_buffer(fs: &mut FontSystem, text: &str, size: f32, font_family: &str) -> Buffer {
     let scale = cce_ui::scale::scale_factor();
     let mut font_size = size;
 
@@ -107,7 +110,7 @@ fn make_text_buffer(fs: &mut FontSystem, text: &str, size: f32, font_family: &st
     buf
 }
 
-fn parse_hex_to_rgba(hex: &str) -> Option<[f32; 4]> {
+pub(crate) fn parse_hex_to_rgba(hex: &str) -> Option<[f32; 4]> {
     let s = hex.trim_start_matches('#');
     if s.len() == 6 {
         let r = u8::from_str_radix(&s[0..2], 16).ok()? as f32 / 255.0;
@@ -119,7 +122,7 @@ fn parse_hex_to_rgba(hex: &str) -> Option<[f32; 4]> {
     }
 }
 
-fn parse_tags(pango: &str) -> Vec<([f32; 4], String)> {
+pub(crate) fn parse_tags(pango: &str) -> Vec<([f32; 4], String)> {
     let mut result = Vec::new();
     let mut remaining = pango;
     while let Some(start_span) = remaining.find("<span color='") {
@@ -227,16 +230,16 @@ fn read_brightness() -> Option<String> {
     None
 }
 
-struct RectWidget {
-    x: f32, y: f32, w: f32, h: f32,
-    color: [f32; 4],
+pub struct RectWidget {
+    pub x: f32, pub y: f32, pub w: f32, pub h: f32,
+    pub color: [f32; 4],
 }
 
-struct RoundedBox {
-    x: f32, y: f32, w: f32, h: f32,
-    radius: f32,
-    color: [f32; 4],
-    corners: (bool, bool, bool, bool),
+pub struct RoundedBox {
+    pub x: f32, pub y: f32, pub w: f32, pub h: f32,
+    pub radius: f32,
+    pub color: [f32; 4],
+    pub corners: (bool, bool, bool, bool),
 }
 
 
@@ -276,21 +279,17 @@ impl StatusApp {
     fn rebuild_layout(&mut self) {
         let font_family = read_status_font_from_config();
         let font_size = read_status_font_size_from_config();
-        let show_separators = read_status_separators_from_config();
+        let show_separators = false;
         let padding = read_status_padding_from_config();
         let separator_color = read_separator_color_from_config().unwrap_or(color::STATUS_ACCENT);
         let normal_color = read_normal_color_from_config().unwrap_or(color::TEXT_FG);
         let sw_logical = self.width as f32;
-        let sh_logical = self.height as f32;
-        let _s = 1.0f32;
         let bar_h = read_status_height_from_config();
-        eprintln!("[rebuild_layout] sw_logical={}, sh_logical={}, font_family={}, font_size={}", sw_logical, sh_logical, font_family, font_size);
 
         self.current_bg_color = read_bg_color_from_config().unwrap_or(color::STATUS_BG);
         if let Some(opacity) = cce_ui::color::read_opacity_if_configured() {
             self.current_bg_color[3] = opacity;
         }
-        eprintln!("[rebuild_layout] Using background color: {:?}", self.current_bg_color);
 
         self.rects.clear();
         self.overlay_rects.clear();
@@ -301,13 +300,11 @@ impl StatusApp {
         let box_bg_color = read_status_box_background_color_from_config();
         let status_box_radius = read_status_box_corner_radius_from_config();
 
-        // 1. Background (using StatusBar widget)
         self.status_bar.set_rect(0.0, 0.0, sw_logical, bar_h);
         self.status_bar.set_bg_color(self.current_bg_color);
         
         let show_underline = read_status_underline_from_config();
         if show_underline {
-            // 1b. Accent border at bottom of the status bar area
             self.rects.push(RectWidget {
                 x: 0.0, y: bar_h - 2.0, w: sw_logical, h: 2.0,
                 color: separator_color,
@@ -316,472 +313,172 @@ impl StatusApp {
 
         self.tag_bounds.clear();
         self.layout_bounds = None;
+
+        let left_modules: Vec<Box<dyn StatusModule>> = vec![
+            Box::new(TagsModule),
+            Box::new(LayoutModule),
+            Box::new(TitleModule),
+        ];
+
+        let right_modules: Vec<Box<dyn StatusModule>> = vec![
+            Box::new(TrayModule),
+            Box::new(CpuModule),
+            Box::new(MemoryModule),
+            Box::new(BrightnessModule),
+            Box::new(VolumeModule),
+            Box::new(BatteryModule),
+            Box::new(ClockModule),
+        ];
+
         let mut left_x = 12.0;
-
-        // 2. Tags
-        let tags = parse_tags(&self.tags);
-        for (col, text) in tags {
-            let label_str = format!(" {} ", text);
-            let label = Label::new_with_family(&mut self.font_system, &label_str, font_size, col, &font_family);
-            let line_w = label.draw(&mut self.text_items, left_x, (bar_h - font_size * 1.4) / 2.0);
-            if let Some(color) = box_bg_color {
-                self.rounded_boxes.push(RoundedBox {
-                    x: left_x,
-                    y: 0.0,
-                    w: line_w,
-                    h: bar_h,
-                    radius: status_box_radius,
-                    color,
-                    corners: (false, false, true, true),
-                });
-            }
-            self.tag_bounds.push(TagBounds {
-                name: text.clone(),
-                x: left_x,
-                y: 0.0,
-                w: line_w,
-                h: bar_h,
-            });
-            left_x += line_w + 4.0;
-        }
-
-        // Spacing/separator before Layout
-        if !self.layout.is_empty() {
-            if show_separators {
-                self.separators.push(Separator::new(
-                    left_x + padding,
-                    0.0,
-                    1.0,
-                    bar_h,
-                    separator_color,
-                ));
-            }
-            left_x += padding * 2.0;
-        }
-
-        // 3. Layout Mode
-        if !self.layout.is_empty() {
-            let label_str = self.layout.clone();
-            let label = Label::new_with_family(&mut self.font_system, &label_str, font_size, normal_color, &font_family);
-            let line_w = label.draw(&mut self.text_items, left_x, (bar_h - font_size * 1.4) / 2.0);
-            if let Some(color) = box_bg_color {
-                self.rounded_boxes.push(RoundedBox {
-                    x: left_x,
-                    y: 0.0,
-                    w: line_w,
-                    h: bar_h,
-                    radius: status_box_radius,
-                    color,
-                    corners: (false, false, true, true),
-                });
-            }
-            eprintln!("[rebuild_layout] Layout Mode: '{}', x={}, y={}, w={}, h={}", self.layout, left_x, 0.0, line_w, bar_h);
-            self.layout_bounds = Some(LayoutBounds {
-                x: left_x,
-                y: 0.0,
-                w: line_w,
-                h: bar_h,
-            });
-            left_x += line_w;
-        }
-
-        // Spacing/separator before Title
-        if !self.title.is_empty() && self.title != "(none)" {
-            if show_separators {
-                self.separators.push(Separator::new(
-                    left_x + padding,
-                    0.0,
-                    1.0,
-                    bar_h,
-                    separator_color,
-                ));
-            }
-            left_x += padding * 2.0;
-        }
-
-        // 4. Focused Title (drawn as a Label)
-        if !self.title.is_empty() && self.title != "(none)" {
-            let mut display_title = self.title.clone();
-            if display_title.chars().count() > 40 {
-                display_title = display_title.chars().take(37).collect::<String>() + "...";
-            }
-            let label = Label::new_with_family(&mut self.font_system, &display_title, font_size, normal_color, &font_family);
-            if let Some(color) = box_bg_color {
-                self.rounded_boxes.push(RoundedBox {
-                    x: left_x,
-                    y: 0.0,
-                    w: label.w,
-                    h: bar_h,
-                    radius: status_box_radius,
-                    color,
-                    corners: (false, false, true, true),
-                });
-            }
-            label.draw(&mut self.text_items, left_x, (bar_h - font_size * 1.4) / 2.0);
-        }
-        self.status_bar.set_text("");
-
-        // 5. Right Side Stats (CPU, Mem, Bat, Clock)
-        let mut right_x = sw_logical - 12.0;
-        if let Some(ref stats) = self.stats {
-            let clock_w = 270.0;
-            let battery_w = 80.0;
-            let volume_w = 80.0;
-            let brightness_w = 80.0;
-            let memory_w = 140.0;
-            let cpu_w = 90.0;
-
-            // Clock
-            let label = Label::new_with_family(&mut self.font_system, &stats.clock, font_size, normal_color, &font_family);
-            right_x -= clock_w;
-            if let Some(color) = box_bg_color {
-                self.rounded_boxes.push(RoundedBox {
-                    x: right_x,
-                    y: 0.0,
-                    w: clock_w,
-                    h: bar_h,
-                    radius: status_box_radius,
-                    color,
-                    corners: (false, false, true, true),
-                });
-            }
-            let draw_x = right_x + (clock_w - label.w) / 2.0; // centered
-            eprintln!("[rebuild_layout] Clock: x={}, w={}", draw_x, label.w);
-            label.draw(&mut self.text_items, draw_x, (bar_h - font_size * 1.4) / 2.0);
-
-            // Battery
-            if !stats.battery.is_empty() {
-                right_x -= padding * 2.0;
-                if show_separators {
+        let mut is_first_left = true;
+        for module in &left_modules {
+            let w = module.width(
+                &self.stats,
+                &self.tags,
+                &self.layout,
+                &self.title,
+                &mut self.font_system,
+                &font_family,
+                font_size,
+                &self.tray_items,
+            );
+            if w > 0.0 {
+                if !is_first_left && show_separators {
                     self.separators.push(Separator::new(
-                        right_x + padding,
+                        left_x + padding,
                         0.0,
                         1.0,
                         bar_h,
                         separator_color,
                     ));
+                    left_x += padding * 2.0;
                 }
-                let bat_color = if !stats.battery_charging && stats.battery_capacity > 10 {
-                    normal_color
-                } else {
-                    color::TEXT_ACCENT
-                };
-                let label = Label::new_with_family(&mut self.font_system, &stats.battery, font_size, bat_color, &font_family);
-                right_x -= battery_w;
-                if let Some(color) = box_bg_color {
-                    self.rounded_boxes.push(RoundedBox {
-                        x: right_x,
-                        y: 0.0,
-                        w: battery_w,
-                        h: bar_h,
-                        radius: status_box_radius,
-                        color,
-                        corners: (false, false, true, true),
-                    });
-                }
-                let draw_x = right_x + (battery_w - label.w) / 2.0; // centered
-                eprintln!("[rebuild_layout] Battery: x={}, w={}", draw_x, label.w);
-                label.draw(&mut self.text_items, draw_x, (bar_h - font_size * 1.4) / 2.0);
-            }
+                is_first_left = false;
 
-            // Volume
-            if !stats.volume.is_empty() {
-                right_x -= padding * 2.0;
-                if show_separators {
-                    self.separators.push(Separator::new(
-                        right_x + padding,
-                        0.0,
-                        1.0,
-                        bar_h,
-                        separator_color,
-                    ));
-                }
-                let is_muted = stats.volume_muted;
-                let color_val = if is_muted {
-                    read_disabled_color_from_config().unwrap_or(color::TEXT_DIM)
-                } else {
-                    normal_color
-                };
-                let label = Label::new_with_family(&mut self.font_system, &stats.volume, font_size, color_val, &font_family)
-                    .with_strikethrough(is_muted);
-                right_x -= volume_w;
-                if let Some(color) = box_bg_color {
-                    self.rounded_boxes.push(RoundedBox {
-                        x: right_x,
-                        y: 0.0,
-                        w: volume_w,
-                        h: bar_h,
-                        radius: status_box_radius,
-                        color,
-                        corners: (false, false, true, true),
-                    });
-                }
-                let draw_x = right_x + (volume_w - label.w) / 2.0; // centered
-                let start_y = (bar_h - font_size * 1.4) / 2.0;
-                eprintln!("[rebuild_layout] Volume: x={}, w={}, is_muted={}", draw_x, label.w, is_muted);
-                if let Some((sx, sy, sw_rect, sh_rect, scol)) = label.strikethrough_rect(draw_x, start_y, self.scale_factor as f32) {
-                    eprintln!("[rebuild_layout] Strikethrough rect: sx={}, sy={}, sw={}, sh={}, scol={:?}", sx, sy, sw_rect, sh_rect, scol);
-                    self.overlay_rects.push(RectWidget {
-                        x: sx,
-                        y: sy,
-                        w: sw_rect,
-                        h: sh_rect,
-                        color: color::to_linear(scol),
-                    });
-                }
-                label.draw(&mut self.text_items, draw_x, start_y);
-            }
-
-            // Brightness
-            if !stats.brightness.is_empty() {
-                right_x -= padding * 2.0;
-                if show_separators {
-                    self.separators.push(Separator::new(
-                        right_x + padding,
-                        0.0,
-                        1.0,
-                        bar_h,
-                        separator_color,
-                    ));
-                }
-                let label = Label::new_with_family(&mut self.font_system, &stats.brightness, font_size, normal_color, &font_family);
-                right_x -= brightness_w;
-                if let Some(color) = box_bg_color {
-                    self.rounded_boxes.push(RoundedBox {
-                        x: right_x,
-                        y: 0.0,
-                        w: brightness_w,
-                        h: bar_h,
-                        radius: status_box_radius,
-                        color,
-                        corners: (false, false, true, true),
-                    });
-                }
-                let draw_x = right_x + (brightness_w - label.w) / 2.0; // centered
-                eprintln!("[rebuild_layout] Brightness: x={}, w={}", draw_x, label.w);
-                label.draw(&mut self.text_items, draw_x, (bar_h - font_size * 1.4) / 2.0);
-            }
-
-            // Memory
-            right_x -= padding * 2.0;
-            if show_separators {
-                self.separators.push(Separator::new(
-                    right_x + padding,
-                    0.0,
-                    1.0,
-                    bar_h,
-                    separator_color,
-                ));
-            }
-            let label = Label::new_with_family(&mut self.font_system, &stats.memory, font_size, normal_color, &font_family);
-            right_x -= memory_w;
-            if let Some(color) = box_bg_color {
-                self.rounded_boxes.push(RoundedBox {
-                    x: right_x,
-                    y: 0.0,
-                    w: memory_w,
-                    h: bar_h,
-                    radius: status_box_radius,
-                    color,
-                    corners: (false, false, true, true),
-                });
-            }
-            let draw_x = right_x + (memory_w - label.w) / 2.0; // centered
-            eprintln!("[rebuild_layout] Memory: x={}, w={}", draw_x, label.w);
-            label.draw(&mut self.text_items, draw_x, (bar_h - font_size * 1.4) / 2.0);
-
-            // CPU
-            right_x -= padding * 2.0;
-            if show_separators {
-                self.separators.push(Separator::new(
-                    right_x + padding,
-                    0.0,
-                    1.0,
-                    bar_h,
-                    separator_color,
-                ));
-            }
-            let label = Label::new_with_family(&mut self.font_system, &stats.cpu, font_size, normal_color, &font_family);
-            right_x -= cpu_w;
-            if let Some(color) = box_bg_color {
-                self.rounded_boxes.push(RoundedBox {
-                    x: right_x,
-                    y: 0.0,
-                    w: cpu_w,
-                    h: bar_h,
-                    radius: status_box_radius,
-                    color,
-                    corners: (false, false, true, true),
-                });
-            }
-            let draw_x = right_x + (cpu_w - label.w) / 2.0; // centered
-            eprintln!("[rebuild_layout] CPU: x={}, w={}", draw_x, label.w);
-            label.draw(&mut self.text_items, draw_x, (bar_h - font_size * 1.4) / 2.0);
-        }
-
-        // 5b. System Tray Icons (render to the left of the CPU/stats block)
-        self.tray_item_bounds.clear();
-        if !self.tray_items.is_empty() {
-            right_x -= padding * 2.0; // Separator padding
-            if show_separators {
-                self.separators.push(Separator::new(
-                    right_x + padding,
-                    0.0,
-                    1.0,
-                    bar_h,
-                    separator_color,
-                ));
-            }
-            let mut sorted_tray: Vec<&TrayItem> = self.tray_items.values().collect();
-            sorted_tray.sort_by_key(|item| &item.id);
-
-            right_x -= 8.0; // Right margin for tray block to match visual padding of other modules
-            let len = sorted_tray.len();
-            for (idx, item) in sorted_tray.iter().rev().enumerate() {
-                let icon_size = 16.0;
-                right_x -= icon_size;
-                let x = right_x;
-                let y = (bar_h - icon_size) / 2.0;
-
-                // Record bounds for hit-testing
-                eprintln!("[rebuild_layout] Tray icon bounds: id={}, x={}, y={}, w={}, h={}", item.id, x, y, icon_size, icon_size);
-                self.tray_item_bounds.push(TrayIconBounds {
-                    id: item.id.clone(),
-                    x,
-                    y,
-                    w: icon_size,
-                    h: icon_size,
-                    title: item.title.clone(),
-                    dbus_id: item.dbus_id.clone(),
-                });
-
-                // Attempt to draw pixmap
-                let mut drawn_pixmap = false;
-                if let Some(ref pixmaps) = item.pixmaps {
-                    if !pixmaps.is_empty() {
-                        let target_pixel_width = (icon_size * self.scale_factor as f32) as i32;
-                        if let Some(pixmap) = pixmaps.iter().min_by_key(|p| (p.width - target_pixel_width).abs()) {
-                            if pixmap.width > 0 && pixmap.height > 0 {
-                                // Calculate average brightness of visible pixels to see if we need to recolor
-                                let mut total_brightness = 0.0;
-                                let mut visible_pixel_count = 0;
-                                for row in 0..pixmap.height {
-                                    for col in 0..pixmap.width {
-                                        let idx = ((row * pixmap.width + col) * 4) as usize;
-                                        if idx + 3 < pixmap.pixels.len() {
-                                            let a = pixmap.pixels[idx] as f32 / 255.0;
-                                            if a > 0.1 {
-                                                let r = pixmap.pixels[idx + 1] as f32 / 255.0;
-                                                let g = pixmap.pixels[idx + 2] as f32 / 255.0;
-                                                let b = pixmap.pixels[idx + 3] as f32 / 255.0;
-                                                total_brightness += (r + g + b) / 3.0;
-                                                visible_pixel_count += 1;
-                                            }
-                                        }
-                                    }
-                                }
-                                
-                                let avg_brightness = if visible_pixel_count > 0 {
-                                    total_brightness / visible_pixel_count as f32
-                                } else {
-                                    0.5
-                                };
-                                let recolor_light = avg_brightness < 0.35;
- 
-                                let mut draw_w = pixmap.width;
-                                let mut draw_h = pixmap.height;
-                                if draw_w > 48 {
-                                    draw_w = 48;
-                                    draw_h = 48;
-                                }
-                                let pixel_w = icon_size / draw_w as f32;
-                                let pixel_h = icon_size / draw_h as f32;
-                                for row in 0..draw_h {
-                                    for col in 0..draw_w {
-                                        let src_row = row * pixmap.height / draw_h;
-                                        let src_col = col * pixmap.width / draw_w;
-                                        let idx = ((src_row * pixmap.width + src_col) * 4) as usize;
-                                        if idx + 3 < pixmap.pixels.len() {
-                                            let a = pixmap.pixels[idx] as f32 / 255.0;
-                                            if a > 0.0 {
-                                                let mut r = pixmap.pixels[idx + 1] as f32 / 255.0;
-                                                let mut g = pixmap.pixels[idx + 2] as f32 / 255.0;
-                                                let mut b = pixmap.pixels[idx + 3] as f32 / 255.0;
-                                                
-                                                if recolor_light {
-                                                    let l = (r + g + b) / 3.0;
-                                                    let new_l = 0.85 + (1.0 - 0.85) * l;
-                                                    r = new_l;
-                                                    g = new_l;
-                                                    b = new_l;
-                                                }
-                                                
-                                                self.rects.push(RectWidget {
-                                                    x: x + col as f32 * pixel_w,
-                                                    y: y + row as f32 * pixel_h,
-                                                    w: pixel_w,
-                                                    h: pixel_h,
-                                                    color: [r, g, b, a],
-                                                });
-                                            }
-                                        }
-                                    }
-                                }
-                                drawn_pixmap = true;
-                            }
-                        }
+                if !module.has_custom_background() {
+                    if let Some(color) = box_bg_color {
+                        self.rounded_boxes.push(RoundedBox {
+                            x: left_x,
+                            y: 0.0,
+                            w,
+                            h: bar_h,
+                            radius: status_box_radius,
+                            color,
+                            corners: (false, false, true, true),
+                        });
                     }
                 }
 
-                if !drawn_pixmap {
-                    let symbol = if let Some(ref name) = item.icon_name {
-                        let name_lower = name.to_lowercase();
-                        if name_lower.contains("volume") || name_lower.contains("sound") || name_lower.contains("audio") {
-                            if name_lower.contains("mute") { "🔇" } else { "🔊" }
-                        } else if name_lower.contains("wifi") || name_lower.contains("network") || name_lower.contains("ethernet") {
-                            "📶"
-                        } else if name_lower.contains("battery") {
-                            "🔋"
-                        } else if name_lower.contains("bluetooth") {
-                            "ᛒ"
-                        } else if name_lower.contains("mail") || name_lower.contains("envelope") {
-                            "✉"
-                        } else if name_lower.contains("chat") || name_lower.contains("messenger") || name_lower.contains("discord") || name_lower.contains("slack") || name_lower.contains("telegram") {
-                            "💬"
-                        } else if name_lower.contains("steam") || name_lower.contains("game") {
-                            "🎮"
-                        } else if name_lower.contains("dropbox") {
-                            "📦"
-                        } else {
-                            "⚙"
-                        }
-                    } else {
-                        "⚙"
-                    };
+                module.render(
+                    left_x,
+                    w,
+                    &self.stats,
+                    &self.tags,
+                    &self.layout,
+                    &self.title,
+                    &mut self.font_system,
+                    &font_family,
+                    font_size,
+                    normal_color,
+                    bar_h,
+                    self.scale_factor,
+                    &mut self.text_items,
+                    &mut self.rects,
+                    &mut self.overlay_rects,
+                    &mut self.tag_bounds,
+                    &mut self.layout_bounds,
+                    &self.tray_items,
+                    &mut self.tray_item_bounds,
+                    box_bg_color,
+                    status_box_radius,
+                    &mut self.rounded_boxes,
+                );
 
-                    let buf = make_text_buffer(&mut self.font_system, symbol, font_size, &font_family);
-                    let scale = cce_ui::scale::scale_factor();
-                    let tw = buf.layout_runs().next().map(|r| r.line_w).unwrap_or(0.0) / scale;
-                    let tx = x + (icon_size - tw) / 2.0;
-                    let ty = y + (icon_size - font_size * 1.4) / 2.0;
-                    self.text_items.push(TextItem {
-                        buffer: buf,
-                        x: tx,
-                        y: ty,
-                        color: glyphon::Color::rgb(
-                            (color::TEXT_ACCENT[0] * 255.0) as u8,
-                            (color::TEXT_ACCENT[1] * 255.0) as u8,
-                            (color::TEXT_ACCENT[2] * 255.0) as u8,
-                        ),
-                        bounds: None,
-                    });
+                left_x += w;
+            }
+        }
+
+        let mut right_x = sw_logical - 12.0;
+        let mut is_first_right = true;
+        
+        self.tray_item_bounds.clear();
+
+        for module in right_modules.iter().rev() {
+            let w = module.width(
+                &self.stats,
+                &self.tags,
+                &self.layout,
+                &self.title,
+                &mut self.font_system,
+                &font_family,
+                font_size,
+                &self.tray_items,
+            );
+            if w > 0.0 {
+                if !is_first_right {
+                    if module.name() == "tray" {
+                        right_x -= 8.0;
+                    } else {
+                        right_x -= padding * 2.0;
+                        if show_separators {
+                            self.separators.push(Separator::new(
+                                right_x + padding,
+                                0.0,
+                                1.0,
+                                bar_h,
+                                separator_color,
+                            ));
+                        }
+                    }
+                }
+                is_first_right = false;
+
+                right_x -= w;
+
+                if !module.has_custom_background() {
+                    if let Some(color) = box_bg_color {
+                        self.rounded_boxes.push(RoundedBox {
+                            x: right_x,
+                            y: 0.0,
+                            w,
+                            h: bar_h,
+                            radius: status_box_radius,
+                            color,
+                            corners: (false, false, true, true),
+                        });
+                    }
                 }
 
-                if idx < len - 1 {
-                    right_x -= 8.0; // Gap between icons
+                module.render(
+                    right_x,
+                    w,
+                    &self.stats,
+                    &self.tags,
+                    &self.layout,
+                    &self.title,
+                    &mut self.font_system,
+                    &font_family,
+                    font_size,
+                    normal_color,
+                    bar_h,
+                    self.scale_factor,
+                    &mut self.text_items,
+                    &mut self.rects,
+                    &mut self.overlay_rects,
+                    &mut self.tag_bounds,
+                    &mut self.layout_bounds,
+                    &self.tray_items,
+                    &mut self.tray_item_bounds,
+                    box_bg_color,
+                    status_box_radius,
+                    &mut self.rounded_boxes,
+                );
+
+                if module.name() == "tray" {
+                    right_x -= 8.0;
                 }
             }
-            right_x -= 8.0; // Left margin for tray block to match visual padding of other modules
         }
 
         // 5c. Tooltip Rendering (if hovered)
@@ -2262,7 +1959,7 @@ fn read_normal_color_from_config() -> Option<[f32; 4]> {
     parse_srgb_color_from_key(&content, "status_normal_color")
 }
 
-fn read_disabled_color_from_config() -> Option<[f32; 4]> {
+pub(crate) fn read_disabled_color_from_config() -> Option<[f32; 4]> {
     let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.json").ok()?;
     parse_srgb_color_from_key(&content, "disabled_color")
 }
@@ -2302,11 +1999,6 @@ fn read_status_font_size_from_config() -> f32 {
     json_find_key(&val, "status_font_size").and_then(|v| v.as_f64()).map(|n| n as f32).unwrap_or(11.0)
 }
 
-fn read_status_separators_from_config() -> bool {
-    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.json").unwrap_or_default();
-    let val = parse_json(&content);
-    json_find_key(&val, "status_separators").and_then(|v| v.as_bool()).unwrap_or(true)
-}
 
 fn read_status_underline_from_config() -> bool {
     let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.json").unwrap_or_default();
