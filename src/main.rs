@@ -342,6 +342,7 @@ impl StatusApp {
                 &font_family,
                 font_size,
                 &self.tray_items,
+                padding,
             );
             if w > 0.0 {
                 if !is_first_left && show_separators {
@@ -393,6 +394,7 @@ impl StatusApp {
                     box_bg_color,
                     status_box_radius,
                     &mut self.rounded_boxes,
+                    padding,
                 );
 
                 left_x += w;
@@ -414,11 +416,12 @@ impl StatusApp {
                 &font_family,
                 font_size,
                 &self.tray_items,
+                padding,
             );
             if w > 0.0 {
                 if !is_first_right {
                     if module.name() == "tray" {
-                        right_x -= 8.0;
+                        right_x -= padding;
                     } else {
                         right_x -= padding * 2.0;
                         if show_separators {
@@ -473,10 +476,11 @@ impl StatusApp {
                     box_bg_color,
                     status_box_radius,
                     &mut self.rounded_boxes,
+                    padding,
                 );
 
                 if module.name() == "tray" {
-                    right_x -= 8.0;
+                    right_x -= padding;
                 }
             }
         }

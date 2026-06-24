@@ -23,6 +23,7 @@ pub trait StatusModule {
         font_family: &str,
         font_size: f32,
         tray_items: &HashMap<String, TrayItem>,
+        padding: f32,
     ) -> f32;
 
     fn render(
@@ -49,6 +50,7 @@ pub trait StatusModule {
         box_bg_color: Option<[f32; 4]>,
         status_box_radius: f32,
         rounded_boxes: &mut Vec<RoundedBox>,
+        padding: f32,
     );
 }
 
@@ -69,6 +71,7 @@ impl StatusModule for TagsModule {
         font_family: &str,
         font_size: f32,
         _tray_items: &HashMap<String, TrayItem>,
+        padding: f32,
     ) -> f32 {
         let tags_parsed = parse_tags(tags);
         if tags_parsed.is_empty() {
@@ -76,11 +79,10 @@ impl StatusModule for TagsModule {
         } else {
             let mut total_w = 0.0;
             for (col, text) in &tags_parsed {
-                let label_str = format!(" {} ", text);
-                let label = Label::new_with_family(font_system, &label_str, font_size, *col, font_family);
-                total_w += label.w + 4.0;
+                let label = Label::new_with_family(font_system, text, font_size, *col, font_family);
+                total_w += label.w + 2.0 * padding + 4.0;
             }
-            total_w
+            if total_w > 0.0 { total_w - 4.0 } else { 0.0 }
         }
     }
 
@@ -108,32 +110,33 @@ impl StatusModule for TagsModule {
         box_bg_color: Option<[f32; 4]>,
         status_box_radius: f32,
         rounded_boxes: &mut Vec<RoundedBox>,
+        padding: f32,
     ) {
         let tags_parsed = parse_tags(tags);
         let mut cur_x = x;
         for (col, text) in tags_parsed {
-            let label_str = format!(" {} ", text);
-            let label = Label::new_with_family(font_system, &label_str, font_size, col, font_family);
-            let line_w = label.draw(text_items, cur_x, (bar_h - font_size * 1.4) / 2.0);
+            let label = Label::new_with_family(font_system, &text, font_size, col, font_family);
+            let box_w = label.w + 2.0 * padding;
             if let Some(color) = box_bg_color {
                 rounded_boxes.push(RoundedBox {
                     x: cur_x,
                     y: 0.0,
-                    w: line_w,
+                    w: box_w,
                     h: bar_h,
                     radius: status_box_radius,
                     color,
                     corners: (false, false, true, true),
                 });
             }
+            label.draw(text_items, cur_x + padding, (bar_h - font_size * 1.4) / 2.0);
             tag_bounds.push(TagBounds {
                 name: text.clone(),
                 x: cur_x,
                 y: 0.0,
-                w: line_w,
+                w: box_w,
                 h: bar_h,
             });
-            cur_x += line_w + 4.0;
+            cur_x += box_w + 4.0;
         }
     }
 }
@@ -153,19 +156,20 @@ impl StatusModule for LayoutModule {
         font_family: &str,
         font_size: f32,
         _tray_items: &HashMap<String, TrayItem>,
+        padding: f32,
     ) -> f32 {
         if layout.is_empty() {
             0.0
         } else {
             let label = Label::new_with_family(font_system, layout, font_size, [0.0, 0.0, 0.0, 1.0], font_family);
-            label.w
+            label.w + 2.0 * padding
         }
     }
 
     fn render(
         &self,
         x: f32,
-        _w: f32,
+        w: f32,
         _stats: &Option<SystemStats>,
         _tags: &str,
         layout: &str,
@@ -186,14 +190,15 @@ impl StatusModule for LayoutModule {
         _box_bg_color: Option<[f32; 4]>,
         _status_box_radius: f32,
         _rounded_boxes: &mut Vec<RoundedBox>,
+        padding: f32,
     ) {
         if !layout.is_empty() {
             let label = Label::new_with_family(font_system, layout, font_size, normal_color, font_family);
-            let line_w = label.draw(text_items, x, (bar_h - font_size * 1.4) / 2.0);
+            label.draw(text_items, x + padding, (bar_h - font_size * 1.4) / 2.0);
             *layout_bounds = Some(LayoutBounds {
                 x,
                 y: 0.0,
-                w: line_w,
+                w,
                 h: bar_h,
             });
         }
@@ -215,6 +220,7 @@ impl StatusModule for TitleModule {
         font_family: &str,
         font_size: f32,
         _tray_items: &HashMap<String, TrayItem>,
+        padding: f32,
     ) -> f32 {
         if title.is_empty() || title == "(none)" {
             0.0
@@ -224,7 +230,7 @@ impl StatusModule for TitleModule {
                 display_title = display_title.chars().take(37).collect::<String>() + "...";
             }
             let label = Label::new_with_family(font_system, &display_title, font_size, [0.0, 0.0, 0.0, 1.0], font_family);
-            label.w
+            label.w + 2.0 * padding
         }
     }
 
@@ -252,6 +258,7 @@ impl StatusModule for TitleModule {
         _box_bg_color: Option<[f32; 4]>,
         _status_box_radius: f32,
         _rounded_boxes: &mut Vec<RoundedBox>,
+        padding: f32,
     ) {
         if !title.is_empty() && title != "(none)" {
             let mut display_title = title.to_string();
@@ -259,7 +266,7 @@ impl StatusModule for TitleModule {
                 display_title = display_title.chars().take(37).collect::<String>() + "...";
             }
             let label = Label::new_with_family(font_system, &display_title, font_size, normal_color, font_family);
-            label.draw(text_items, x, (bar_h - font_size * 1.4) / 2.0);
+            label.draw(text_items, x + padding, (bar_h - font_size * 1.4) / 2.0);
         }
     }
 }
@@ -275,13 +282,15 @@ impl StatusModule for ClockModule {
         _tags: &str,
         _layout: &str,
         _title: &str,
-        _font_system: &mut FontSystem,
-        _font_family: &str,
-        _font_size: f32,
+        font_system: &mut FontSystem,
+        font_family: &str,
+        font_size: f32,
         _tray_items: &HashMap<String, TrayItem>,
+        padding: f32,
     ) -> f32 {
-        if stats.is_some() {
-            270.0
+        if let Some(ref s) = stats {
+            let label = Label::new_with_family(font_system, &s.clock, font_size, [0.0, 0.0, 0.0, 1.0], font_family);
+            label.w + 2.0 * padding
         } else {
             0.0
         }
@@ -290,7 +299,7 @@ impl StatusModule for ClockModule {
     fn render(
         &self,
         x: f32,
-        w: f32,
+        _w: f32,
         stats: &Option<SystemStats>,
         _tags: &str,
         _layout: &str,
@@ -311,11 +320,11 @@ impl StatusModule for ClockModule {
         _box_bg_color: Option<[f32; 4]>,
         _status_box_radius: f32,
         _rounded_boxes: &mut Vec<RoundedBox>,
+        padding: f32,
     ) {
         if let Some(ref s) = stats {
             let label = Label::new_with_family(font_system, &s.clock, font_size, normal_color, font_family);
-            let draw_x = x + (w - label.w) / 2.0;
-            label.draw(text_items, draw_x, (bar_h - font_size * 1.4) / 2.0);
+            label.draw(text_items, x + padding, (bar_h - font_size * 1.4) / 2.0);
         }
     }
 }
@@ -331,14 +340,16 @@ impl StatusModule for BatteryModule {
         _tags: &str,
         _layout: &str,
         _title: &str,
-        _font_system: &mut FontSystem,
-        _font_family: &str,
-        _font_size: f32,
+        font_system: &mut FontSystem,
+        font_family: &str,
+        font_size: f32,
         _tray_items: &HashMap<String, TrayItem>,
+        padding: f32,
     ) -> f32 {
         if let Some(ref s) = stats {
             if !s.battery.is_empty() {
-                80.0
+                let label = Label::new_with_family(font_system, &s.battery, font_size, [0.0, 0.0, 0.0, 1.0], font_family);
+                label.w + 2.0 * padding
             } else {
                 0.0
             }
@@ -350,7 +361,7 @@ impl StatusModule for BatteryModule {
     fn render(
         &self,
         x: f32,
-        w: f32,
+        _w: f32,
         stats: &Option<SystemStats>,
         _tags: &str,
         _layout: &str,
@@ -371,6 +382,7 @@ impl StatusModule for BatteryModule {
         _box_bg_color: Option<[f32; 4]>,
         _status_box_radius: f32,
         _rounded_boxes: &mut Vec<RoundedBox>,
+        padding: f32,
     ) {
         if let Some(ref s) = stats {
             if !s.battery.is_empty() {
@@ -380,8 +392,7 @@ impl StatusModule for BatteryModule {
                     color::TEXT_ACCENT
                 };
                 let label = Label::new_with_family(font_system, &s.battery, font_size, bat_color, font_family);
-                let draw_x = x + (w - label.w) / 2.0;
-                label.draw(text_items, draw_x, (bar_h - font_size * 1.4) / 2.0);
+                label.draw(text_items, x + padding, (bar_h - font_size * 1.4) / 2.0);
             }
         }
     }
@@ -398,14 +409,16 @@ impl StatusModule for VolumeModule {
         _tags: &str,
         _layout: &str,
         _title: &str,
-        _font_system: &mut FontSystem,
-        _font_family: &str,
-        _font_size: f32,
+        font_system: &mut FontSystem,
+        font_family: &str,
+        font_size: f32,
         _tray_items: &HashMap<String, TrayItem>,
+        padding: f32,
     ) -> f32 {
         if let Some(ref s) = stats {
             if !s.volume.is_empty() {
-                80.0
+                let label = Label::new_with_family(font_system, &s.volume, font_size, [0.0, 0.0, 0.0, 1.0], font_family);
+                label.w + 2.0 * padding
             } else {
                 0.0
             }
@@ -417,7 +430,7 @@ impl StatusModule for VolumeModule {
     fn render(
         &self,
         x: f32,
-        w: f32,
+        _w: f32,
         stats: &Option<SystemStats>,
         _tags: &str,
         _layout: &str,
@@ -438,6 +451,7 @@ impl StatusModule for VolumeModule {
         _box_bg_color: Option<[f32; 4]>,
         _status_box_radius: f32,
         _rounded_boxes: &mut Vec<RoundedBox>,
+        padding: f32,
     ) {
         if let Some(ref s) = stats {
             if !s.volume.is_empty() {
@@ -449,7 +463,7 @@ impl StatusModule for VolumeModule {
                 };
                 let label = Label::new_with_family(font_system, &s.volume, font_size, color_val, font_family)
                     .with_strikethrough(is_muted);
-                let draw_x = x + (w - label.w) / 2.0;
+                let draw_x = x + padding;
                 let start_y = (bar_h - font_size * 1.4) / 2.0;
                 if let Some((sx, sy, sw_rect, sh_rect, scol)) = label.strikethrough_rect(draw_x, start_y, scale_factor as f32) {
                     overlay_rects.push(RectWidget {
@@ -477,14 +491,16 @@ impl StatusModule for BrightnessModule {
         _tags: &str,
         _layout: &str,
         _title: &str,
-        _font_system: &mut FontSystem,
-        _font_family: &str,
-        _font_size: f32,
+        font_system: &mut FontSystem,
+        font_family: &str,
+        font_size: f32,
         _tray_items: &HashMap<String, TrayItem>,
+        padding: f32,
     ) -> f32 {
         if let Some(ref s) = stats {
             if !s.brightness.is_empty() {
-                80.0
+                let label = Label::new_with_family(font_system, &s.brightness, font_size, [0.0, 0.0, 0.0, 1.0], font_family);
+                label.w + 2.0 * padding
             } else {
                 0.0
             }
@@ -496,7 +512,7 @@ impl StatusModule for BrightnessModule {
     fn render(
         &self,
         x: f32,
-        w: f32,
+        _w: f32,
         stats: &Option<SystemStats>,
         _tags: &str,
         _layout: &str,
@@ -517,12 +533,12 @@ impl StatusModule for BrightnessModule {
         _box_bg_color: Option<[f32; 4]>,
         _status_box_radius: f32,
         _rounded_boxes: &mut Vec<RoundedBox>,
+        padding: f32,
     ) {
         if let Some(ref s) = stats {
             if !s.brightness.is_empty() {
                 let label = Label::new_with_family(font_system, &s.brightness, font_size, normal_color, font_family);
-                let draw_x = x + (w - label.w) / 2.0;
-                label.draw(text_items, draw_x, (bar_h - font_size * 1.4) / 2.0);
+                label.draw(text_items, x + padding, (bar_h - font_size * 1.4) / 2.0);
             }
         }
     }
@@ -539,13 +555,15 @@ impl StatusModule for MemoryModule {
         _tags: &str,
         _layout: &str,
         _title: &str,
-        _font_system: &mut FontSystem,
-        _font_family: &str,
-        _font_size: f32,
+        font_system: &mut FontSystem,
+        font_family: &str,
+        font_size: f32,
         _tray_items: &HashMap<String, TrayItem>,
+        padding: f32,
     ) -> f32 {
-        if stats.is_some() {
-            140.0
+        if let Some(ref s) = stats {
+            let label = Label::new_with_family(font_system, &s.memory, font_size, [0.0, 0.0, 0.0, 1.0], font_family);
+            label.w + 2.0 * padding
         } else {
             0.0
         }
@@ -554,7 +572,7 @@ impl StatusModule for MemoryModule {
     fn render(
         &self,
         x: f32,
-        w: f32,
+        _w: f32,
         stats: &Option<SystemStats>,
         _tags: &str,
         _layout: &str,
@@ -575,11 +593,11 @@ impl StatusModule for MemoryModule {
         _box_bg_color: Option<[f32; 4]>,
         _status_box_radius: f32,
         _rounded_boxes: &mut Vec<RoundedBox>,
+        padding: f32,
     ) {
         if let Some(ref s) = stats {
             let label = Label::new_with_family(font_system, &s.memory, font_size, normal_color, font_family);
-            let draw_x = x + (w - label.w) / 2.0;
-            label.draw(text_items, draw_x, (bar_h - font_size * 1.4) / 2.0);
+            label.draw(text_items, x + padding, (bar_h - font_size * 1.4) / 2.0);
         }
     }
 }
@@ -595,13 +613,15 @@ impl StatusModule for CpuModule {
         _tags: &str,
         _layout: &str,
         _title: &str,
-        _font_system: &mut FontSystem,
-        _font_family: &str,
-        _font_size: f32,
+        font_system: &mut FontSystem,
+        font_family: &str,
+        font_size: f32,
         _tray_items: &HashMap<String, TrayItem>,
+        padding: f32,
     ) -> f32 {
-        if stats.is_some() {
-            90.0
+        if let Some(ref s) = stats {
+            let label = Label::new_with_family(font_system, &s.cpu, font_size, [0.0, 0.0, 0.0, 1.0], font_family);
+            label.w + 2.0 * padding
         } else {
             0.0
         }
@@ -610,7 +630,7 @@ impl StatusModule for CpuModule {
     fn render(
         &self,
         x: f32,
-        w: f32,
+        _w: f32,
         stats: &Option<SystemStats>,
         _tags: &str,
         _layout: &str,
@@ -631,11 +651,11 @@ impl StatusModule for CpuModule {
         _box_bg_color: Option<[f32; 4]>,
         _status_box_radius: f32,
         _rounded_boxes: &mut Vec<RoundedBox>,
+        padding: f32,
     ) {
         if let Some(ref s) = stats {
             let label = Label::new_with_family(font_system, &s.cpu, font_size, normal_color, font_family);
-            let draw_x = x + (w - label.w) / 2.0;
-            label.draw(text_items, draw_x, (bar_h - font_size * 1.4) / 2.0);
+            label.draw(text_items, x + padding, (bar_h - font_size * 1.4) / 2.0);
         }
     }
 }
@@ -657,12 +677,13 @@ impl StatusModule for TrayModule {
         _font_family: &str,
         _font_size: f32,
         tray_items: &HashMap<String, TrayItem>,
+        padding: f32,
     ) -> f32 {
         if tray_items.is_empty() {
             0.0
         } else {
-            let len = tray_items.len();
-            (len as f32 * 16.0) + 8.0
+            let len = tray_items.len() as f32;
+            (len * 16.0) + ((len - 1.0) * 8.0) + 2.0 * padding
         }
     }
 
@@ -690,6 +711,7 @@ impl StatusModule for TrayModule {
         _box_bg_color: Option<[f32; 4]>,
         _status_box_radius: f32,
         _rounded_boxes: &mut Vec<RoundedBox>,
+        padding: f32,
     ) {
         if tray_items.is_empty() {
             return;
@@ -697,13 +719,9 @@ impl StatusModule for TrayModule {
         let mut sorted_tray: Vec<&TrayItem> = tray_items.values().collect();
         sorted_tray.sort_by_key(|item| &item.id);
 
-        let mut right_x = x + (sorted_tray.len() as f32 * 16.0) + 8.0;
-        right_x -= 8.0;
-
-        for item in sorted_tray.iter().rev() {
+        for (i, item) in sorted_tray.iter().enumerate() {
             let icon_size = 16.0;
-            right_x -= icon_size;
-            let icon_x = right_x;
+            let icon_x = x + padding + (i as f32) * (icon_size + 8.0);
             let icon_y = (bar_h - icon_size) / 2.0;
 
             tray_item_bounds.push(TrayIconBounds {
