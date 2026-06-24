@@ -700,8 +700,8 @@ impl StatusModule for TrayModule {
         bar_h: f32,
         scale_factor: f64,
         text_items: &mut Vec<TextItem>,
-        rects: &mut Vec<RectWidget>,
-        _overlay_rects: &mut Vec<RectWidget>,
+        _rects: &mut Vec<RectWidget>,
+        overlay_rects: &mut Vec<RectWidget>,
         _tag_bounds: &mut Vec<TagBounds>,
         _layout_bounds: &mut Option<LayoutBounds>,
         tray_items: &HashMap<String, TrayItem>,
@@ -791,7 +791,7 @@ impl StatusModule for TrayModule {
                                                 b = new_l;
                                             }
                                             
-                                            rects.push(RectWidget {
+                                            overlay_rects.push(RectWidget {
                                                 x: icon_x + col as f32 * pixel_w,
                                                 y: icon_y + row as f32 * pixel_h,
                                                 w: pixel_w,
