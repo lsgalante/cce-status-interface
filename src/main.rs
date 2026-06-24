@@ -968,7 +968,6 @@ impl cce_ui::engine::Application for StatusApp {
                 let bar_height = read_status_height_from_config() as i32;
                 let bound_x = bound.x;
                 let bound_w = bound.w;
-                let scale = self.scale_factor;
                 std::thread::spawn(move || {
                     let rt = tokio::runtime::Builder::new_current_thread()
                         .enable_all()
@@ -994,8 +993,8 @@ impl cce_ui::engine::Application for StatusApp {
                                             let should_show_menu = (btn_code == 273 && menu_path.is_some())
                                                 || (btn_code == 272 && is_menu && menu_path.is_some());
 
-                                            let x_pos = ((screen_width as f64 - (bound_x + bound_w) as f64) * scale).round() as i32;
-                                            let y_pos = (bar_height as f64 * scale).round() as i32;
+                                            let x_pos = screen_width - (bound_x + bound_w) as i32;
+                                            let y_pos = bar_height;
 
                                             if should_show_menu {
                                                 if let Some(menu_p) = menu_path {
@@ -1067,9 +1066,8 @@ impl cce_ui::engine::Application for StatusApp {
                         }
                         self.layout_menu_pid = None;
                     } else {
-                        let scale = self.scale_factor;
-                        let x_pos = (self.layout_bounds.as_ref().map(|b| b.x as f64).unwrap_or(0.0) * scale).round() as i32;
-                        let y_pos = (self.layout_bounds.as_ref().map(|b| b.h as f64).unwrap_or_else(|| read_status_height_from_config() as f64) * scale).round() as i32;
+                        let x_pos = self.layout_bounds.as_ref().map(|b| b.x as i32).unwrap_or(0);
+                        let y_pos = self.layout_bounds.as_ref().map(|b| b.h as i32).unwrap_or_else(|| read_status_height_from_config() as i32);
                         
                         // Spawn the child on the main thread so we can capture its PID
                         let layout_json = serde_json::json!({
