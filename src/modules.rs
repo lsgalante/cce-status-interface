@@ -664,8 +664,6 @@ pub struct TrayModule;
 
 impl StatusModule for TrayModule {
     fn name(&self) -> &'static str { "tray" }
-    
-    fn has_custom_background(&self) -> bool { true }
 
     fn width(
         &self,
