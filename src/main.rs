@@ -995,6 +995,7 @@ impl cce_ui::engine::Application for StatusApp {
 
                                             let x_pos = screen_width - (bound_x + bound_w) as i32;
                                             let y_pos = bar_height;
+                                            eprintln!("[tray-click] Clicked tray item at bound_x={}, bound_w={}, screen_width={}, calculated x_pos={}, y_pos={}", bound_x, bound_w, screen_width, x_pos, y_pos);
 
                                             if should_show_menu {
                                                 if let Some(menu_p) = menu_path {
