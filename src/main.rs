@@ -76,6 +76,7 @@ enum CustomEvent {
     TagsUpdated(String),
     LayoutUpdated(String),
     TitleUpdated(String),
+    ModifiersUpdated(String),
     SystemStatsUpdated(SystemStats),
     TrayUpdated(TrayItem),
     TrayRemoved(String),
@@ -242,6 +243,19 @@ pub struct RoundedBox {
     pub corners: (bool, bool, bool, bool),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Side {
+    Left,
+    Right,
+}
+
+pub struct ModuleBounds {
+    pub name: String,
+    pub side: Side,
+    pub x: f32,
+    pub w: f32,
+}
+
 
 struct StatusApp {
     // Status State
@@ -271,6 +285,12 @@ struct StatusApp {
     height: u32,
     needs_rebuild: bool,
     current_bg_color: [f32; 4],
+    input_regions: Vec<(i32, i32, i32, i32)>,
+    super_pressed: bool,
+    dragged_module: Option<(String, Side, f32)>,
+    module_bounds: Vec<ModuleBounds>,
+    left_modules: Vec<Box<dyn StatusModule>>,
+    right_modules: Vec<Box<dyn StatusModule>>,
     sender: calloop::channel::Sender<CustomEvent>,
 }
 
@@ -297,6 +317,11 @@ impl StatusApp {
         self.rounded_boxes.clear();
         self.separators.clear();
         self.text_items.clear();
+        self.input_regions.clear();
+        self.module_bounds.clear();
+
+        let left_modules = std::mem::take(&mut self.left_modules);
+        let right_modules = std::mem::take(&mut self.right_modules);
 
         let box_bg_color = read_status_box_background_color_from_config();
         let status_box_radius = read_status_box_corner_radius_from_config();
@@ -314,22 +339,6 @@ impl StatusApp {
 
         self.tag_bounds.clear();
         self.layout_bounds = None;
-
-        let left_modules: Vec<Box<dyn StatusModule>> = vec![
-            Box::new(TagsModule),
-            Box::new(LayoutModule),
-            Box::new(TitleModule),
-        ];
-
-        let right_modules: Vec<Box<dyn StatusModule>> = vec![
-            Box::new(TrayModule),
-            Box::new(CpuModule),
-            Box::new(MemoryModule),
-            Box::new(BrightnessModule),
-            Box::new(VolumeModule),
-            Box::new(BatteryModule),
-            Box::new(ClockModule),
-        ];
 
         let mut left_x = 12.0;
         let mut is_first_left = true;
@@ -400,6 +409,13 @@ impl StatusApp {
                     padding,
                 );
 
+                self.module_bounds.push(ModuleBounds {
+                    name: module.name().to_string(),
+                    side: Side::Left,
+                    x: left_x,
+                    w,
+                });
+                self.input_regions.push((left_x.round() as i32, 0, w.round() as i32, bar_h.round() as i32));
                 left_x += w;
             }
         }
@@ -437,6 +453,13 @@ impl StatusApp {
                 is_first_right = false;
 
                 right_x -= w;
+                self.module_bounds.push(ModuleBounds {
+                    name: module.name().to_string(),
+                    side: Side::Right,
+                    x: right_x,
+                    w,
+                });
+                self.input_regions.push((right_x.round() as i32, 0, w.round() as i32, bar_h.round() as i32));
 
                 if !module.has_custom_background() {
                     if let Some(color) = box_bg_color {
@@ -572,7 +595,75 @@ impl StatusApp {
             }
         }
 
+        self.left_modules = left_modules;
+        self.right_modules = right_modules;
         self.needs_rebuild = false;
+    }
+
+    fn check_drag_swap(&mut self, mouse_x: f32) -> bool {
+        if let Some((ref dragged_name, side, _)) = self.dragged_module {
+            match side {
+                Side::Left => {
+                    if let Some(curr_idx) = self.left_modules.iter().position(|m| m.name() == dragged_name) {
+                        let curr_bounds = self.module_bounds.iter().find(|mb| mb.name == *dragged_name && mb.side == Side::Left);
+                        if curr_bounds.is_some() {
+                            // Check left neighbor
+                            if curr_idx > 0 {
+                                let prev_name = self.left_modules[curr_idx - 1].name();
+                                if let Some(prev) = self.module_bounds.iter().find(|mb| mb.name == prev_name && mb.side == Side::Left) {
+                                    let prev_center = prev.x + prev.w / 2.0;
+                                    if mouse_x < prev_center {
+                                        self.left_modules.swap(curr_idx, curr_idx - 1);
+                                        return true;
+                                    }
+                                }
+                            }
+                            // Check right neighbor
+                            if curr_idx < self.left_modules.len() - 1 {
+                                let next_name = self.left_modules[curr_idx + 1].name();
+                                if let Some(next) = self.module_bounds.iter().find(|mb| mb.name == next_name && mb.side == Side::Left) {
+                                    let next_center = next.x + next.w / 2.0;
+                                    if mouse_x > next_center {
+                                        self.left_modules.swap(curr_idx, curr_idx + 1);
+                                        return true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Side::Right => {
+                    if let Some(curr_idx) = self.right_modules.iter().position(|m| m.name() == dragged_name) {
+                        let curr_bounds = self.module_bounds.iter().find(|mb| mb.name == *dragged_name && mb.side == Side::Right);
+                        if curr_bounds.is_some() {
+                            // Check left neighbor
+                            if curr_idx > 0 {
+                                let prev_name = self.right_modules[curr_idx - 1].name();
+                                if let Some(prev) = self.module_bounds.iter().find(|mb| mb.name == prev_name && mb.side == Side::Right) {
+                                    let prev_center = prev.x + prev.w / 2.0;
+                                    if mouse_x < prev_center {
+                                        self.right_modules.swap(curr_idx, curr_idx - 1);
+                                        return true;
+                                    }
+                                }
+                            }
+                            // Check right neighbor
+                            if curr_idx < self.right_modules.len() - 1 {
+                                let next_name = self.right_modules[curr_idx + 1].name();
+                                if let Some(next) = self.module_bounds.iter().find(|mb| mb.name == next_name && mb.side == Side::Right) {
+                                    let next_center = next.x + next.w / 2.0;
+                                    if mouse_x > next_center {
+                                        self.right_modules.swap(curr_idx, curr_idx + 1);
+                                        return true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        false
     }
 }
 
@@ -614,12 +705,14 @@ impl cce_ui::engine::Application for StatusApp {
         let sender_tags = sender.clone();
         let sender_layout = sender.clone();
         let sender_title = sender.clone();
+        let sender_modifiers = sender.clone();
         let sender_stats = sender.clone();
         let sender_tray = sender.clone();
 
         tokio::spawn(spawn_status_listener("tags", sender_tags));
         tokio::spawn(spawn_status_listener("layout", sender_layout));
         tokio::spawn(spawn_status_listener("title", sender_title));
+        tokio::spawn(spawn_status_listener("modifiers", sender_modifiers));
         tokio::spawn(spawn_system_stats(sender_stats));
         tokio::spawn(spawn_status_tray(sender_tray));
 
@@ -649,6 +742,24 @@ impl cce_ui::engine::Application for StatusApp {
             height: read_status_height_from_config() as u32,
             needs_rebuild: true,
             current_bg_color: color::STATUS_BG,
+            input_regions: Vec::new(),
+            super_pressed: false,
+            dragged_module: None,
+            module_bounds: Vec::new(),
+            left_modules: vec![
+                Box::new(TagsModule),
+                Box::new(LayoutModule),
+                Box::new(TitleModule),
+            ],
+            right_modules: vec![
+                Box::new(TrayModule),
+                Box::new(CpuModule),
+                Box::new(MemoryModule),
+                Box::new(BrightnessModule),
+                Box::new(VolumeModule),
+                Box::new(BatteryModule),
+                Box::new(ClockModule),
+            ],
             sender,
         };
 
@@ -677,6 +788,9 @@ impl cce_ui::engine::Application for StatusApp {
             }
             CustomEvent::TitleUpdated(t) => {
                 self.title = t;
+            }
+            CustomEvent::ModifiersUpdated(m) => {
+                self.super_pressed = m == "super";
             }
             CustomEvent::SystemStatsUpdated(s) => {
                 self.stats = Some(s);
@@ -710,8 +824,8 @@ impl cce_ui::engine::Application for StatusApp {
             cce_ui::scale::set_scale_factor(scale as f32);
             self.rebuild_layout();
         }
-        let (sb_x, sb_y, sb_w, sb_h) = self.status_bar.rect();
-        quads.push((sb_x, sb_y, sb_w, sb_h, self.status_bar.color()));
+        // let (sb_x, sb_y, sb_w, sb_h) = self.status_bar.rect();
+        // quads.push((sb_x, sb_y, sb_w, sb_h, self.status_bar.color()));
         for r in &self.rects {
             quads.push((r.x, r.y, r.w, r.h, r.color));
         }
@@ -767,9 +881,22 @@ impl cce_ui::engine::Application for StatusApp {
         [0.0, 0.0, 0.0, 0.0]
     }
 
+    fn input_regions(&self) -> Option<Vec<(i32, i32, i32, i32)>> {
+        Some(self.input_regions.clone())
+    }
+
     fn handle_pointer_move(&mut self, pos: cce_ui::engine::LogicalPosition, needs_rebuild: &mut bool) {
         let (lx, ly) = (pos.x, pos.y);
         self.cursor_pos = (lx as f64, ly as f64);
+
+        if self.dragged_module.is_some() {
+            if self.check_drag_swap(lx) {
+                *needs_rebuild = true;
+                self.needs_rebuild = true;
+            }
+            return;
+        }
+
         let mut newly_hovered = None;
         for bound in &self.tray_item_bounds {
             if lx >= bound.x && lx <= (bound.x + bound.w)
@@ -785,12 +912,39 @@ impl cce_ui::engine::Application for StatusApp {
         }
     }
 
-    fn handle_mouse_input(&mut self, button: MouseButton, state: ElementState, pos: cce_ui::engine::LogicalPosition, _needs_rebuild: &mut bool) -> Option<Self::Message> {
-        if state == ElementState::Pressed {
-            let (lx, ly) = (pos.x, pos.y);
-            let cx = lx as f64;
-            let cy = ly as f64;
+    fn handle_mouse_input(&mut self, button: MouseButton, state: ElementState, pos: cce_ui::engine::LogicalPosition, needs_rebuild: &mut bool) -> Option<Self::Message> {
+        let (lx, ly) = (pos.x, pos.y);
+        let cx = lx as f64;
+        let cy = ly as f64;
 
+        if button == MouseButton::Left {
+            if state == ElementState::Pressed {
+                if self.super_pressed {
+                    let mut clicked_module = None;
+                    for mb in &self.module_bounds {
+                        if lx >= mb.x && lx <= (mb.x + mb.w) {
+                            clicked_module = Some((mb.name.clone(), mb.side));
+                            break;
+                        }
+                    }
+                    if let Some((name, side)) = clicked_module {
+                        self.dragged_module = Some((name, side, lx));
+                        *needs_rebuild = true;
+                        self.needs_rebuild = true;
+                        return None;
+                    }
+                }
+            } else {
+                if self.dragged_module.is_some() {
+                    self.dragged_module = None;
+                    *needs_rebuild = true;
+                    self.needs_rebuild = true;
+                    return None;
+                }
+            }
+        }
+
+        if state == ElementState::Pressed {
             // Check if tray icon was clicked
             let mut clicked_tray = None;
             for bound in &self.tray_item_bounds {
@@ -814,6 +968,7 @@ impl cce_ui::engine::Application for StatusApp {
                 let bar_height = read_status_height_from_config() as i32;
                 let bound_x = bound.x;
                 let bound_w = bound.w;
+                let scale = self.scale_factor;
                 std::thread::spawn(move || {
                     let rt = tokio::runtime::Builder::new_current_thread()
                         .enable_all()
@@ -839,8 +994,8 @@ impl cce_ui::engine::Application for StatusApp {
                                             let should_show_menu = (btn_code == 273 && menu_path.is_some())
                                                 || (btn_code == 272 && is_menu && menu_path.is_some());
 
-                                            let x_pos = screen_width - (bound_x + bound_w) as i32;
-                                            let y_pos = bar_height;
+                                            let x_pos = ((screen_width as f64 - (bound_x + bound_w) as f64) * scale).round() as i32;
+                                            let y_pos = (bar_height as f64 * scale).round() as i32;
 
                                             if should_show_menu {
                                                 if let Some(menu_p) = menu_path {
@@ -912,8 +1067,9 @@ impl cce_ui::engine::Application for StatusApp {
                         }
                         self.layout_menu_pid = None;
                     } else {
-                        let x_pos = self.layout_bounds.as_ref().map(|b| b.x as i32).unwrap_or(0);
-                        let y_pos = self.layout_bounds.as_ref().map(|b| b.h as i32).unwrap_or_else(|| read_status_height_from_config() as i32);
+                        let scale = self.scale_factor;
+                        let x_pos = (self.layout_bounds.as_ref().map(|b| b.x as f64).unwrap_or(0.0) * scale).round() as i32;
+                        let y_pos = (self.layout_bounds.as_ref().map(|b| b.h as f64).unwrap_or_else(|| read_status_height_from_config() as f64) * scale).round() as i32;
                         
                         // Spawn the child on the main thread so we can capture its PID
                         let layout_json = serde_json::json!({
@@ -1045,6 +1201,7 @@ async fn spawn_status_listener(sub: &'static str, sender: calloop::channel::Send
                             "tags" => CustomEvent::TagsUpdated(val.clone()),
                             "layout" => CustomEvent::LayoutUpdated(val.clone()),
                             "title" => CustomEvent::TitleUpdated(val.clone()),
+                            "modifiers" => CustomEvent::ModifiersUpdated(val.clone()),
                             _ => unreachable!(),
                         };
                         let _ = sender.send(ev);
