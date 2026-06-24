@@ -281,6 +281,7 @@ impl StatusApp {
         let font_size = read_status_font_size_from_config();
         let show_separators = false;
         let padding = read_status_padding_from_config();
+        let spacing = read_status_module_spacing_from_config();
         let separator_color = read_separator_color_from_config().unwrap_or(color::STATUS_ACCENT);
         let normal_color = read_normal_color_from_config().unwrap_or(color::TEXT_FG);
         let sw_logical = self.width as f32;
@@ -345,15 +346,17 @@ impl StatusApp {
                 padding,
             );
             if w > 0.0 {
-                if !is_first_left && show_separators {
-                    self.separators.push(Separator::new(
-                        left_x + padding,
-                        0.0,
-                        1.0,
-                        bar_h,
-                        separator_color,
-                    ));
-                    left_x += padding * 2.0;
+                if !is_first_left {
+                    if show_separators {
+                        self.separators.push(Separator::new(
+                            left_x + spacing / 2.0,
+                            0.0,
+                            1.0,
+                            bar_h,
+                            separator_color,
+                        ));
+                    }
+                    left_x += spacing;
                 }
                 is_first_left = false;
 
@@ -420,19 +423,15 @@ impl StatusApp {
             );
             if w > 0.0 {
                 if !is_first_right {
-                    if module.name() == "tray" {
-                        right_x -= padding;
-                    } else {
-                        right_x -= padding * 2.0;
-                        if show_separators {
-                            self.separators.push(Separator::new(
-                                right_x + padding,
-                                0.0,
-                                1.0,
-                                bar_h,
-                                separator_color,
-                            ));
-                        }
+                    right_x -= spacing;
+                    if show_separators {
+                        self.separators.push(Separator::new(
+                            right_x + spacing / 2.0,
+                            0.0,
+                            1.0,
+                            bar_h,
+                            separator_color,
+                        ));
                     }
                 }
                 is_first_right = false;
@@ -2014,6 +2013,12 @@ fn read_status_padding_from_config() -> f32 {
     let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.json").unwrap_or_default();
     let val = parse_json(&content);
     json_find_key(&val, "status_padding").and_then(|v| v.as_f64()).map(|n| n as f32).unwrap_or(8.0)
+}
+
+fn read_status_module_spacing_from_config() -> f32 {
+    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.json").unwrap_or_default();
+    let val = parse_json(&content);
+    json_find_key(&val, "status_module_spacing").and_then(|v| v.as_f64()).map(|n| n as f32).unwrap_or(8.0)
 }
 
 fn read_separator_color_from_config() -> Option<[f32; 4]> {
