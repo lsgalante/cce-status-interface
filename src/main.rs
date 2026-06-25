@@ -772,7 +772,15 @@ impl StatusApp {
                         "".to_string()
                     };
 
-                    windows.push((app_id, title));
+                    let focused = if let Some(idx) = line.find("focused=") {
+                        let rest = &line[idx + 8..];
+                        let end = rest.find(' ').unwrap_or(rest.len());
+                        rest[..end].trim() == "true"
+                    } else {
+                        false
+                    };
+
+                    windows.push((app_id, title, focused));
                 }
             }
 
@@ -782,9 +790,15 @@ impl StatusApp {
                 return;
             }
 
+            // Sort windows so the focused one is at index 0 (if any)
+            if let Some(focused_idx) = windows.iter().position(|w| w.2) {
+                let focused_win = windows.remove(focused_idx);
+                windows.insert(0, focused_win);
+            }
+
             // Format items for dmenu
             let mut input_str = String::new();
-            for (app_id, title) in &windows {
+            for (app_id, title, _) in &windows {
                 let display = if title.is_empty() {
                     app_id.clone()
                 } else {
@@ -858,7 +872,7 @@ impl StatusApp {
             let selected = stdout_str.trim().to_string();
             if !selected.is_empty() {
                 // Find the matched window
-                for (app_id, title) in windows {
+                for (app_id, title, _) in windows {
                     let display = if title.is_empty() {
                         app_id.clone()
                     } else {
