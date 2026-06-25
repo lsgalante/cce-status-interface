@@ -289,6 +289,7 @@ struct StatusApp {
     active_cloud_pid: Option<u32>,
     active_cloud_source: Option<String>,
     active_switcher_stdin: Option<StdinWriter>,
+    previously_focused_window: Option<String>,
 
     font_system: FontSystem,
     status_bar: cce_ui::widget::StatusBar,
@@ -975,6 +976,7 @@ impl cce_ui::engine::Application for StatusApp {
             active_cloud_pid: None,
             active_cloud_source: None,
             active_switcher_stdin: None,
+            previously_focused_window: None,
             font_system,
             status_bar: cce_ui::widget::StatusBar::new(),
             rects: Vec::new(),
@@ -1072,6 +1074,18 @@ impl cce_ui::engine::Application for StatusApp {
                     self.active_cloud_source = None;
                     if source == "window" {
                         self.active_switcher_stdin = None;
+                        self.previously_focused_window = None;
+                    } else if source == "layout" || source.starts_with("context_menu:") {
+                        if let Some(ref focus_query) = self.previously_focused_window {
+                            eprintln!("[cloud-event] Restoring focus to: {}", focus_query);
+                            let focus_query_clone = focus_query.clone();
+                            std::thread::spawn(move || {
+                                let _ = std::process::Command::new("clearctl")
+                                    .args(["focus-window", &focus_query_clone])
+                                    .status();
+                            });
+                        }
+                        self.previously_focused_window = None;
                     }
                 }
             }
@@ -1396,6 +1410,10 @@ impl cce_ui::engine::Application for StatusApp {
 
                     self.active_cloud_source = Some(context_source.clone());
 
+                    if self.previously_focused_window.is_none() {
+                        self.previously_focused_window = get_currently_focused_window();
+                    }
+
                     let x_pos = mb.x as i32;
                     let y_pos = read_status_height_from_config() as i32;
 
@@ -1495,6 +1513,10 @@ impl cce_ui::engine::Application for StatusApp {
 
                     // Now set the active cloud source to this one
                     self.active_cloud_source = Some(layout_source);
+
+                    if self.previously_focused_window.is_none() {
+                        self.previously_focused_window = get_currently_focused_window();
+                    }
 
                     let x_pos = self.layout_bounds.as_ref().map(|b| b.x as i32).unwrap_or(0);
                     let y_pos = self.layout_bounds.as_ref().map(|b| b.h as i32).unwrap_or_else(|| read_status_height_from_config() as i32);
@@ -1949,6 +1971,46 @@ fn get_clear_cloud_cmd() -> String {
         }
     }
     "clear-cloud".to_string()
+}
+
+fn get_currently_focused_window() -> Option<String> {
+    let output = std::process::Command::new("clearctl")
+        .arg("windows")
+        .output();
+    if let Ok(out) = output {
+        let stdout_str = String::from_utf8_lossy(&out.stdout);
+        for line in stdout_str.lines() {
+            let focused = if let Some(idx) = line.find("focused=") {
+                let rest = &line[idx + 8..];
+                let end = rest.find(' ').unwrap_or(rest.len());
+                rest[..end].trim() == "true"
+            } else {
+                false
+            };
+            if focused {
+                let app_id = if let Some(idx) = line.find("app_id=") {
+                    let rest = &line[idx + 7..];
+                    let end = rest.find(' ').unwrap_or(rest.len());
+                    rest[..end].to_string()
+                } else {
+                    continue;
+                };
+                if app_id == "cce-status-interface" || app_id == "cce-cloud" {
+                    continue;
+                }
+                let title = if let Some(idx) = line.find("title=\"") {
+                    let rest = &line[idx + 7..];
+                    let end = rest.find('"').unwrap_or(rest.len());
+                    rest[..end].to_string()
+                } else {
+                    "".to_string()
+                };
+                let focus_query = if title.is_empty() { app_id } else { title };
+                return Some(focus_query);
+            }
+        }
+    }
+    None
 }
 
 async fn show_clear_cloud_menu(
