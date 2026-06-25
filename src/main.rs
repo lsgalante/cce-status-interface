@@ -265,6 +265,7 @@ pub enum Side {
     Right,
 }
 
+#[derive(Debug, Clone)]
 pub struct ModuleBounds {
     pub name: String,
     pub side: Side,
@@ -1348,6 +1349,100 @@ impl cce_ui::engine::Application for StatusApp {
                     });
                 });
                 return None;
+            }
+
+            if button == MouseButton::Right {
+                // Find which module was right-clicked
+                let mut clicked_module = None;
+                for mb in &self.module_bounds {
+                    if lx >= mb.x && lx <= (mb.x + mb.w) {
+                        clicked_module = Some(mb.clone());
+                        break;
+                    }
+                }
+
+                if let Some(mb) = clicked_module {
+                    eprintln!("[module-right-click] Right-clicked module: {}", mb.name);
+                    let context_source = format!("context_menu:{}", mb.name);
+
+                    // Check if any clear-cloud instance is already running
+                    let mut running_cloud_pid = None;
+                    if let Some(pid) = self.active_cloud_pid {
+                        if std::path::Path::new(&format!("/proc/{}", pid)).exists() {
+                            if let Ok(comm) = std::fs::read_to_string(format!("/proc/{}/comm", pid)) {
+                                if comm.trim() == "clear-cloud" {
+                                    running_cloud_pid = Some(pid);
+                                }
+                            }
+                        }
+                    }
+
+                    if let Some(pid) = running_cloud_pid {
+                        eprintln!("[module-right-click] clear-cloud (PID {}) is running, killing it", pid);
+                        let _ = std::process::Command::new("kill").arg(pid.to_string()).status();
+                        self.active_cloud_pid = None;
+
+                        // If it was clicked for the same context menu, this is a toggle-off
+                        if self.active_cloud_source.as_ref() == Some(&context_source) {
+                            self.active_cloud_source = None;
+                            return None;
+                        }
+                    } else {
+                        if self.active_cloud_source.as_ref() == Some(&context_source) {
+                            self.active_cloud_source = None;
+                            return None;
+                        }
+                    }
+
+                    self.active_cloud_source = Some(context_source.clone());
+
+                    let x_pos = mb.x as i32;
+                    let y_pos = read_status_height_from_config() as i32;
+
+                    let context_json = serde_json::json!({
+                        "width": 160,
+                        "height": 60,
+                        "widgets": [
+                            { "type": "label", "text": mb.name }
+                        ]
+                    }).to_string();
+
+                    if let Ok(mut child) = std::process::Command::new(get_clear_cloud_cmd())
+                        .args([
+                            "--json",
+                            "-x",
+                            &x_pos.to_string(),
+                            "-y",
+                            &y_pos.to_string(),
+                        ])
+                        .stdin(std::process::Stdio::piped())
+                        .stdout(std::process::Stdio::piped())
+                        .stderr(std::process::Stdio::piped())
+                        .spawn()
+                    {
+                        let pid = child.id();
+                        self.active_cloud_pid = Some(pid);
+                        eprintln!("[module-right-click] Spawned clear-cloud with PID {}", pid);
+
+                        let thread_sender = self.sender.clone();
+                        let context_source_clone = context_source.clone();
+                        std::thread::spawn(move || {
+                            if let Some(mut stdin) = child.stdin.take() {
+                                use std::io::Write;
+                                let _ = stdin.write_all(context_json.as_bytes());
+                            }
+                            if let Ok(output) = child.wait_with_output() {
+                                let err_str = String::from_utf8_lossy(&output.stderr);
+                                if !err_str.is_empty() {
+                                    eprintln!("[clear-cloud context stderr] {}", err_str);
+                                }
+                            }
+                            let _ = thread_sender.send(CustomEvent::CloudClosed { pid, source: context_source_clone });
+                        });
+                    }
+
+                    return None;
+                }
             }
 
             if button == MouseButton::Left {
