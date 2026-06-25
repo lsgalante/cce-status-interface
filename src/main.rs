@@ -880,7 +880,6 @@ impl StatusApp {
 
             let selected = stdout_str.trim().to_string();
             if !selected.is_empty() {
-                let windows_clone = windows.clone();
                 // Find the matched window
                 for (app_id, title, _) in windows {
                     let display = if title.is_empty() {
@@ -890,14 +889,8 @@ impl StatusApp {
                     };
                     if display == selected {
                         eprintln!("[switcher] Selecting window title: {}, app_id: {}", title, app_id);
-                        let app_id_count = windows_clone.iter().filter(|w| w.0 == app_id).count();
-                        let focus_query = if app_id_count == 1 || title.is_empty() {
-                            app_id
-                        } else {
-                            title
-                        };
                         let _ = std::process::Command::new("clearctl")
-                            .args(["focus-window", &focus_query])
+                            .args(["focus-window", &app_id])
                             .spawn();
                         break;
                     }
@@ -1988,29 +1981,7 @@ fn get_currently_focused_window() -> Option<String> {
         .output();
     if let Ok(out) = output {
         let stdout_str = String::from_utf8_lossy(&out.stdout);
-        let mut parsed_windows = Vec::new();
-        let mut focused_info = None;
-
         for line in stdout_str.lines() {
-            let app_id = if let Some(idx) = line.find("app_id=") {
-                let rest = &line[idx + 7..];
-                let end = rest.find(' ').unwrap_or(rest.len());
-                rest[..end].to_string()
-            } else {
-                continue;
-            };
-            if app_id == "cce-status-interface" || app_id == "cce-cloud" {
-                continue;
-            }
-
-            let title = if let Some(idx) = line.find("title=\"") {
-                let rest = &line[idx + 7..];
-                let end = rest.find('"').unwrap_or(rest.len());
-                rest[..end].to_string()
-            } else {
-                "".to_string()
-            };
-
             let focused = if let Some(idx) = line.find("focused=") {
                 let rest = &line[idx + 8..];
                 let end = rest.find(' ').unwrap_or(rest.len());
@@ -2019,20 +1990,19 @@ fn get_currently_focused_window() -> Option<String> {
                 false
             };
 
-            parsed_windows.push((app_id.clone(), title.clone()));
             if focused {
-                focused_info = Some((app_id, title));
+                let app_id = if let Some(idx) = line.find("app_id=") {
+                    let rest = &line[idx + 7..];
+                    let end = rest.find(' ').unwrap_or(rest.len());
+                    rest[..end].to_string()
+                } else {
+                    continue;
+                };
+                if app_id == "cce-status-interface" || app_id == "cce-cloud" {
+                    continue;
+                }
+                return Some(app_id);
             }
-        }
-
-        if let Some((focused_app_id, focused_title)) = focused_info {
-            let app_id_count = parsed_windows.iter().filter(|w| w.0 == focused_app_id).count();
-            let focus_query = if app_id_count == 1 || focused_title.is_empty() {
-                focused_app_id
-            } else {
-                focused_title
-            };
-            return Some(focus_query);
         }
     }
     None
