@@ -4,8 +4,8 @@ use cce_ui::color;
 use cce_ui::widget::{StyledLabel as Label, TextItem};
 
 use crate::{
-    RectWidget, RoundedBox, TagBounds, LayoutBounds, SystemStats, TrayItem,
-    TrayIconBounds, make_text_buffer, parse_tags,
+    RectWidget, RoundedBox, ViewportBounds, LayoutBounds, SystemStats, TrayItem,
+    TrayIconBounds, make_text_buffer, parse_viewport_text,
 };
 
 pub trait StatusModule {
@@ -16,7 +16,7 @@ pub trait StatusModule {
     fn width(
         &self,
         stats: &Option<SystemStats>,
-        tags: &str,
+        viewport: &str,
         layout: &str,
         title: &str,
         font_system: &mut FontSystem,
@@ -31,7 +31,7 @@ pub trait StatusModule {
         x: f32,
         w: f32,
         stats: &Option<SystemStats>,
-        tags: &str,
+        viewport: &str,
         layout: &str,
         title: &str,
         font_system: &mut FontSystem,
@@ -43,7 +43,7 @@ pub trait StatusModule {
         text_items: &mut Vec<TextItem>,
         rects: &mut Vec<RectWidget>,
         overlay_rects: &mut Vec<RectWidget>,
-        tag_bounds: &mut Vec<TagBounds>,
+        viewport_bounds: &mut Vec<ViewportBounds>,
         layout_bounds: &mut Option<LayoutBounds>,
         tray_items: &HashMap<String, TrayItem>,
         tray_item_bounds: &mut Vec<TrayIconBounds>,
@@ -54,17 +54,17 @@ pub trait StatusModule {
     );
 }
 
-pub struct TagsModule;
+pub struct ViewportModule;
 
-impl StatusModule for TagsModule {
-    fn name(&self) -> &'static str { "tags" }
+impl StatusModule for ViewportModule {
+    fn name(&self) -> &'static str { "viewport" }
     
     fn has_custom_background(&self) -> bool { true }
 
     fn width(
         &self,
         _stats: &Option<SystemStats>,
-        tags: &str,
+        viewport: &str,
         _layout: &str,
         _title: &str,
         font_system: &mut FontSystem,
@@ -73,12 +73,12 @@ impl StatusModule for TagsModule {
         _tray_items: &HashMap<String, TrayItem>,
         padding: f32,
     ) -> f32 {
-        let tags_parsed = parse_tags(tags);
-        if tags_parsed.is_empty() {
+        let viewport_parsed = parse_viewport_text(viewport);
+        if viewport_parsed.is_empty() {
             0.0
         } else {
             let mut total_w = 0.0;
-            for (col, text) in &tags_parsed {
+            for (col, text) in &viewport_parsed {
                 let label = Label::new_with_family(font_system, text, font_size, *col, font_family);
                 total_w += label.w + 2.0 * padding + 4.0;
             }
@@ -91,7 +91,7 @@ impl StatusModule for TagsModule {
         x: f32,
         _w: f32,
         _stats: &Option<SystemStats>,
-        tags: &str,
+        viewport: &str,
         _layout: &str,
         _title: &str,
         font_system: &mut FontSystem,
@@ -103,7 +103,7 @@ impl StatusModule for TagsModule {
         text_items: &mut Vec<TextItem>,
         _rects: &mut Vec<RectWidget>,
         _overlay_rects: &mut Vec<RectWidget>,
-        tag_bounds: &mut Vec<TagBounds>,
+        viewport_bounds: &mut Vec<ViewportBounds>,
         _layout_bounds: &mut Option<LayoutBounds>,
         _tray_items: &HashMap<String, TrayItem>,
         _tray_item_bounds: &mut Vec<TrayIconBounds>,
@@ -112,9 +112,9 @@ impl StatusModule for TagsModule {
         rounded_boxes: &mut Vec<RoundedBox>,
         padding: f32,
     ) {
-        let tags_parsed = parse_tags(tags);
+        let viewport_parsed = parse_viewport_text(viewport);
         let mut cur_x = x;
-        for (col, text) in tags_parsed {
+        for (col, text) in viewport_parsed {
             let label = Label::new_with_family(font_system, &text, font_size, col, font_family);
             let box_w = label.w + 2.0 * padding;
             if let Some(color) = box_bg_color {
@@ -129,7 +129,7 @@ impl StatusModule for TagsModule {
                 });
             }
             label.draw(text_items, cur_x + padding, (bar_h - font_size * 1.4) / 2.0);
-            tag_bounds.push(TagBounds {
+            viewport_bounds.push(ViewportBounds {
                 name: text.clone(),
                 x: cur_x,
                 y: 0.0,
@@ -149,7 +149,7 @@ impl StatusModule for LayoutModule {
     fn width(
         &self,
         _stats: &Option<SystemStats>,
-        _tags: &str,
+        _viewport: &str,
         layout: &str,
         _title: &str,
         font_system: &mut FontSystem,
@@ -171,7 +171,7 @@ impl StatusModule for LayoutModule {
         x: f32,
         w: f32,
         _stats: &Option<SystemStats>,
-        _tags: &str,
+        _viewport: &str,
         layout: &str,
         _title: &str,
         font_system: &mut FontSystem,
@@ -183,7 +183,7 @@ impl StatusModule for LayoutModule {
         text_items: &mut Vec<TextItem>,
         _rects: &mut Vec<RectWidget>,
         _overlay_rects: &mut Vec<RectWidget>,
-        _tag_bounds: &mut Vec<TagBounds>,
+        _viewport_bounds: &mut Vec<ViewportBounds>,
         layout_bounds: &mut Option<LayoutBounds>,
         _tray_items: &HashMap<String, TrayItem>,
         _tray_item_bounds: &mut Vec<TrayIconBounds>,
@@ -213,7 +213,7 @@ impl StatusModule for TitleModule {
     fn width(
         &self,
         _stats: &Option<SystemStats>,
-        _tags: &str,
+        _viewport: &str,
         _layout: &str,
         title: &str,
         font_system: &mut FontSystem,
@@ -239,7 +239,7 @@ impl StatusModule for TitleModule {
         x: f32,
         _w: f32,
         _stats: &Option<SystemStats>,
-        _tags: &str,
+        _viewport: &str,
         _layout: &str,
         title: &str,
         font_system: &mut FontSystem,
@@ -251,7 +251,7 @@ impl StatusModule for TitleModule {
         text_items: &mut Vec<TextItem>,
         _rects: &mut Vec<RectWidget>,
         _overlay_rects: &mut Vec<RectWidget>,
-        _tag_bounds: &mut Vec<TagBounds>,
+        _viewport_bounds: &mut Vec<ViewportBounds>,
         _layout_bounds: &mut Option<LayoutBounds>,
         _tray_items: &HashMap<String, TrayItem>,
         _tray_item_bounds: &mut Vec<TrayIconBounds>,
@@ -279,7 +279,7 @@ impl StatusModule for ClockModule {
     fn width(
         &self,
         stats: &Option<SystemStats>,
-        _tags: &str,
+        _viewport: &str,
         _layout: &str,
         _title: &str,
         font_system: &mut FontSystem,
@@ -301,7 +301,7 @@ impl StatusModule for ClockModule {
         x: f32,
         _w: f32,
         stats: &Option<SystemStats>,
-        _tags: &str,
+        _viewport: &str,
         _layout: &str,
         _title: &str,
         font_system: &mut FontSystem,
@@ -313,7 +313,7 @@ impl StatusModule for ClockModule {
         text_items: &mut Vec<TextItem>,
         _rects: &mut Vec<RectWidget>,
         _overlay_rects: &mut Vec<RectWidget>,
-        _tag_bounds: &mut Vec<TagBounds>,
+        _viewport_bounds: &mut Vec<ViewportBounds>,
         _layout_bounds: &mut Option<LayoutBounds>,
         _tray_items: &HashMap<String, TrayItem>,
         _tray_item_bounds: &mut Vec<TrayIconBounds>,
@@ -337,7 +337,7 @@ impl StatusModule for BatteryModule {
     fn width(
         &self,
         stats: &Option<SystemStats>,
-        _tags: &str,
+        _viewport: &str,
         _layout: &str,
         _title: &str,
         font_system: &mut FontSystem,
@@ -363,7 +363,7 @@ impl StatusModule for BatteryModule {
         x: f32,
         _w: f32,
         stats: &Option<SystemStats>,
-        _tags: &str,
+        _viewport: &str,
         _layout: &str,
         _title: &str,
         font_system: &mut FontSystem,
@@ -375,7 +375,7 @@ impl StatusModule for BatteryModule {
         text_items: &mut Vec<TextItem>,
         _rects: &mut Vec<RectWidget>,
         _overlay_rects: &mut Vec<RectWidget>,
-        _tag_bounds: &mut Vec<TagBounds>,
+        _viewport_bounds: &mut Vec<ViewportBounds>,
         _layout_bounds: &mut Option<LayoutBounds>,
         _tray_items: &HashMap<String, TrayItem>,
         _tray_item_bounds: &mut Vec<TrayIconBounds>,
@@ -406,7 +406,7 @@ impl StatusModule for VolumeModule {
     fn width(
         &self,
         stats: &Option<SystemStats>,
-        _tags: &str,
+        _viewport: &str,
         _layout: &str,
         _title: &str,
         font_system: &mut FontSystem,
@@ -432,7 +432,7 @@ impl StatusModule for VolumeModule {
         x: f32,
         _w: f32,
         stats: &Option<SystemStats>,
-        _tags: &str,
+        _viewport: &str,
         _layout: &str,
         _title: &str,
         font_system: &mut FontSystem,
@@ -444,7 +444,7 @@ impl StatusModule for VolumeModule {
         text_items: &mut Vec<TextItem>,
         _rects: &mut Vec<RectWidget>,
         overlay_rects: &mut Vec<RectWidget>,
-        _tag_bounds: &mut Vec<TagBounds>,
+        _viewport_bounds: &mut Vec<ViewportBounds>,
         _layout_bounds: &mut Option<LayoutBounds>,
         _tray_items: &HashMap<String, TrayItem>,
         _tray_item_bounds: &mut Vec<TrayIconBounds>,
@@ -488,7 +488,7 @@ impl StatusModule for BrightnessModule {
     fn width(
         &self,
         stats: &Option<SystemStats>,
-        _tags: &str,
+        _viewport: &str,
         _layout: &str,
         _title: &str,
         font_system: &mut FontSystem,
@@ -514,7 +514,7 @@ impl StatusModule for BrightnessModule {
         x: f32,
         _w: f32,
         stats: &Option<SystemStats>,
-        _tags: &str,
+        _viewport: &str,
         _layout: &str,
         _title: &str,
         font_system: &mut FontSystem,
@@ -526,7 +526,7 @@ impl StatusModule for BrightnessModule {
         text_items: &mut Vec<TextItem>,
         _rects: &mut Vec<RectWidget>,
         _overlay_rects: &mut Vec<RectWidget>,
-        _tag_bounds: &mut Vec<TagBounds>,
+        _viewport_bounds: &mut Vec<ViewportBounds>,
         _layout_bounds: &mut Option<LayoutBounds>,
         _tray_items: &HashMap<String, TrayItem>,
         _tray_item_bounds: &mut Vec<TrayIconBounds>,
@@ -552,7 +552,7 @@ impl StatusModule for MemoryModule {
     fn width(
         &self,
         stats: &Option<SystemStats>,
-        _tags: &str,
+        _viewport: &str,
         _layout: &str,
         _title: &str,
         font_system: &mut FontSystem,
@@ -574,7 +574,7 @@ impl StatusModule for MemoryModule {
         x: f32,
         _w: f32,
         stats: &Option<SystemStats>,
-        _tags: &str,
+        _viewport: &str,
         _layout: &str,
         _title: &str,
         font_system: &mut FontSystem,
@@ -586,7 +586,7 @@ impl StatusModule for MemoryModule {
         text_items: &mut Vec<TextItem>,
         _rects: &mut Vec<RectWidget>,
         _overlay_rects: &mut Vec<RectWidget>,
-        _tag_bounds: &mut Vec<TagBounds>,
+        _viewport_bounds: &mut Vec<ViewportBounds>,
         _layout_bounds: &mut Option<LayoutBounds>,
         _tray_items: &HashMap<String, TrayItem>,
         _tray_item_bounds: &mut Vec<TrayIconBounds>,
@@ -610,7 +610,7 @@ impl StatusModule for CpuModule {
     fn width(
         &self,
         stats: &Option<SystemStats>,
-        _tags: &str,
+        _viewport: &str,
         _layout: &str,
         _title: &str,
         font_system: &mut FontSystem,
@@ -632,7 +632,7 @@ impl StatusModule for CpuModule {
         x: f32,
         _w: f32,
         stats: &Option<SystemStats>,
-        _tags: &str,
+        _viewport: &str,
         _layout: &str,
         _title: &str,
         font_system: &mut FontSystem,
@@ -644,7 +644,7 @@ impl StatusModule for CpuModule {
         text_items: &mut Vec<TextItem>,
         _rects: &mut Vec<RectWidget>,
         _overlay_rects: &mut Vec<RectWidget>,
-        _tag_bounds: &mut Vec<TagBounds>,
+        _viewport_bounds: &mut Vec<ViewportBounds>,
         _layout_bounds: &mut Option<LayoutBounds>,
         _tray_items: &HashMap<String, TrayItem>,
         _tray_item_bounds: &mut Vec<TrayIconBounds>,
@@ -668,7 +668,7 @@ impl StatusModule for TrayModule {
     fn width(
         &self,
         _stats: &Option<SystemStats>,
-        _tags: &str,
+        _viewport: &str,
         _layout: &str,
         _title: &str,
         _font_system: &mut FontSystem,
@@ -690,7 +690,7 @@ impl StatusModule for TrayModule {
         x: f32,
         _w: f32,
         _stats: &Option<SystemStats>,
-        _tags: &str,
+        _viewport: &str,
         _layout: &str,
         _title: &str,
         font_system: &mut FontSystem,
@@ -702,7 +702,7 @@ impl StatusModule for TrayModule {
         text_items: &mut Vec<TextItem>,
         _rects: &mut Vec<RectWidget>,
         overlay_rects: &mut Vec<RectWidget>,
-        _tag_bounds: &mut Vec<TagBounds>,
+        _viewport_bounds: &mut Vec<ViewportBounds>,
         _layout_bounds: &mut Option<LayoutBounds>,
         tray_items: &HashMap<String, TrayItem>,
         tray_item_bounds: &mut Vec<TrayIconBounds>,

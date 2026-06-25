@@ -1,5 +1,5 @@
 mod modules;
-use modules::{StatusModule, TagsModule, LayoutModule, TitleModule, ClockModule, BatteryModule, VolumeModule, BrightnessModule, MemoryModule, CpuModule, TrayModule};
+use modules::{StatusModule, ViewportModule, LayoutModule, TitleModule, ClockModule, BatteryModule, VolumeModule, BrightnessModule, MemoryModule, CpuModule, TrayModule};
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -42,7 +42,7 @@ pub struct TrayIconBounds {
 }
 
 #[derive(Debug, Clone)]
-pub struct TagBounds {
+pub struct ViewportBounds {
     pub name: String,
     pub x: f32,
     pub y: f32,
@@ -82,7 +82,7 @@ impl std::fmt::Debug for StdinWriter {
 
 #[derive(Debug, Clone)]
 enum CustomEvent {
-    TagsUpdated(String),
+    ViewportUpdated(String),
     LayoutUpdated(String),
     TitleUpdated(String),
     ModifiersUpdated(String),
@@ -134,9 +134,15 @@ pub(crate) fn parse_hex_to_rgba(hex: &str) -> Option<[f32; 4]> {
     }
 }
 
-pub(crate) fn parse_tags(pango: &str) -> Vec<([f32; 4], String)> {
+pub(crate) fn parse_viewport_text(input: &str) -> Vec<([f32; 4], String)> {
+    let mut pango = input.to_string();
+    if let Ok(val) = serde_json::from_str::<serde_json::Value>(input) {
+        if let Some(t) = val.get("text").and_then(|v| v.as_str()) {
+            pango = t.to_string();
+        }
+    }
     let mut result = Vec::new();
-    let mut remaining = pango;
+    let mut remaining = pango.as_str();
     while let Some(start_span) = remaining.find("<span color='") {
         let color_start = start_span + "<span color='".len();
         if let Some(color_end) = remaining[color_start..].find("'") {
@@ -155,7 +161,6 @@ pub(crate) fn parse_tags(pango: &str) -> Vec<([f32; 4], String)> {
         }
     }
     if result.is_empty() && !pango.is_empty() {
-        // Fallback for plain text
         result.push(([0.8, 0.8, 0.8, 1.0], pango.to_string()));
     }
     result
@@ -270,7 +275,7 @@ pub struct ModuleBounds {
 
 struct StatusApp {
     // Status State
-    tags: String,
+    viewport: String,
     layout: String,
     title: String,
     stats: Option<SystemStats>,
@@ -278,7 +283,7 @@ struct StatusApp {
     cursor_pos: (f64, f64),
     hovered_tray_item: Option<String>,
     tray_item_bounds: Vec<TrayIconBounds>,
-    tag_bounds: Vec<TagBounds>,
+    viewport_bounds: Vec<ViewportBounds>,
     layout_bounds: Option<LayoutBounds>,
     active_cloud_pid: Option<u32>,
     active_cloud_source: Option<String>,
@@ -350,7 +355,7 @@ impl StatusApp {
             });
         }
 
-        self.tag_bounds.clear();
+        self.viewport_bounds.clear();
         self.layout_bounds = None;
 
         let mut left_x = 12.0;
@@ -358,7 +363,7 @@ impl StatusApp {
         for module in &left_modules {
             let w = module.width(
                 &self.stats,
-                &self.tags,
+                &self.viewport,
                 &self.layout,
                 &self.title,
                 &mut self.font_system,
@@ -400,7 +405,7 @@ impl StatusApp {
                     left_x,
                     w,
                     &self.stats,
-                    &self.tags,
+                    &self.viewport,
                     &self.layout,
                     &self.title,
                     &mut self.font_system,
@@ -412,7 +417,7 @@ impl StatusApp {
                     &mut self.text_items,
                     &mut self.rects,
                     &mut self.overlay_rects,
-                    &mut self.tag_bounds,
+                    &mut self.viewport_bounds,
                     &mut self.layout_bounds,
                     &self.tray_items,
                     &mut self.tray_item_bounds,
@@ -441,7 +446,7 @@ impl StatusApp {
         for module in right_modules.iter().rev() {
             let w = module.width(
                 &self.stats,
-                &self.tags,
+                &self.viewport,
                 &self.layout,
                 &self.title,
                 &mut self.font_system,
@@ -492,7 +497,7 @@ impl StatusApp {
                     right_x,
                     w,
                     &self.stats,
-                    &self.tags,
+                    &self.viewport,
                     &self.layout,
                     &self.title,
                     &mut self.font_system,
@@ -504,7 +509,7 @@ impl StatusApp {
                     &mut self.text_items,
                     &mut self.rects,
                     &mut self.overlay_rects,
-                    &mut self.tag_bounds,
+                    &mut self.viewport_bounds,
                     &mut self.layout_bounds,
                     &self.tray_items,
                     &mut self.tray_item_bounds,
@@ -894,7 +899,7 @@ impl StatusApp {
     }
 }
 
-fn get_closest_tag(x: f64, y: f64) -> i32 {
+fn get_closest_viewport(x: f64, y: f64) -> i32 {
     let centers = [(0.0, 0.0), (2000.0, 0.0), (0.0, 2000.0), (2000.0, 2000.0)];
     let mut min_dist = f64::MAX;
     let mut best_tag = 1;
@@ -910,15 +915,21 @@ fn get_closest_tag(x: f64, y: f64) -> i32 {
     best_tag
 }
 
-fn get_active_tag_from_camera(tags_json: &str) -> u32 {
-    if let Some(pan_idx) = tags_json.find("Pan: (") {
-        let coords_str = &tags_json[pan_idx + "Pan: (".len()..];
+fn get_active_viewport_from_camera(viewport_json: &str) -> u32 {
+    let mut text = viewport_json.to_string();
+    if let Ok(val) = serde_json::from_str::<serde_json::Value>(viewport_json) {
+        if let Some(t) = val.get("text").and_then(|v| v.as_str()) {
+            text = t.to_string();
+        }
+    }
+    if let Some(pan_idx) = text.find("Pan: (") {
+        let coords_str = &text[pan_idx + "Pan: (".len()..];
         if let Some(end_idx) = coords_str.find(")") {
             let parts: Vec<&str> = coords_str[..end_idx].split(',').collect();
             if parts.len() == 2 {
                 let pan_x = parts[0].trim().parse::<f64>().unwrap_or(0.0);
                 let pan_y = parts[1].trim().parse::<f64>().unwrap_or(0.0);
-                return get_closest_tag(pan_x, pan_y) as u32;
+                return get_closest_viewport(pan_x, pan_y) as u32;
             }
         }
     }
@@ -929,7 +940,7 @@ impl cce_ui::engine::Application for StatusApp {
     type Message = CustomEvent;
 
     fn new(_qh: &wayland_client::QueueHandle<cce_ui::engine::EngineState<Self>>, sender: calloop::channel::Sender<Self::Message>) -> Self {
-        let sender_tags = sender.clone();
+        let sender_viewport = sender.clone();
         let sender_layout = sender.clone();
         let sender_title = sender.clone();
         let sender_modifiers = sender.clone();
@@ -937,7 +948,7 @@ impl cce_ui::engine::Application for StatusApp {
         let sender_tray = sender.clone();
         let sender_switcher = sender.clone();
 
-        tokio::spawn(spawn_status_listener("tags", sender_tags));
+        tokio::spawn(spawn_status_listener("viewport", sender_viewport));
         tokio::spawn(spawn_status_listener("layout", sender_layout));
         tokio::spawn(spawn_status_listener("title", sender_title));
         tokio::spawn(spawn_status_listener("modifiers", sender_modifiers));
@@ -948,7 +959,7 @@ impl cce_ui::engine::Application for StatusApp {
         let font_system = FontSystem::new();
 
         let mut app = Self {
-            tags: String::new(),
+            viewport: String::new(),
             layout: String::new(),
             title: String::new(),
             stats: None,
@@ -956,7 +967,7 @@ impl cce_ui::engine::Application for StatusApp {
             cursor_pos: (0.0, 0.0),
             hovered_tray_item: None,
             tray_item_bounds: Vec::new(),
-            tag_bounds: Vec::new(),
+            viewport_bounds: Vec::new(),
             layout_bounds: None,
             active_cloud_pid: None,
             active_cloud_source: None,
@@ -978,7 +989,7 @@ impl cce_ui::engine::Application for StatusApp {
             dragged_module: None,
             module_bounds: Vec::new(),
             left_modules: vec![
-                Box::new(TagsModule),
+                Box::new(ViewportModule),
                 Box::new(LayoutModule),
                 Box::new(TitleModule),
             ],
@@ -1011,8 +1022,8 @@ impl cce_ui::engine::Application for StatusApp {
 
     fn update(&mut self, msg: Self::Message, needs_rebuild: &mut bool, _exit: &mut bool) {
         match msg {
-            CustomEvent::TagsUpdated(t) => {
-                self.tags = t;
+            CustomEvent::ViewportUpdated(t) => {
+                self.viewport = t;
             }
             CustomEvent::LayoutUpdated(l) => {
                 self.layout = l;
@@ -1339,7 +1350,7 @@ impl cce_ui::engine::Application for StatusApp {
             }
 
             if button == MouseButton::Left {
-                eprintln!("[tags-click] Mouse left click at logical: ({}, {})", cx, cy);
+                eprintln!("[viewport-click] Mouse left click at logical: ({}, {})", cx, cy);
                 
                 // Check if layout mode was clicked
                 let mut clicked_layout = false;
@@ -1424,10 +1435,10 @@ impl cce_ui::engine::Application for StatusApp {
                         self.active_cloud_pid = Some(pid);
                         eprintln!("[layout-click] Spawned clear-cloud with PID {}", pid);
                         
-                        let active_tag = get_active_tag_from_camera(&self.tags);
+                        let active_viewport = get_active_viewport_from_camera(&self.viewport);
                         let thread_sender = self.sender.clone();
                         std::thread::spawn(move || {
-                            eprintln!("[layout-click] Active tag is {}", active_tag);
+                            eprintln!("[layout-click] Active tag is {}", active_viewport);
                             if let Some(mut stdin) = child.stdin.take() {
                                 use std::io::Write;
                                 let _ = stdin.write_all(layout_json.as_bytes());
@@ -1453,9 +1464,9 @@ impl cce_ui::engine::Application for StatusApp {
                                                 .args(["apply-mode-sharing", &selected_mode])
                                                 .spawn();
                                         } else {
-                                            eprintln!("[layout-click] Selected mode: {}, setting for tag {}", selected_mode, active_tag);
+                                            eprintln!("[layout-click] Selected mode: {}, setting for tag {}", selected_mode, active_viewport);
                                             let _ = std::process::Command::new("clearctl")
-                                                .args(["tag-layout", &active_tag.to_string(), &selected_mode])
+                                                .args(["viewport-layout", &active_viewport.to_string(), &selected_mode])
                                                 .spawn();
                                         }
                                     } else {
@@ -1464,7 +1475,7 @@ impl cce_ui::engine::Application for StatusApp {
                                         if !selected.is_empty() {
                                             let selected_lower = selected.to_lowercase();
                                             let _ = std::process::Command::new("clearctl")
-                                                .args(["tag-layout", &active_tag.to_string(), &selected_lower])
+                                                .args(["viewport-layout", &active_viewport.to_string(), &selected_lower])
                                                 .spawn();
                                         }
                                     }
@@ -1488,12 +1499,12 @@ impl cce_ui::engine::Application for StatusApp {
                         eprintln!("[title-click] Title module clicked!");
                         self.trigger_switcher(false);
                     } else {
-                        for bound in &self.tag_bounds {
-                            eprintln!("[tags-click] Checking Tag '{}' bounds: x=[{}..{}], y=[{}..{}]", 
+                        for bound in &self.viewport_bounds {
+                            eprintln!("[viewport-click] Checking Viewport '{}' bounds: x=[{}..{}], y=[{}..{}]", 
                                 bound.name, bound.x, bound.x + bound.w, bound.y, bound.y + bound.h);
                             if cx >= bound.x as f64 && cx <= (bound.x + bound.w) as f64
                                 && cy >= bound.y as f64 && cy <= (bound.y + bound.h) as f64 {
-                                eprintln!("[tags-click] Tag matched: {}", bound.name);
+                                eprintln!("[viewport-click] Viewport matched: {}", bound.name);
                                 let name = bound.name.clone();
                                 std::thread::spawn(move || {
                                     let _ = std::process::Command::new("clearctl")
@@ -1533,7 +1544,7 @@ async fn spawn_status_listener(sub: &'static str, sender: calloop::channel::Send
                     eprintln!("[status-listener] received '{}' update: '{}'", sub, val);
                     if !val.is_empty() {
                         let ev = match sub {
-                            "tags" => CustomEvent::TagsUpdated(val.clone()),
+                            "viewport" => CustomEvent::ViewportUpdated(val.clone()),
                             "layout" => CustomEvent::LayoutUpdated(val.clone()),
                             "title" => CustomEvent::TitleUpdated(val.clone()),
                             "modifiers" => CustomEvent::ModifiersUpdated(val.clone()),
