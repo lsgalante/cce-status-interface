@@ -23,6 +23,10 @@ tokio-stream = "0.1"
 zbus = "4"
 resvg = "0.41.0"
 png = "0.17"
+log = "0.4"
+env_logger = "0.11"
+
+
 
 
 

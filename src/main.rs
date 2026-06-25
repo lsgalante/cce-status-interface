@@ -2020,18 +2020,12 @@ fn load_png_as_pixmap(path: &std::path::Path) -> Option<TrayPixmap> {
     
     let width = info.width as i32;
     let height = info.height as i32;
-    println!("[status-tray] PNG info: width={}, height={}, color_type={:?}, buffer_size={}", width, height, info.color_type, info.buffer_size());
     let mut argb_pixels = Vec::with_capacity((width * height * 4) as usize);
     
     let actual_bytes = &buf[..info.buffer_size()];
-    let mut printed = 0;
     match info.color_type {
         png::ColorType::Rgba => {
-            for (i, chunk) in actual_bytes.chunks_exact(4).enumerate() {
-                if chunk[3] > 10 && printed < 5 {
-                    println!("[status-tray] Pixel {}: original RGBA=[{}, {}, {}, {}]", i, chunk[0], chunk[1], chunk[2], chunk[3]);
-                    printed += 1;
-                }
+            for chunk in actual_bytes.chunks_exact(4) {
                 argb_pixels.push(chunk[3]); // A
                 argb_pixels.push(chunk[0]); // R
                 argb_pixels.push(chunk[1]); // G
@@ -2210,9 +2204,7 @@ async fn fetch_tray_item(conn: &zbus::Connection, addr: &NotifierAddress) -> Res
 
     if pixmaps.is_none() {
         if let Some(ref name) = icon_name {
-            println!("[status-tray] Trying to resolve theme icon for '{}' (theme path: {:?})", name, icon_theme_path);
             if let Some(icon_path) = resolve_icon_path(icon_theme_path.as_deref(), name) {
-                println!("[status-tray] Found icon file at {:?}", icon_path);
                 let ext = icon_path.extension().and_then(|e| e.to_str()).unwrap_or("");
                 let pixmap = if ext.eq_ignore_ascii_case("svg") {
                     load_svg_as_pixmap(&icon_path)
@@ -2220,17 +2212,10 @@ async fn fetch_tray_item(conn: &zbus::Connection, addr: &NotifierAddress) -> Res
                     load_png_as_pixmap(&icon_path)
                 };
                 if let Some(pixmap) = pixmap {
-                    println!("[status-tray] Successfully decoded icon file to pixmap (size: {}x{})", pixmap.width, pixmap.height);
                     pixmaps = Some(vec![pixmap]);
-                } else {
-                    println!("[status-tray] Failed to decode icon file");
                 }
-            } else {
-                println!("[status-tray] Could not find icon file on system or theme path");
             }
         }
-    } else {
-        println!("[status-tray] Loaded raw D-Bus pixmap for '{}'", id);
     }
 
     Ok(TrayItem {
@@ -2461,6 +2446,10 @@ async fn spawn_status_tray(sender: calloop::channel::Sender<CustomEvent>) {
 }
 
 fn main() {
+    env_logger::Builder::from_default_env()
+        .filter_level(log::LevelFilter::Info)
+        .init();
+
     let args: Vec<String> = std::env::args().collect();
     if args.len() > 1 && args[1] == "--trigger-switcher" {
         let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
