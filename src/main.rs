@@ -71,6 +71,15 @@ pub struct SystemStats {
     pub brightness: String,
 }
 
+#[derive(Clone)]
+struct StdinWriter(std::sync::mpsc::Sender<String>);
+
+impl std::fmt::Debug for StdinWriter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "StdinWriter")
+    }
+}
+
 #[derive(Debug, Clone)]
 enum CustomEvent {
     TagsUpdated(String),
@@ -80,8 +89,9 @@ enum CustomEvent {
     SystemStatsUpdated(SystemStats),
     TrayUpdated(TrayItem),
     TrayRemoved(String),
-    CloudSpawned { pid: u32, source: String },
+    CloudSpawned { pid: u32, source: String, switcher_stdin: Option<StdinWriter> },
     CloudClosed { pid: u32, source: String },
+    SwitcherTriggered,
 }
 
 pub(crate) fn make_text_buffer(fs: &mut FontSystem, text: &str, size: f32, font_family: &str) -> Buffer {
@@ -272,6 +282,7 @@ struct StatusApp {
     layout_bounds: Option<LayoutBounds>,
     active_cloud_pid: Option<u32>,
     active_cloud_source: Option<String>,
+    active_switcher_stdin: Option<StdinWriter>,
 
     font_system: FontSystem,
     status_bar: cce_ui::widget::StatusBar,
@@ -667,6 +678,206 @@ impl StatusApp {
         }
         false
     }
+
+    fn trigger_switcher(&mut self, is_switcher_mode: bool) {
+        let switcher_source = "window".to_string();
+
+        // 1. Check if any clear-cloud instance is already running
+        let mut running_cloud_pid = None;
+        if let Some(pid) = self.active_cloud_pid {
+            if std::path::Path::new(&format!("/proc/{}", pid)).exists() {
+                if let Ok(comm) = std::fs::read_to_string(format!("/proc/{}/comm", pid)) {
+                    if comm.trim() == "clear-cloud" {
+                        running_cloud_pid = Some(pid);
+                    }
+                }
+            }
+        }
+
+        if let Some(pid) = running_cloud_pid {
+            if is_switcher_mode && self.active_cloud_source.as_ref() == Some(&switcher_source) {
+                if let Some(ref writer) = self.active_switcher_stdin {
+                    eprintln!("[switcher] Already open, sending cycle command to clear-cloud stdin");
+                    let _ = writer.0.send("__cce_switcher_next__\n".to_string());
+                    return;
+                }
+            } else {
+                // Kill it to switch focus
+                eprintln!("[switcher] Killing existing clear-cloud PID {}", pid);
+                let _ = std::process::Command::new("kill").arg(pid.to_string()).status();
+                self.active_cloud_pid = None;
+                
+                // If it was a normal click on the same thing, toggle it off
+                if !is_switcher_mode && self.active_cloud_source.as_ref() == Some(&switcher_source) {
+                    self.active_cloud_source = None;
+                    return;
+                }
+            }
+        } else {
+            // No active dialog is running, check if pending for same source
+            if !is_switcher_mode && self.active_cloud_source.as_ref() == Some(&switcher_source) {
+                self.active_cloud_source = None;
+                return;
+            }
+        }
+
+        // Set active cloud source
+        self.active_cloud_source = Some(switcher_source.clone());
+
+        // Get placement coords: align just below Title module if we can find it
+        let mut target_x = 0.0;
+        for mb in &self.module_bounds {
+            if mb.name == "title" {
+                target_x = mb.x;
+                break;
+            }
+        }
+
+        let bar_height = read_status_height_from_config() as i32;
+
+        // Position it under Title module
+        let x_pos = target_x as i32;
+        let y_pos = bar_height;
+
+        let thread_sender = self.sender.clone();
+        let switcher_source_clone = switcher_source.clone();
+
+        std::thread::spawn(move || {
+            // Run "clearctl windows" to fetch the windows list
+            let output = std::process::Command::new("clearctl")
+                .arg("windows")
+                .output();
+
+            let mut windows = Vec::new();
+            if let Ok(out) = output {
+                let stdout_str = String::from_utf8_lossy(&out.stdout);
+                for line in stdout_str.lines() {
+                    let app_id = if let Some(idx) = line.find("app_id=") {
+                        let rest = &line[idx + 7..];
+                        let end = rest.find(' ').unwrap_or(rest.len());
+                        rest[..end].to_string()
+                    } else {
+                        continue;
+                    };
+
+                    if app_id == "cce-status-interface" || app_id == "cce-cloud" {
+                        continue;
+                    }
+
+                    let title = if let Some(idx) = line.find("title=\"") {
+                        let rest = &line[idx + 7..];
+                        let end = rest.find('"').unwrap_or(rest.len());
+                        rest[..end].to_string()
+                    } else {
+                        "".to_string()
+                    };
+
+                    windows.push((app_id, title));
+                }
+            }
+
+            if windows.is_empty() {
+                // If there are no windows, don't open a switcher and clear state
+                let _ = thread_sender.send(CustomEvent::CloudClosed { pid: 0, source: switcher_source_clone });
+                return;
+            }
+
+            // Format items for dmenu
+            let mut input_str = String::new();
+            for (app_id, title) in &windows {
+                let display = if title.is_empty() {
+                    app_id.clone()
+                } else {
+                    format!("{} ({})", title, app_id)
+                };
+                input_str.push_str(&display);
+                input_str.push('\n');
+            }
+
+            let mut cmd_args = vec![
+                "--dmenu".to_string(),
+                "-p".to_string(),
+                "Windows:".to_string(),
+                "-x".to_string(),
+                x_pos.to_string(),
+                "-y".to_string(),
+                y_pos.to_string(),
+            ];
+            if is_switcher_mode {
+                cmd_args.push("--switcher".to_string());
+            }
+
+            let mut child = match std::process::Command::new(get_clear_cloud_cmd())
+                .args(&cmd_args)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("[switcher] Failed to spawn clear-cloud: {:?}", e);
+                    let _ = thread_sender.send(CustomEvent::CloudClosed { pid: 0, source: switcher_source_clone });
+                    return;
+                }
+            };
+
+            let pid = child.id();
+            let mut stdin = child.stdin.take().unwrap();
+            let mut stdout = child.stdout.take().unwrap();
+
+            // Create channels for stdin writing and spawn forwarder
+            let (stdin_tx, stdin_rx) = std::sync::mpsc::channel::<String>();
+            use std::io::Write;
+            let _ = stdin.write_all(input_str.as_bytes());
+            let _ = stdin.flush();
+
+            std::thread::spawn(move || {
+                while let Ok(msg) = stdin_rx.recv() {
+                    if stdin.write_all(msg.as_bytes()).is_err() {
+                        break;
+                    }
+                    let _ = stdin.flush();
+                }
+            });
+
+            // Spawn stdout reader
+            let (stdout_tx, stdout_rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let mut out_str = String::new();
+                use std::io::Read;
+                let _ = stdout.read_to_string(&mut out_str);
+                let _ = stdout_tx.send(out_str);
+            });
+
+            let _ = thread_sender.send(CustomEvent::CloudSpawned { pid, source: switcher_source_clone.clone(), switcher_stdin: Some(StdinWriter(stdin_tx)) });
+
+            let _ = child.wait();
+            let stdout_str = stdout_rx.recv().unwrap_or_default();
+
+            let selected = stdout_str.trim().to_string();
+            if !selected.is_empty() {
+                // Find the matched window
+                for (app_id, title) in windows {
+                    let display = if title.is_empty() {
+                        app_id.clone()
+                    } else {
+                        format!("{} ({})", title, app_id)
+                    };
+                    if display == selected {
+                        eprintln!("[switcher] Selecting window title: {}, app_id: {}", title, app_id);
+                        let focus_query = if title.is_empty() { app_id } else { title };
+                        let _ = std::process::Command::new("clearctl")
+                            .args(["focus-window", &focus_query])
+                            .spawn();
+                        break;
+                    }
+                }
+            }
+
+            let _ = thread_sender.send(CustomEvent::CloudClosed { pid, source: switcher_source_clone });
+        });
+    }
 }
 
 fn get_closest_tag(x: f64, y: f64) -> i32 {
@@ -710,6 +921,7 @@ impl cce_ui::engine::Application for StatusApp {
         let sender_modifiers = sender.clone();
         let sender_stats = sender.clone();
         let sender_tray = sender.clone();
+        let sender_switcher = sender.clone();
 
         tokio::spawn(spawn_status_listener("tags", sender_tags));
         tokio::spawn(spawn_status_listener("layout", sender_layout));
@@ -717,6 +929,7 @@ impl cce_ui::engine::Application for StatusApp {
         tokio::spawn(spawn_status_listener("modifiers", sender_modifiers));
         tokio::spawn(spawn_system_stats(sender_stats));
         tokio::spawn(spawn_status_tray(sender_tray));
+        tokio::spawn(spawn_switcher_listener(sender_switcher));
 
         let font_system = FontSystem::new();
 
@@ -733,6 +946,7 @@ impl cce_ui::engine::Application for StatusApp {
             layout_bounds: None,
             active_cloud_pid: None,
             active_cloud_source: None,
+            active_switcher_stdin: None,
             font_system,
             status_bar: cce_ui::widget::StatusBar::new(),
             rects: Vec::new(),
@@ -804,10 +1018,13 @@ impl cce_ui::engine::Application for StatusApp {
             CustomEvent::TrayRemoved(id) => {
                 self.tray_items.remove(&id);
             }
-            CustomEvent::CloudSpawned { pid, source } => {
+            CustomEvent::CloudSpawned { pid, source, switcher_stdin } => {
                 if self.active_cloud_source.as_ref() == Some(&source) {
                     eprintln!("[cloud-event] CloudSpawned: pid {} for source {} matches expected, tracking", pid, source);
                     self.active_cloud_pid = Some(pid);
+                    if source == "window" {
+                        self.active_switcher_stdin = switcher_stdin;
+                    }
                 } else {
                     eprintln!("[cloud-event] CloudSpawned: pid {} for source {} is obsolete/canceled, killing", pid, source);
                     let _ = std::process::Command::new("kill").arg(pid.to_string()).status();
@@ -818,7 +1035,14 @@ impl cce_ui::engine::Application for StatusApp {
                     eprintln!("[cloud-event] CloudClosed: pid {} for source {} closed, clearing tracking", pid, source);
                     self.active_cloud_pid = None;
                     self.active_cloud_source = None;
+                    if source == "window" {
+                        self.active_switcher_stdin = None;
+                    }
                 }
+            }
+            CustomEvent::SwitcherTriggered => {
+                eprintln!("[switcher] SwitcherTriggered event received, calling trigger_switcher");
+                self.trigger_switcher(true);
             }
         }
         self.needs_rebuild = true;
@@ -1228,19 +1452,34 @@ impl cce_ui::engine::Application for StatusApp {
                         });
                     }
                 } else {
-                    for bound in &self.tag_bounds {
-                        eprintln!("[tags-click] Checking Tag '{}' bounds: x=[{}..{}], y=[{}..{}]", 
-                            bound.name, bound.x, bound.x + bound.w, bound.y, bound.y + bound.h);
-                        if cx >= bound.x as f64 && cx <= (bound.x + bound.w) as f64
-                            && cy >= bound.y as f64 && cy <= (bound.y + bound.h) as f64 {
-                            eprintln!("[tags-click] Tag matched: {}", bound.name);
-                            let name = bound.name.clone();
-                            std::thread::spawn(move || {
-                                let _ = std::process::Command::new("clearctl")
-                                    .args(["view", &name])
-                                    .spawn();
-                            });
-                            break;
+                    let mut clicked_title = false;
+                    for mb in &self.module_bounds {
+                        if mb.name == "title" {
+                            if lx >= mb.x && lx <= (mb.x + mb.w) {
+                                clicked_title = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if clicked_title {
+                        eprintln!("[title-click] Title module clicked!");
+                        self.trigger_switcher(false);
+                    } else {
+                        for bound in &self.tag_bounds {
+                            eprintln!("[tags-click] Checking Tag '{}' bounds: x=[{}..{}], y=[{}..{}]", 
+                                bound.name, bound.x, bound.x + bound.w, bound.y, bound.y + bound.h);
+                            if cx >= bound.x as f64 && cx <= (bound.x + bound.w) as f64
+                                && cy >= bound.y as f64 && cy <= (bound.y + bound.h) as f64 {
+                                eprintln!("[tags-click] Tag matched: {}", bound.name);
+                                let name = bound.name.clone();
+                                std::thread::spawn(move || {
+                                    let _ = std::process::Command::new("clearctl")
+                                        .args(["view", &name])
+                                        .spawn();
+                                });
+                                break;
+                            }
                         }
                     }
                 }
@@ -1285,6 +1524,29 @@ async fn spawn_status_listener(sub: &'static str, sender: calloop::channel::Send
             }
         }
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+}
+
+async fn spawn_switcher_listener(sender: calloop::channel::Sender<CustomEvent>) {
+    use tokio::io::AsyncBufReadExt;
+    use tokio::net::UnixListener;
+    let display = std::env::var("WAYLAND_DISPLAY").unwrap_or_else(|_| "wayland-0".to_string());
+    let socket_path = format!("/tmp/cce-status-interface-switcher-{}.sock", display);
+    let _ = std::fs::remove_file(&socket_path);
+
+    if let Ok(listener) = UnixListener::bind(&socket_path) {
+        eprintln!("[switcher-listener] Listening on {}", socket_path);
+        loop {
+            if let Ok((stream, _)) = listener.accept().await {
+                let mut reader = tokio::io::BufReader::new(stream);
+                let mut line = String::new();
+                if reader.read_line(&mut line).await.is_ok() {
+                    let _ = sender.send(CustomEvent::SwitcherTriggered);
+                }
+            }
+        }
+    } else {
+        eprintln!("[switcher-listener] Failed to bind to {}", socket_path);
     }
 }
 
@@ -1654,7 +1916,7 @@ async fn show_clear_cloud_menu(
 
             let pid = child.id();
             last_spawned_pid = pid;
-            let _ = thread_sender.send(CustomEvent::CloudSpawned { pid, source: source.clone() });
+            let _ = thread_sender.send(CustomEvent::CloudSpawned { pid, source: source.clone(), switcher_stdin: None });
 
             if let Some(mut stdin) = child.stdin.take() {
                 use std::io::Write;
@@ -2177,6 +2439,20 @@ async fn spawn_status_tray(sender: calloop::channel::Sender<CustomEvent>) {
 }
 
 fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() > 1 && args[1] == "--trigger-switcher" {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        rt.block_on(async {
+            let display = std::env::var("WAYLAND_DISPLAY").unwrap_or_else(|_| "wayland-0".to_string());
+            let socket_path = format!("/tmp/cce-status-interface-switcher-{}.sock", display);
+            use tokio::io::AsyncWriteExt;
+            if let Ok(mut stream) = tokio::net::UnixStream::connect(&socket_path).await {
+                let _ = stream.write_all(b"trigger\n").await;
+            }
+        });
+        return;
+    }
+
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     let _guard = rt.enter();
 
