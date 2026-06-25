@@ -811,7 +811,7 @@ impl StatusApp {
                 .args(&cmd_args)
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::inherit())
                 .spawn()
             {
                 Ok(c) => c,
@@ -1911,7 +1911,7 @@ async fn show_clear_cloud_menu(
                 .args(&cmd_args)
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::inherit())
                 .spawn()?;
 
             let pid = child.id();
