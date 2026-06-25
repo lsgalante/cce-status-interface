@@ -1007,7 +1007,15 @@ impl cce_ui::engine::Application for StatusApp {
                 self.title = t;
             }
             CustomEvent::ModifiersUpdated(m) => {
-                self.super_pressed = m == "super";
+                let was_super = self.super_pressed;
+                self.super_pressed = m.contains("super");
+
+                if was_super && !self.super_pressed {
+                    if let Some(ref writer) = self.active_switcher_stdin {
+                        eprintln!("[switcher] Super modifier released (via status updates), triggering select and close");
+                        let _ = writer.0.send("__cce_switcher_select_and_close__\n".to_string());
+                    }
+                }
             }
             CustomEvent::SystemStatsUpdated(s) => {
                 self.stats = Some(s);
