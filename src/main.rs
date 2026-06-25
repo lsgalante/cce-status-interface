@@ -1075,7 +1075,7 @@ impl cce_ui::engine::Application for StatusApp {
                     if source == "window" {
                         self.active_switcher_stdin = None;
                         self.previously_focused_window = None;
-                    } else if source == "layout" || source.starts_with("context_menu:") {
+                    } else if source == "layout" || source.starts_with("context_menu:") || source.starts_with("tray:") {
                         if let Some(ref focus_query) = self.previously_focused_window {
                             eprintln!("[cloud-event] Restoring focus to: {}", focus_query);
                             let focus_query_clone = focus_query.clone();
@@ -1280,6 +1280,9 @@ impl cce_ui::engine::Application for StatusApp {
 
                 // Now set the active cloud source to this one
                 self.active_cloud_source = Some(tray_source.clone());
+                if self.previously_focused_window.is_none() {
+                    self.previously_focused_window = get_currently_focused_window();
+                }
 
                 let btn_code = match button {
                     MouseButton::Left => 272,
@@ -2040,22 +2043,75 @@ async fn show_clear_cloud_menu(
             None => return Ok(()),
         };
 
-        let mut menu_stack: Vec<&MenuItem> = vec![&root_item];
+        // Assign page indices to submenus.
+        let mut page_indices = std::collections::HashMap::new();
+        page_indices.insert(root_item.id, 0);
+        let mut parent_pages = std::collections::HashMap::new();
+        let mut next_page = 1;
 
-        enum MenuOption<'a> {
-            Back,
-            Item(&'a MenuItem),
+        fn assign_pages(
+            item: &MenuItem,
+            current_page: usize,
+            page_indices: &mut std::collections::HashMap<i32, usize>,
+            parent_pages: &mut std::collections::HashMap<usize, usize>,
+            next_page: &mut usize,
+        ) {
+            for child in &item.children {
+                if child.is_separator || !child.enabled {
+                    continue;
+                }
+                if !child.children.is_empty() && *next_page < 16 {
+                    let child_page = *next_page;
+                    page_indices.insert(child.id, child_page);
+                    parent_pages.insert(child_page, current_page);
+                    *next_page += 1;
+                    assign_pages(child, child_page, page_indices, parent_pages, next_page);
+                }
+            }
         }
 
-        loop {
-            let current_item = *menu_stack.last().unwrap();
-            let mut display_list = Vec::new();
+        assign_pages(&root_item, 0, &mut page_indices, &mut parent_pages, &mut next_page);
 
-            if menu_stack.len() > 1 {
-                display_list.push(("< Back".to_string(), MenuOption::Back));
+        #[derive(Debug, Clone)]
+        struct LocalWidget {
+            widget_type: String,
+            text: String,
+            id: Option<String>,
+            target_page: Option<usize>,
+        }
+
+        #[derive(Debug, Clone)]
+        struct LocalPage {
+            title: String,
+            widgets: Vec<LocalWidget>,
+        }
+
+        let mut pages = vec![LocalPage {
+            title: "".to_string(),
+            widgets: Vec::new(),
+        }; next_page];
+
+        fn build_pages(
+            item: &MenuItem,
+            current_page: usize,
+            page_indices: &std::collections::HashMap<i32, usize>,
+            parent_pages: &std::collections::HashMap<usize, usize>,
+            pages: &mut [LocalPage],
+        ) {
+            let mut widgets = Vec::new();
+
+            if current_page > 0 {
+                if let Some(&parent_page) = parent_pages.get(&current_page) {
+                    widgets.push(LocalWidget {
+                        widget_type: "button".to_string(),
+                        text: "< Back".to_string(),
+                        id: Some(format!("back_to_{}", parent_page)),
+                        target_page: Some(parent_page),
+                    });
+                }
             }
 
-            for child in &current_item.children {
+            for child in &item.children {
                 if child.is_separator || !child.enabled {
                     continue;
                 }
@@ -2069,82 +2125,125 @@ async fn show_clear_cloud_menu(
                 };
 
                 if !child.children.is_empty() {
-                    display_label = format!("{} >", display_label);
-                }
+                    if let Some(&target_page) = page_indices.get(&child.id) {
+                        display_label = format!("{} >", display_label);
 
-                display_list.push((display_label, MenuOption::Item(child)));
-            }
+                        widgets.push(LocalWidget {
+                            widget_type: "button".to_string(),
+                            text: display_label,
+                            id: Some(format!("submenu_{}", child.id)),
+                            target_page: Some(target_page),
+                        });
 
-            if display_list.is_empty() {
-                break;
-            }
-
-            let mut clear_cloud_input = String::new();
-            for (label, _) in &display_list {
-                clear_cloud_input.push_str(label);
-                clear_cloud_input.push('\n');
-            }
-
-            let mut cmd_args = vec![
-                "--dmenu".to_string(),
-                "-p".to_string(),
-                "Tray Menu:".to_string(),
-                "-x".to_string(),
-                x_pos.to_string(),
-                "-y".to_string(),
-                y_pos.to_string(),
-            ];
-            if align_right {
-                cmd_args.push("--align-right".to_string());
-            }
-
-            let mut child = std::process::Command::new(get_clear_cloud_cmd())
-                .args(&cmd_args)
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::inherit())
-                .spawn()?;
-
-            let pid = child.id();
-            last_spawned_pid = pid;
-            let _ = thread_sender.send(CustomEvent::CloudSpawned { pid, source: source.clone(), switcher_stdin: None });
-
-            if let Some(mut stdin) = child.stdin.take() {
-                use std::io::Write;
-                stdin.write_all(clear_cloud_input.as_bytes())?;
-            }
-
-            let output = child.wait_with_output()?;
-            if !output.status.success() {
-                break;
-            }
-
-            let selected = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if selected.is_empty() {
-                break;
-            }
-
-            if let Some((_, opt)) = display_list.iter().find(|(label, _)| label == &selected) {
-                match opt {
-                    MenuOption::Back => {
-                        menu_stack.pop();
+                        build_pages(child, target_page, page_indices, parent_pages, pages);
+                    } else {
+                        widgets.push(LocalWidget {
+                            widget_type: "button".to_string(),
+                            text: display_label,
+                            id: Some(format!("item_{}", child.id)),
+                            target_page: None,
+                        });
                     }
-                    MenuOption::Item(menu_item) => {
-                        if !menu_item.children.is_empty() {
-                            menu_stack.push(menu_item);
-                        } else {
+                } else {
+                    widgets.push(LocalWidget {
+                        widget_type: "button".to_string(),
+                        text: display_label,
+                        id: Some(format!("item_{}", child.id)),
+                        target_page: None,
+                    });
+                }
+            }
+
+            let title = if item.label.is_empty() {
+                if current_page == 0 {
+                    "Tray Menu".to_string()
+                } else {
+                    "".to_string()
+                }
+            } else {
+                item.label.clone()
+            };
+
+            pages[current_page] = LocalPage {
+                title,
+                widgets,
+            };
+        }
+
+        build_pages(&root_item, 0, &page_indices, &parent_pages, &mut pages);
+
+        // Serialize to JSON value
+        let mut pages_json = Vec::new();
+        for page in pages {
+            let mut widgets_json = Vec::new();
+            for w in page.widgets {
+                let mut w_val = serde_json::json!({
+                    "type": w.widget_type,
+                    "text": w.text,
+                });
+                if let Some(id) = w.id {
+                    w_val["id"] = serde_json::Value::String(id);
+                }
+                if let Some(tp) = w.target_page {
+                    w_val["target_page"] = serde_json::Value::Number(tp.into());
+                }
+                widgets_json.push(w_val);
+            }
+            pages_json.push(serde_json::json!({
+                "title": page.title,
+                "widgets": widgets_json,
+            }));
+        }
+
+        let layout_json = serde_json::json!({
+            "width": 260,
+            "pages": pages_json,
+        });
+        let layout_str = layout_json.to_string();
+
+        let mut cmd_args = vec![
+            "--json".to_string(),
+            "-x".to_string(),
+            x_pos.to_string(),
+            "-y".to_string(),
+            y_pos.to_string(),
+        ];
+        if align_right {
+            cmd_args.push("--align-right".to_string());
+        }
+
+        let mut child = std::process::Command::new(get_clear_cloud_cmd())
+            .args(&cmd_args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::inherit())
+            .spawn()?;
+
+        let pid = child.id();
+        last_spawned_pid = pid;
+        let _ = thread_sender.send(CustomEvent::CloudSpawned { pid, source: source.clone(), switcher_stdin: None });
+
+        if let Some(mut stdin) = child.stdin.take() {
+            use std::io::Write;
+            stdin.write_all(layout_str.as_bytes())?;
+        }
+
+        let output = child.wait_with_output()?;
+        if output.status.success() {
+            let stdout_str = String::from_utf8_lossy(&output.stdout);
+            if let Ok(parsed_json) = serde_json::from_str::<serde_json::Value>(stdout_str.trim()) {
+                if let Some(btn_id) = parsed_json.get("button").and_then(|v| v.as_str()) {
+                    if btn_id.starts_with("item_") {
+                        if let Ok(item_id) = btn_id["item_".len()..].parse::<i32>() {
                             let timestamp = std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
                                 .unwrap_or_default()
                                 .as_secs() as u32;
                             let val = zbus::zvariant::Value::from("");
-                            let _ = menu_proxy.event(menu_item.id, "clicked", &val, timestamp).await;
-                            break;
+                            let _ = menu_proxy.event(item_id, "clicked", &val, timestamp).await;
                         }
                     }
                 }
-            } else {
-                break;
             }
         }
         Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
