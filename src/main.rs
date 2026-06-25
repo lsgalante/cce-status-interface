@@ -80,7 +80,8 @@ enum CustomEvent {
     SystemStatsUpdated(SystemStats),
     TrayUpdated(TrayItem),
     TrayRemoved(String),
-    LayoutMenuClosed(u32),
+    CloudSpawned { pid: u32, source: String },
+    CloudClosed { pid: u32, source: String },
 }
 
 pub(crate) fn make_text_buffer(fs: &mut FontSystem, text: &str, size: f32, font_family: &str) -> Buffer {
@@ -269,7 +270,8 @@ struct StatusApp {
     tray_item_bounds: Vec<TrayIconBounds>,
     tag_bounds: Vec<TagBounds>,
     layout_bounds: Option<LayoutBounds>,
-    layout_menu_pid: Option<u32>,
+    active_cloud_pid: Option<u32>,
+    active_cloud_source: Option<String>,
 
     font_system: FontSystem,
     status_bar: cce_ui::widget::StatusBar,
@@ -729,7 +731,8 @@ impl cce_ui::engine::Application for StatusApp {
             tray_item_bounds: Vec::new(),
             tag_bounds: Vec::new(),
             layout_bounds: None,
-            layout_menu_pid: None,
+            active_cloud_pid: None,
+            active_cloud_source: None,
             font_system,
             status_bar: cce_ui::widget::StatusBar::new(),
             rects: Vec::new(),
@@ -801,10 +804,20 @@ impl cce_ui::engine::Application for StatusApp {
             CustomEvent::TrayRemoved(id) => {
                 self.tray_items.remove(&id);
             }
-            CustomEvent::LayoutMenuClosed(pid) => {
-                if self.layout_menu_pid == Some(pid) {
-                    eprintln!("[layout-click] CustomEvent: clear-cloud (PID {}) closed, clearing tracking PID", pid);
-                    self.layout_menu_pid = None;
+            CustomEvent::CloudSpawned { pid, source } => {
+                if self.active_cloud_source.as_ref() == Some(&source) {
+                    eprintln!("[cloud-event] CloudSpawned: pid {} for source {} matches expected, tracking", pid, source);
+                    self.active_cloud_pid = Some(pid);
+                } else {
+                    eprintln!("[cloud-event] CloudSpawned: pid {} for source {} is obsolete/canceled, killing", pid, source);
+                    let _ = std::process::Command::new("kill").arg(pid.to_string()).status();
+                }
+            }
+            CustomEvent::CloudClosed { pid, source } => {
+                if self.active_cloud_pid == Some(pid) || (pid == 0 && self.active_cloud_source.as_ref() == Some(&source)) {
+                    eprintln!("[cloud-event] CloudClosed: pid {} for source {} closed, clearing tracking", pid, source);
+                    self.active_cloud_pid = None;
+                    self.active_cloud_source = None;
                 }
             }
         }
@@ -957,6 +970,44 @@ impl cce_ui::engine::Application for StatusApp {
 
             if let Some(bound) = clicked_tray {
                 let id = bound.id.clone();
+                let tray_source = format!("tray:{}", id);
+
+                // Check if any clear-cloud instance is already running
+                let mut running_cloud_pid = None;
+                if let Some(pid) = self.active_cloud_pid {
+                    if std::path::Path::new(&format!("/proc/{}", pid)).exists() {
+                        if let Ok(comm) = std::fs::read_to_string(format!("/proc/{}/comm", pid)) {
+                            if comm.trim() == "clear-cloud" {
+                                running_cloud_pid = Some(pid);
+                            }
+                        }
+                    }
+                }
+
+                if let Some(pid) = running_cloud_pid {
+                    // There is an active dialog open.
+                    // Kill it regardless of which one it is.
+                    eprintln!("[tray-click] clear-cloud (PID {}) is running, killing it", pid);
+                    let _ = std::process::Command::new("kill").arg(pid.to_string()).status();
+                    self.active_cloud_pid = None;
+
+                    // If it was clicked for the SAME tray icon, this is a toggle-off.
+                    if self.active_cloud_source.as_ref() == Some(&tray_source) {
+                        self.active_cloud_source = None;
+                        return None;
+                    }
+                } else {
+                    // No active dialog is running, but check if there is a pending one for the same source
+                    if self.active_cloud_source.as_ref() == Some(&tray_source) {
+                        // User clicked same icon again while it was pending. Cancel it!
+                        self.active_cloud_source = None;
+                        return None;
+                    }
+                }
+
+                // Now set the active cloud source to this one
+                self.active_cloud_source = Some(tray_source.clone());
+
                 let btn_code = match button {
                     MouseButton::Left => 272,
                     MouseButton::Right => 273,
@@ -968,12 +1019,15 @@ impl cce_ui::engine::Application for StatusApp {
                 let bar_height = read_status_height_from_config() as i32;
                 let bound_x = bound.x;
                 let bound_w = bound.w;
+                let thread_sender = self.sender.clone();
+                let tray_source_clone = tray_source.clone();
                 std::thread::spawn(move || {
                     let rt = tokio::runtime::Builder::new_current_thread()
                         .enable_all()
                         .build()
                         .unwrap();
                     rt.block_on(async move {
+                        let mut menu_shown = false;
                         if let Some((destination, path_part)) = id.split_once('/') {
                             let path = format!("/{}", path_part);
                             match zbus::Connection::session().await {
@@ -999,7 +1053,8 @@ impl cce_ui::engine::Application for StatusApp {
 
                                             if should_show_menu {
                                                 if let Some(menu_p) = menu_path {
-                                                    if let Err(e) = show_clear_cloud_menu(&conn, destination, menu_p.as_str(), x_pos, y_pos, true).await {
+                                                    menu_shown = true;
+                                                    if let Err(e) = show_clear_cloud_menu(&conn, destination, menu_p.as_str(), x_pos, y_pos, true, thread_sender.clone(), tray_source_clone.clone()).await {
                                                         eprintln!("[tray-click] show_clear_cloud_menu failed: {:?}", e);
                                                     }
                                                 }
@@ -1007,7 +1062,8 @@ impl cce_ui::engine::Application for StatusApp {
                                                 if let Err(e) = proxy.activate(cx_i, cy_i).await {
                                                     eprintln!("[tray-click] Activate failed: {:?}", e);
                                                     if let Some(menu_p) = menu_path {
-                                                        if let Err(e) = show_clear_cloud_menu(&conn, destination, menu_p.as_str(), x_pos, y_pos, true).await {
+                                                        menu_shown = true;
+                                                        if let Err(e) = show_clear_cloud_menu(&conn, destination, menu_p.as_str(), x_pos, y_pos, true, thread_sender.clone(), tray_source_clone.clone()).await {
                                                             eprintln!("[tray-click] Fallback show_clear_cloud_menu failed: {:?}", e);
                                                         }
                                                     }
@@ -1028,6 +1084,9 @@ impl cce_ui::engine::Application for StatusApp {
                         } else {
                             eprintln!("[tray-click] Failed to split id: {}", id);
                         }
+                        if !menu_shown {
+                            let _ = thread_sender.send(CustomEvent::CloudClosed { pid: 0, source: tray_source_clone });
+                        }
                     });
                 });
                 return None;
@@ -1047,110 +1106,126 @@ impl cce_ui::engine::Application for StatusApp {
 
                 if clicked_layout {
                     eprintln!("[layout-click] Layout mode clicked!");
-                    
-                    // Check if there is an existing, running clear-cloud instance
-                    let mut menu_already_running = false;
-                    if let Some(pid) = self.layout_menu_pid {
+                    let layout_source = "layout".to_string();
+
+                    // Check if any clear-cloud instance is already running
+                    let mut running_cloud_pid = None;
+                    if let Some(pid) = self.active_cloud_pid {
                         if std::path::Path::new(&format!("/proc/{}", pid)).exists() {
                             if let Ok(comm) = std::fs::read_to_string(format!("/proc/{}/comm", pid)) {
                                 if comm.trim() == "clear-cloud" {
-                                    menu_already_running = true;
+                                    running_cloud_pid = Some(pid);
                                 }
                             }
                         }
                     }
 
-                    if menu_already_running {
-                        if let Some(pid) = self.layout_menu_pid {
-                            eprintln!("[layout-click] clear-cloud (PID {}) is already running, killing it to close the menu", pid);
-                            let _ = std::process::Command::new("kill").arg(pid.to_string()).status();
-                        }
-                        self.layout_menu_pid = None;
-                    } else {
-                        let x_pos = self.layout_bounds.as_ref().map(|b| b.x as i32).unwrap_or(0);
-                        let y_pos = self.layout_bounds.as_ref().map(|b| b.h as i32).unwrap_or_else(|| read_status_height_from_config() as i32);
-                        
-                        // Spawn the child on the main thread so we can capture its PID
-                        let layout_json = serde_json::json!({
-                            "width": 240,
-                            "height": 320,
-                            "widgets": [
-                                { "type": "label", "text": "Window Mode" },
-                                { "id": "apply_all", "type": "checkbox", "text": "Apply to all sharing mode", "checked": false },
-                                { "id": "cascade", "type": "button", "text": "Cascade" },
-                                { "id": "grid", "type": "button", "text": "Grid" },
-                                { "id": "fullscreen", "type": "button", "text": "Fullscreen" },
-                                { "id": "floating", "type": "button", "text": "Floating" },
-                                { "id": "popup", "type": "button", "text": "Popup" }
-                            ]
-                        }).to_string();
+                    if let Some(pid) = running_cloud_pid {
+                        // There is an active dialog open.
+                        // Kill it regardless of which one it is.
+                        eprintln!("[layout-click] clear-cloud (PID {}) is running, killing it", pid);
+                        let _ = std::process::Command::new("kill").arg(pid.to_string()).status();
+                        self.active_cloud_pid = None;
 
-                        if let Ok(mut child) = std::process::Command::new(get_clear_cloud_cmd())
-                            .args([
-                                "--json",
-                                "-x",
-                                &x_pos.to_string(),
-                                "-y",
-                                &y_pos.to_string(),
-                            ])
-                            .stdin(std::process::Stdio::piped())
-                            .stdout(std::process::Stdio::piped())
-                            .stderr(std::process::Stdio::piped())
-                            .spawn()
-                        {
-                            let pid = child.id();
-                            self.layout_menu_pid = Some(pid);
-                            eprintln!("[layout-click] Spawned clear-cloud with PID {}", pid);
-                            
-                            let active_tag = get_active_tag_from_camera(&self.tags);
-                            let thread_sender = self.sender.clone();
-                            std::thread::spawn(move || {
-                                eprintln!("[layout-click] Active tag is {}", active_tag);
-                                if let Some(mut stdin) = child.stdin.take() {
-                                    use std::io::Write;
-                                    let _ = stdin.write_all(layout_json.as_bytes());
-                                }
-                                if let Ok(output) = child.wait_with_output() {
-                                    let err_str = String::from_utf8_lossy(&output.stderr);
-                                    if !err_str.is_empty() {
-                                        eprintln!("[clear-cloud stderr] {}", err_str);
-                                    }
-                                    if output.status.success() {
-                                        let out_str = String::from_utf8_lossy(&output.stdout);
-                                        #[derive(serde::Deserialize)]
-                                        struct LayoutMenuOutput {
-                                            button: String,
-                                            checkboxes: std::collections::HashMap<String, bool>,
-                                        }
-                                        if let Ok(val) = serde_json::from_str::<LayoutMenuOutput>(out_str.trim()) {
-                                            let selected_mode = val.button.to_lowercase();
-                                            let apply_all = val.checkboxes.get("apply_all").copied().unwrap_or(false);
-                                            if apply_all {
-                                                eprintln!("[layout-click] Selected mode: {}, applying to all windows sharing mode", selected_mode);
-                                                let _ = std::process::Command::new("clearctl")
-                                                    .args(["apply-mode-sharing", &selected_mode])
-                                                    .spawn();
-                                            } else {
-                                                eprintln!("[layout-click] Selected mode: {}, setting for tag {}", selected_mode, active_tag);
-                                                let _ = std::process::Command::new("clearctl")
-                                                    .args(["tag-layout", &active_tag.to_string(), &selected_mode])
-                                                    .spawn();
-                                            }
-                                        } else {
-                                            // Fallback
-                                            let selected = out_str.trim().to_string();
-                                            if !selected.is_empty() {
-                                                let selected_lower = selected.to_lowercase();
-                                                let _ = std::process::Command::new("clearctl")
-                                                    .args(["tag-layout", &active_tag.to_string(), &selected_lower])
-                                                    .spawn();
-                                            }
-                                        }
-                                    }
-                                }
-                                let _ = thread_sender.send(CustomEvent::LayoutMenuClosed(pid));
-                            });
+                        // If it was clicked for the layout menu, this is a toggle-off.
+                        if self.active_cloud_source.as_ref() == Some(&layout_source) {
+                            self.active_cloud_source = None;
+                            return None;
                         }
+                    } else {
+                        // No active dialog is running, but check if there is a pending one for the same source
+                        if self.active_cloud_source.as_ref() == Some(&layout_source) {
+                            self.active_cloud_source = None;
+                            return None;
+                        }
+                    }
+
+                    // Now set the active cloud source to this one
+                    self.active_cloud_source = Some(layout_source);
+
+                    let x_pos = self.layout_bounds.as_ref().map(|b| b.x as i32).unwrap_or(0);
+                    let y_pos = self.layout_bounds.as_ref().map(|b| b.h as i32).unwrap_or_else(|| read_status_height_from_config() as i32);
+                    
+                    // Spawn the child on the main thread so we can capture its PID
+                    let layout_json = serde_json::json!({
+                        "width": 240,
+                        "height": 320,
+                        "widgets": [
+                            { "type": "label", "text": "Window Mode" },
+                            { "id": "apply_all", "type": "checkbox", "text": "Apply to all sharing mode", "checked": false },
+                            { "id": "cascade", "type": "button", "text": "Cascade" },
+                            { "id": "grid", "type": "button", "text": "Grid" },
+                            { "id": "fullscreen", "type": "button", "text": "Fullscreen" },
+                            { "id": "floating", "type": "button", "text": "Floating" },
+                            { "id": "popup", "type": "button", "text": "Popup" }
+                        ]
+                    }).to_string();
+
+                    if let Ok(mut child) = std::process::Command::new(get_clear_cloud_cmd())
+                        .args([
+                            "--json",
+                            "-x",
+                            &x_pos.to_string(),
+                            "-y",
+                            &y_pos.to_string(),
+                        ])
+                        .stdin(std::process::Stdio::piped())
+                        .stdout(std::process::Stdio::piped())
+                        .stderr(std::process::Stdio::piped())
+                        .spawn()
+                    {
+                        let pid = child.id();
+                        self.active_cloud_pid = Some(pid);
+                        eprintln!("[layout-click] Spawned clear-cloud with PID {}", pid);
+                        
+                        let active_tag = get_active_tag_from_camera(&self.tags);
+                        let thread_sender = self.sender.clone();
+                        std::thread::spawn(move || {
+                            eprintln!("[layout-click] Active tag is {}", active_tag);
+                            if let Some(mut stdin) = child.stdin.take() {
+                                use std::io::Write;
+                                let _ = stdin.write_all(layout_json.as_bytes());
+                            }
+                            if let Ok(output) = child.wait_with_output() {
+                                let err_str = String::from_utf8_lossy(&output.stderr);
+                                if !err_str.is_empty() {
+                                    eprintln!("[clear-cloud stderr] {}", err_str);
+                                }
+                                if output.status.success() {
+                                    let out_str = String::from_utf8_lossy(&output.stdout);
+                                    #[derive(serde::Deserialize)]
+                                    struct LayoutMenuOutput {
+                                        button: String,
+                                        checkboxes: std::collections::HashMap<String, bool>,
+                                    }
+                                    if let Ok(val) = serde_json::from_str::<LayoutMenuOutput>(out_str.trim()) {
+                                        let selected_mode = val.button.to_lowercase();
+                                        let apply_all = val.checkboxes.get("apply_all").copied().unwrap_or(false);
+                                        if apply_all {
+                                            eprintln!("[layout-click] Selected mode: {}, applying to all windows sharing mode", selected_mode);
+                                            let _ = std::process::Command::new("clearctl")
+                                                .args(["apply-mode-sharing", &selected_mode])
+                                                .spawn();
+                                        } else {
+                                            eprintln!("[layout-click] Selected mode: {}, setting for tag {}", selected_mode, active_tag);
+                                            let _ = std::process::Command::new("clearctl")
+                                                .args(["tag-layout", &active_tag.to_string(), &selected_mode])
+                                                .spawn();
+                                        }
+                                    } else {
+                                        // Fallback
+                                        let selected = out_str.trim().to_string();
+                                        if !selected.is_empty() {
+                                            let selected_lower = selected.to_lowercase();
+                                            let _ = std::process::Command::new("clearctl")
+                                                .args(["tag-layout", &active_tag.to_string(), &selected_lower])
+                                                .spawn();
+                                        }
+                                    }
+                                }
+                            }
+                            let _ = thread_sender.send(CustomEvent::CloudClosed { pid, source: "layout".to_string() });
+                        });
                     }
                 } else {
                     for bound in &self.tag_bounds {
@@ -1492,126 +1567,138 @@ async fn show_clear_cloud_menu(
     x_pos: i32,
     y_pos: i32,
     align_right: bool,
+    thread_sender: calloop::channel::Sender<CustomEvent>,
+    source: String,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let menu_proxy = DBusMenuProxy::builder(conn)
-        .destination(destination)?
-        .path(menu_path)?
-        .build()
-        .await?;
+    let mut last_spawned_pid = 0;
 
-    let _ = menu_proxy.about_to_show(0).await;
-    let (_, layout) = menu_proxy.get_layout(0, 5, vec![]).await?;
+    let res = async {
+        let menu_proxy = DBusMenuProxy::builder(conn)
+            .destination(destination)?
+            .path(menu_path)?
+            .build()
+            .await?;
 
-    let root_item = match parse_menu_item(layout.0, layout.1, layout.2) {
-        Some(item) => item,
-        None => return Ok(()),
-    };
+        let _ = menu_proxy.about_to_show(0).await;
+        let (_, layout) = menu_proxy.get_layout(0, 5, vec![]).await?;
 
-    let mut menu_stack: Vec<&MenuItem> = vec![&root_item];
+        let root_item = match parse_menu_item(layout.0, layout.1, layout.2) {
+            Some(item) => item,
+            None => return Ok(()),
+        };
 
-    enum MenuOption<'a> {
-        Back,
-        Item(&'a MenuItem),
-    }
+        let mut menu_stack: Vec<&MenuItem> = vec![&root_item];
 
-    loop {
-        let current_item = *menu_stack.last().unwrap();
-        let mut display_list = Vec::new();
-
-        if menu_stack.len() > 1 {
-            display_list.push(("< Back".to_string(), MenuOption::Back));
+        enum MenuOption<'a> {
+            Back,
+            Item(&'a MenuItem),
         }
 
-        for child in &current_item.children {
-            if child.is_separator || !child.enabled {
-                continue;
+        loop {
+            let current_item = *menu_stack.last().unwrap();
+            let mut display_list = Vec::new();
+
+            if menu_stack.len() > 1 {
+                display_list.push(("< Back".to_string(), MenuOption::Back));
             }
 
-            let mut display_label = if child.toggle_state == 1 {
-                format!("[x] {}", child.label)
-            } else if child.toggle_state == 0 {
-                format!("[ ] {}", child.label)
-            } else {
-                child.label.clone()
-            };
-
-            if !child.children.is_empty() {
-                display_label = format!("{} >", display_label);
-            }
-
-            display_list.push((display_label, MenuOption::Item(child)));
-        }
-
-        if display_list.is_empty() {
-            break;
-        }
-
-        let mut clear_cloud_input = String::new();
-        for (label, _) in &display_list {
-            clear_cloud_input.push_str(label);
-            clear_cloud_input.push('\n');
-        }
-
-        let mut cmd_args = vec![
-            "--dmenu".to_string(),
-            "-p".to_string(),
-            "Tray Menu:".to_string(),
-            "-x".to_string(),
-            x_pos.to_string(),
-            "-y".to_string(),
-            y_pos.to_string(),
-        ];
-        if align_right {
-            cmd_args.push("--align-right".to_string());
-        }
-
-        let mut child = std::process::Command::new(get_clear_cloud_cmd())
-            .args(&cmd_args)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()?;
-
-        if let Some(mut stdin) = child.stdin.take() {
-            use std::io::Write;
-            stdin.write_all(clear_cloud_input.as_bytes())?;
-        }
-
-        let output = child.wait_with_output()?;
-        if !output.status.success() {
-            break;
-        }
-
-        let selected = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if selected.is_empty() {
-            break;
-        }
-
-        if let Some((_, opt)) = display_list.iter().find(|(label, _)| label == &selected) {
-            match opt {
-                MenuOption::Back => {
-                    menu_stack.pop();
+            for child in &current_item.children {
+                if child.is_separator || !child.enabled {
+                    continue;
                 }
-                MenuOption::Item(menu_item) => {
-                    if !menu_item.children.is_empty() {
-                        menu_stack.push(menu_item);
-                    } else {
-                        let timestamp = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs() as u32;
-                        let val = zbus::zvariant::Value::from("");
-                        let _ = menu_proxy.event(menu_item.id, "clicked", &val, timestamp).await;
-                        break;
+
+                let mut display_label = if child.toggle_state == 1 {
+                    format!("[x] {}", child.label)
+                } else if child.toggle_state == 0 {
+                    format!("[ ] {}", child.label)
+                } else {
+                    child.label.clone()
+                };
+
+                if !child.children.is_empty() {
+                    display_label = format!("{} >", display_label);
+                }
+
+                display_list.push((display_label, MenuOption::Item(child)));
+            }
+
+            if display_list.is_empty() {
+                break;
+            }
+
+            let mut clear_cloud_input = String::new();
+            for (label, _) in &display_list {
+                clear_cloud_input.push_str(label);
+                clear_cloud_input.push('\n');
+            }
+
+            let mut cmd_args = vec![
+                "--dmenu".to_string(),
+                "-p".to_string(),
+                "Tray Menu:".to_string(),
+                "-x".to_string(),
+                x_pos.to_string(),
+                "-y".to_string(),
+                y_pos.to_string(),
+            ];
+            if align_right {
+                cmd_args.push("--align-right".to_string());
+            }
+
+            let mut child = std::process::Command::new(get_clear_cloud_cmd())
+                .args(&cmd_args)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()?;
+
+            let pid = child.id();
+            last_spawned_pid = pid;
+            let _ = thread_sender.send(CustomEvent::CloudSpawned { pid, source: source.clone() });
+
+            if let Some(mut stdin) = child.stdin.take() {
+                use std::io::Write;
+                stdin.write_all(clear_cloud_input.as_bytes())?;
+            }
+
+            let output = child.wait_with_output()?;
+            if !output.status.success() {
+                break;
+            }
+
+            let selected = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if selected.is_empty() {
+                break;
+            }
+
+            if let Some((_, opt)) = display_list.iter().find(|(label, _)| label == &selected) {
+                match opt {
+                    MenuOption::Back => {
+                        menu_stack.pop();
+                    }
+                    MenuOption::Item(menu_item) => {
+                        if !menu_item.children.is_empty() {
+                            menu_stack.push(menu_item);
+                        } else {
+                            let timestamp = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs() as u32;
+                            let val = zbus::zvariant::Value::from("");
+                            let _ = menu_proxy.event(menu_item.id, "clicked", &val, timestamp).await;
+                            break;
+                        }
                     }
                 }
+            } else {
+                break;
             }
-        } else {
-            break;
         }
-    }
+        Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+    }.await;
 
-    Ok(())
+    let _ = thread_sender.send(CustomEvent::CloudClosed { pid: last_spawned_pid, source });
+    res
 }
 
 
