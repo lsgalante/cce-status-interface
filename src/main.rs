@@ -795,14 +795,9 @@ impl StatusApp {
                 return;
             }
 
-            // Sort windows so the focused one is at index 0 (if any)
-            if let Some(focused_idx) = windows.iter().position(|w| w.2) {
-                let focused_win = windows.remove(focused_idx);
-                windows.insert(0, focused_win);
-            }
-
-            // Format items for dmenu
+            // Format items for dmenu, keeping the stable order returned by clearctl
             let mut input_str = String::new();
+            let mut display_items = Vec::new();
             for (app_id, title, _) in &windows {
                 let display = if title.is_empty() {
                     app_id.clone()
@@ -811,6 +806,7 @@ impl StatusApp {
                 };
                 input_str.push_str(&display);
                 input_str.push('\n');
+                display_items.push(display);
             }
 
             let mut cmd_args = vec![
@@ -824,6 +820,12 @@ impl StatusApp {
             ];
             if is_switcher_mode {
                 cmd_args.push("--switcher".to_string());
+                if let Some(focused_idx) = windows.iter().position(|w| w.2) {
+                    let target_idx = (focused_idx + 1) % windows.len();
+                    let target_display = &display_items[target_idx];
+                    cmd_args.push("-s".to_string());
+                    cmd_args.push(target_display.clone());
+                }
             }
 
             let mut child = match std::process::Command::new(get_clear_cloud_cmd())
