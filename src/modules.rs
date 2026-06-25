@@ -141,39 +141,61 @@ impl StatusModule for ViewportModule {
     }
 }
 
-pub struct LayoutModule;
+pub struct WindowModule;
 
-impl StatusModule for LayoutModule {
-    fn name(&self) -> &'static str { "layout" }
+impl StatusModule for WindowModule {
+    fn name(&self) -> &'static str { "window" }
 
     fn width(
         &self,
         _stats: &Option<SystemStats>,
         _viewport: &str,
         layout: &str,
-        _title: &str,
+        title: &str,
         font_system: &mut FontSystem,
         font_family: &str,
         font_size: f32,
         _tray_items: &HashMap<String, TrayItem>,
         padding: f32,
     ) -> f32 {
-        if layout.is_empty() {
-            0.0
-        } else {
-            let label = Label::new_with_family(font_system, layout, font_size, [0.0, 0.0, 0.0, 1.0], font_family);
-            label.w + 2.0 * padding
+        let has_title = !title.is_empty() && title != "(none)";
+        let has_layout = !layout.is_empty();
+
+        if !has_title && !has_layout {
+            return 0.0;
         }
+
+        let mut total_w = 0.0;
+        if has_title {
+            let mut display_title = title.to_string();
+            if display_title.chars().count() > 40 {
+                display_title = display_title.chars().take(37).collect::<String>() + "...";
+            }
+            let label = Label::new_with_family(font_system, &display_title, font_size, [0.0, 0.0, 0.0, 1.0], font_family);
+            total_w += label.w;
+        }
+
+        if has_title && has_layout {
+            let sep_label = Label::new_with_family(font_system, " - ", font_size, [0.0, 0.0, 0.0, 1.0], font_family);
+            total_w += sep_label.w;
+        }
+
+        if has_layout {
+            let layout_label = Label::new_with_family(font_system, layout, font_size, [0.0, 0.0, 0.0, 1.0], font_family);
+            total_w += layout_label.w;
+        }
+
+        total_w + 2.0 * padding
     }
 
     fn render(
         &self,
         x: f32,
-        w: f32,
+        _w: f32,
         _stats: &Option<SystemStats>,
         _viewport: &str,
         layout: &str,
-        _title: &str,
+        title: &str,
         font_system: &mut FontSystem,
         font_family: &str,
         font_size: f32,
@@ -192,81 +214,44 @@ impl StatusModule for LayoutModule {
         _rounded_boxes: &mut Vec<RoundedBox>,
         padding: f32,
     ) {
-        if !layout.is_empty() {
-            let label = Label::new_with_family(font_system, layout, font_size, normal_color, font_family);
-            label.draw(text_items, x + padding, (bar_h - font_size * 1.4) / 2.0);
-            *layout_bounds = Some(LayoutBounds {
-                x,
-                y: 0.0,
-                w,
-                h: bar_h,
-            });
+        let has_title = !title.is_empty() && title != "(none)";
+        let has_layout = !layout.is_empty();
+
+        if !has_title && !has_layout {
+            return;
         }
-    }
-}
 
-pub struct TitleModule;
+        let mut cur_x = x + padding;
+        let y_pos = (bar_h - font_size * 1.4) / 2.0;
 
-impl StatusModule for TitleModule {
-    fn name(&self) -> &'static str { "title" }
-
-    fn width(
-        &self,
-        _stats: &Option<SystemStats>,
-        _viewport: &str,
-        _layout: &str,
-        title: &str,
-        font_system: &mut FontSystem,
-        font_family: &str,
-        font_size: f32,
-        _tray_items: &HashMap<String, TrayItem>,
-        padding: f32,
-    ) -> f32 {
-        if title.is_empty() || title == "(none)" {
-            0.0
-        } else {
-            let mut display_title = title.to_string();
-            if display_title.chars().count() > 40 {
-                display_title = display_title.chars().take(37).collect::<String>() + "...";
-            }
-            let label = Label::new_with_family(font_system, &display_title, font_size, [0.0, 0.0, 0.0, 1.0], font_family);
-            label.w + 2.0 * padding
-        }
-    }
-
-    fn render(
-        &self,
-        x: f32,
-        _w: f32,
-        _stats: &Option<SystemStats>,
-        _viewport: &str,
-        _layout: &str,
-        title: &str,
-        font_system: &mut FontSystem,
-        font_family: &str,
-        font_size: f32,
-        normal_color: [f32; 4],
-        bar_h: f32,
-        _scale_factor: f64,
-        text_items: &mut Vec<TextItem>,
-        _rects: &mut Vec<RectWidget>,
-        _overlay_rects: &mut Vec<RectWidget>,
-        _viewport_bounds: &mut Vec<ViewportBounds>,
-        _layout_bounds: &mut Option<LayoutBounds>,
-        _tray_items: &HashMap<String, TrayItem>,
-        _tray_item_bounds: &mut Vec<TrayIconBounds>,
-        _box_bg_color: Option<[f32; 4]>,
-        _status_box_radius: f32,
-        _rounded_boxes: &mut Vec<RoundedBox>,
-        padding: f32,
-    ) {
-        if !title.is_empty() && title != "(none)" {
+        if has_title {
             let mut display_title = title.to_string();
             if display_title.chars().count() > 40 {
                 display_title = display_title.chars().take(37).collect::<String>() + "...";
             }
             let label = Label::new_with_family(font_system, &display_title, font_size, normal_color, font_family);
-            label.draw(text_items, x + padding, (bar_h - font_size * 1.4) / 2.0);
+            let w = label.w;
+            label.draw(text_items, cur_x, y_pos);
+            cur_x += w;
+        }
+
+        if has_title && has_layout {
+            let sep_label = Label::new_with_family(font_system, " - ", font_size, normal_color, font_family);
+            let w = sep_label.w;
+            sep_label.draw(text_items, cur_x, y_pos);
+            cur_x += w;
+        }
+
+        if has_layout {
+            let layout_label = Label::new_with_family(font_system, layout, font_size, normal_color, font_family);
+            let w = layout_label.w;
+            layout_label.draw(text_items, cur_x, y_pos);
+            *layout_bounds = Some(LayoutBounds {
+                x: cur_x - 2.0,
+                y: 0.0,
+                w: w + 4.0,
+                h: bar_h,
+            });
         }
     }
 }

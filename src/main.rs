@@ -1,5 +1,5 @@
 mod modules;
-use modules::{StatusModule, ViewportModule, LayoutModule, TitleModule, ClockModule, BatteryModule, VolumeModule, BrightnessModule, MemoryModule, CpuModule, TrayModule};
+use modules::{StatusModule, ViewportModule, WindowModule, ClockModule, BatteryModule, VolumeModule, BrightnessModule, MemoryModule, CpuModule, TrayModule};
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -729,10 +729,10 @@ impl StatusApp {
         // Set active cloud source
         self.active_cloud_source = Some(switcher_source.clone());
 
-        // Get placement coords: align just below Title module if we can find it
+        // Get placement coords: align just below Window module if we can find it
         let mut target_x = 0.0;
         for mb in &self.module_bounds {
-            if mb.name == "title" {
+            if mb.name == "window" {
                 target_x = mb.x;
                 break;
             }
@@ -740,7 +740,7 @@ impl StatusApp {
 
         let bar_height = read_status_height_from_config() as i32;
 
-        // Position it under Title module
+        // Position it under Window module
         let x_pos = target_x as i32;
         let y_pos = bar_height;
 
@@ -992,8 +992,7 @@ impl cce_ui::engine::Application for StatusApp {
             module_bounds: Vec::new(),
             left_modules: vec![
                 Box::new(ViewportModule),
-                Box::new(LayoutModule),
-                Box::new(TitleModule),
+                Box::new(WindowModule),
             ],
             right_modules: vec![
                 Box::new(TrayModule),
@@ -1487,18 +1486,18 @@ impl cce_ui::engine::Application for StatusApp {
                         });
                     }
                 } else {
-                    let mut clicked_title = false;
+                    let mut clicked_window = false;
                     for mb in &self.module_bounds {
-                        if mb.name == "title" {
+                        if mb.name == "window" {
                             if lx >= mb.x && lx <= (mb.x + mb.w) {
-                                clicked_title = true;
+                                clicked_window = true;
                                 break;
                             }
                         }
                     }
 
-                    if clicked_title {
-                        eprintln!("[title-click] Title module clicked!");
+                    if clicked_window {
+                        eprintln!("[window-click] Window module clicked!");
                         self.trigger_switcher(false);
                     } else {
                         for bound in &self.viewport_bounds {
