@@ -787,7 +787,15 @@ impl StatusApp {
                         false
                     };
 
-                    windows.push((app_id, title, focused));
+                    let id = if let Some(idx) = line.find("window id=") {
+                        let rest = &line[idx + 10..];
+                        let end = rest.find(' ').unwrap_or(rest.len());
+                        rest[..end].to_string()
+                    } else {
+                        continue;
+                    };
+
+                    windows.push((id, app_id, title, focused));
                 }
             }
 
@@ -800,7 +808,7 @@ impl StatusApp {
             // Format items for dmenu, keeping the stable order returned by clearctl
             let mut input_str = String::new();
             let mut display_items = Vec::new();
-            for (app_id, title, _) in &windows {
+            for (_, app_id, title, _) in &windows {
                 let display = if title.is_empty() {
                     app_id.clone()
                 } else {
@@ -822,7 +830,7 @@ impl StatusApp {
             ];
             if is_switcher_mode {
                 cmd_args.push("--switcher".to_string());
-                if let Some(focused_idx) = windows.iter().position(|w| w.2) {
+                if let Some(focused_idx) = windows.iter().position(|w| w.3) {
                     let target_idx = (focused_idx + 1) % windows.len();
                     let target_display = &display_items[target_idx];
                     cmd_args.push("-s".to_string());
@@ -881,16 +889,16 @@ impl StatusApp {
             let selected = stdout_str.trim().to_string();
             if !selected.is_empty() {
                 // Find the matched window
-                for (app_id, title, _) in windows {
+                for (id, app_id, title, _) in windows {
                     let display = if title.is_empty() {
                         app_id.clone()
                     } else {
                         format!("{} ({})", title, app_id)
                     };
                     if display == selected {
-                        eprintln!("[switcher] Selecting window title: {}, app_id: {}", title, app_id);
+                        eprintln!("[switcher] Selecting window title: {}, app_id: {}, id: {}", title, app_id, id);
                         let _ = std::process::Command::new("clearctl")
-                            .args(["focus-window", &app_id])
+                            .args(["focus-window", &id])
                             .spawn();
                         break;
                     }
@@ -2001,7 +2009,16 @@ fn get_currently_focused_window() -> Option<String> {
                 if app_id == "cce-status-interface" || app_id == "cce-cloud" {
                     continue;
                 }
-                return Some(app_id);
+                
+                // Return the unique window ID if present, otherwise fall back to app_id
+                let id = if let Some(idx) = line.find("window id=") {
+                    let rest = &line[idx + 10..];
+                    let end = rest.find(' ').unwrap_or(rest.len());
+                    rest[..end].to_string()
+                } else {
+                    app_id
+                };
+                return Some(id);
             }
         }
     }
