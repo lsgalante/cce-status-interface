@@ -2875,15 +2875,33 @@ fn parse_hex(s: &str) -> Option<[u8; 3]> {
     }
 }
 
+fn read_status_box_opacity_from_config() -> f32 {
+    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.json").unwrap_or_default();
+    let val = parse_json(&content);
+    json_find_key(&val, "status_box_opacity").and_then(|v| v.as_f64()).map(|n| n as f32).unwrap_or(1.0)
+}
+
+fn read_status_box_blur_from_config() -> f32 {
+    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.json").unwrap_or_default();
+    let val = parse_json(&content);
+    json_find_key(&val, "status_box_blur").and_then(|v| v.as_f64()).map(|n| n as f32).unwrap_or(0.0)
+}
+
 fn read_status_box_background_color_from_config() -> Option<[f32; 4]> {
     let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.json").unwrap_or_default();
-    parse_color_from_key(&content, "status_box_background_color")
-        .or_else(|| {
+    let mut color = parse_color_from_key(&content, "status_box_background_color")
+        .unwrap_or_else(|| {
             let r = (0x15 as f32 / 255.0).powf(2.2);
             let g = (0x15 as f32 / 255.0).powf(2.2);
             let b = (0x20 as f32 / 255.0).powf(2.2);
-            Some([r, g, b, 1.0])
-        })
+            [r, g, b, 1.0]
+        });
+
+    let opacity = read_status_box_opacity_from_config();
+    let blur = read_status_box_blur_from_config();
+    color[3] = opacity * (1.0 - blur);
+
+    Some(color)
 }
 
 fn read_status_box_corner_radius_from_config() -> f32 {
