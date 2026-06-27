@@ -2902,7 +2902,12 @@ fn read_status_box_background_color_from_config() -> Option<[f32; 4]> {
 
     let opacity = read_status_box_opacity_from_config();
     let blur = read_status_box_blur_from_config();
-    color[3] = opacity * (1.0 - blur);
+    
+    // Scale RGB by (1.0 - blur) to apply tint factor while keeping alpha as full opacity for the blur shader
+    color[0] *= 1.0 - blur;
+    color[1] *= 1.0 - blur;
+    color[2] *= 1.0 - blur;
+    color[3] = opacity;
 
     Some(color)
 }
