@@ -348,14 +348,6 @@ impl StatusApp {
 
         self.status_bar.set_rect(0.0, 0.0, sw_logical, bar_h);
         self.status_bar.set_bg_color(self.current_bg_color);
-        
-        let show_underline = read_status_underline_from_config();
-        if show_underline {
-            self.rects.push(RectWidget {
-                x: 0.0, y: bar_h - 2.0, w: sw_logical, h: 2.0,
-                color: separator_color,
-            });
-        }
 
         self.viewport_bounds.clear();
         self.layout_bounds = None;
@@ -2809,12 +2801,6 @@ fn read_status_font_size_from_config() -> f32 {
     json_find_key(&val, "status_font_size").and_then(|v| v.as_f64()).map(|n| n as f32).unwrap_or(11.0)
 }
 
-
-fn read_status_underline_from_config() -> bool {
-    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.json").unwrap_or_default();
-    let val = parse_json(&content);
-    json_find_key(&val, "status_underline").and_then(|v| v.as_bool()).unwrap_or(true)
-}
 
 fn read_status_padding_from_config() -> f32 {
     let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.json").unwrap_or_default();
