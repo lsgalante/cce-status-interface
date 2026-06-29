@@ -2740,7 +2740,7 @@ fn main() {
 }
 
 fn parse_json(content: &str) -> serde_json::Value {
-    serde_json::from_str(content).unwrap_or_default()
+    cce_ui::config::parse_kdl_to_json(content)
 }
 
 fn json_find_key<'a>(val: &'a serde_json::Value, key: &str) -> Option<&'a serde_json::Value> {
@@ -2757,12 +2757,12 @@ fn json_find_key<'a>(val: &'a serde_json::Value, key: &str) -> Option<&'a serde_
 }
 
 fn read_normal_color_from_config() -> Option<[f32; 4]> {
-    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.json").ok()?;
+    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.kdl").ok()?;
     parse_srgb_color_from_key(&content, "status_normal_color")
 }
 
 pub(crate) fn read_disabled_color_from_config() -> Option<[f32; 4]> {
-    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.json").ok()?;
+    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.kdl").ok()?;
     parse_srgb_color_from_key(&content, "disabled_color")
 }
 
@@ -2790,32 +2790,32 @@ fn read_status_font_from_config() -> String {
 }
 
 fn read_status_height_from_config() -> f32 {
-    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.json").unwrap_or_default();
+    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.kdl").unwrap_or_default();
     let val = parse_json(&content);
     json_find_key(&val, "bar_height").and_then(|v| v.as_f64()).map(|n| n as f32).unwrap_or(28.0)
 }
 
 fn read_status_font_size_from_config() -> f32 {
-    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.json").unwrap_or_default();
+    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.kdl").unwrap_or_default();
     let val = parse_json(&content);
     json_find_key(&val, "status_font_size").and_then(|v| v.as_f64()).map(|n| n as f32).unwrap_or(11.0)
 }
 
 
 fn read_status_padding_from_config() -> f32 {
-    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.json").unwrap_or_default();
+    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.kdl").unwrap_or_default();
     let val = parse_json(&content);
     json_find_key(&val, "status_padding").and_then(|v| v.as_f64()).map(|n| n as f32).unwrap_or(8.0)
 }
 
 fn read_status_module_spacing_from_config() -> f32 {
-    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.json").unwrap_or_default();
+    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.kdl").unwrap_or_default();
     let val = parse_json(&content);
     json_find_key(&val, "status_module_spacing").and_then(|v| v.as_f64()).map(|n| n as f32).unwrap_or(8.0)
 }
 
 fn read_separator_color_from_config() -> Option<[f32; 4]> {
-    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.json").ok()?;
+    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.kdl").ok()?;
     parse_color_from_key(&content, "status_separator_color")
 }
 
@@ -2847,7 +2847,7 @@ fn parse_font_for_alias(content: &str, alias: &str) -> Option<String> {
 }
 
 fn read_bg_color_from_config() -> Option<[f32; 4]> {
-    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.json").ok()?;
+    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.kdl").ok()?;
     parse_color_from_key(&content, "desktop_background")
         .or_else(|| parse_color_from_key(&content, "low_color"))
         .or_else(|| parse_color_from_key(&content, "background_color"))
@@ -2879,19 +2879,19 @@ fn parse_hex(s: &str) -> Option<[u8; 3]> {
 }
 
 fn read_status_box_opacity_from_config() -> f32 {
-    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.json").unwrap_or_default();
+    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.kdl").unwrap_or_default();
     let val = parse_json(&content);
     json_find_key(&val, "status_box_opacity").and_then(|v| v.as_f64()).map(|n| n as f32).unwrap_or(1.0)
 }
 
 fn read_status_box_blur_from_config() -> f32 {
-    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.json").unwrap_or_default();
+    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.kdl").unwrap_or_default();
     let val = parse_json(&content);
     json_find_key(&val, "status_box_blur").and_then(|v| v.as_f64()).map(|n| n as f32).unwrap_or(0.0)
 }
 
 fn read_status_box_background_color_from_config() -> Option<[f32; 4]> {
-    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.json").unwrap_or_default();
+    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.kdl").unwrap_or_default();
     let mut color = parse_color_from_key(&content, "status_box_background_color")
         .unwrap_or_else(|| {
             let r = (0x15 as f32 / 255.0).powf(2.2);
@@ -2913,7 +2913,7 @@ fn read_status_box_background_color_from_config() -> Option<[f32; 4]> {
 }
 
 fn read_status_box_corner_radius_from_config() -> f32 {
-    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.json").unwrap_or_default();
+    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.kdl").unwrap_or_default();
     let val = parse_json(&content);
     json_find_key(&val, "status_box_corner_radius").and_then(|v| v.as_f64()).map(|n| n as f32).unwrap_or(4.0)
 }
