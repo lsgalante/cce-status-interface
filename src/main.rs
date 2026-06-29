@@ -2971,6 +2971,7 @@ fn read_status_box_corner_radius_from_config() -> f32 {
 mod tests {
     use super::*;
 
+
     #[test]
     fn test_status_config() {
         let content = r##"
