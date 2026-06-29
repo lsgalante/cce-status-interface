@@ -1,5 +1,5 @@
 [package]
-name = "cce-status-interface"
+name = "cce-status"
 version = "0.1.0"
 edition = "2021"
 

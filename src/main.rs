@@ -759,7 +759,7 @@ impl StatusApp {
                         continue;
                     };
 
-                    if app_id == "cce-status-interface" || app_id == "cce-cloud" {
+                    if app_id == "cce-status" || app_id == "cce-cloud" {
                         continue;
                     }
 
@@ -1015,7 +1015,7 @@ impl cce_ui::engine::Application for StatusApp {
     fn settings(&self) -> cce_ui::engine::WindowSettings {
         cce_ui::engine::WindowSettings {
             title: "Status Interface".to_string(),
-            app_id: "cce-status-interface".to_string(),
+            app_id: "cce-status".to_string(),
             width: 1920,
             height: read_status_height_from_config() as u32,
             fullscreen: false,
@@ -1684,7 +1684,7 @@ async fn spawn_switcher_listener(sender: calloop::channel::Sender<CustomEvent>) 
     use tokio::io::AsyncBufReadExt;
     use tokio::net::UnixListener;
     let display = std::env::var("WAYLAND_DISPLAY").unwrap_or_else(|_| "wayland-0".to_string());
-    let socket_path = format!("/tmp/cce-status-interface-switcher-{}.sock", display);
+    let socket_path = format!("/tmp/cce-status-switcher-{}.sock", display);
     let _ = std::fs::remove_file(&socket_path);
 
     if let Ok(listener) = UnixListener::bind(&socket_path) {
@@ -1998,7 +1998,7 @@ fn get_currently_focused_window() -> Option<String> {
                 } else {
                     continue;
                 };
-                if app_id == "cce-status-interface" || app_id == "cce-cloud" {
+                if app_id == "cce-status" || app_id == "cce-cloud" {
                     continue;
                 }
                 
@@ -2724,7 +2724,7 @@ fn main() {
         let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
         rt.block_on(async {
             let display = std::env::var("WAYLAND_DISPLAY").unwrap_or_else(|_| "wayland-0".to_string());
-            let socket_path = format!("/tmp/cce-status-interface-switcher-{}.sock", display);
+            let socket_path = format!("/tmp/cce-status-switcher-{}.sock", display);
             use tokio::io::AsyncWriteExt;
             if let Ok(mut stream) = tokio::net::UnixStream::connect(&socket_path).await {
                 let _ = stream.write_all(b"trigger\n").await;
