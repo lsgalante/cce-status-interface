@@ -2744,16 +2744,31 @@ fn parse_json(content: &str) -> serde_json::Value {
 }
 
 fn json_find_key<'a>(val: &'a serde_json::Value, key: &str) -> Option<&'a serde_json::Value> {
-    if let Some(obj) = val.as_object() {
-        for (_, sec_val) in obj.iter() {
-            if let Some(sec_obj) = sec_val.as_object() {
-                if let Some(v) = sec_obj.get(key) {
-                    return Some(v);
+    fn find_recursive<'a>(val: &'a serde_json::Value, key: &str) -> Option<&'a serde_json::Value> {
+        if let Some(obj) = val.as_object() {
+            if let Some(v) = obj.get(key) {
+                return Some(v);
+            }
+            let parts: Vec<&str> = key.split('_').collect();
+            for i in 1..parts.len() {
+                let (prefix_parts, suffix_parts) = parts.split_at(i);
+                let prefix = prefix_parts.join("_");
+                let suffix = suffix_parts.join("_");
+                if let Some(sub_val) = obj.get(&prefix) {
+                    if let Some(found) = find_recursive(sub_val, &suffix) {
+                        return Some(found);
+                    }
+                }
+            }
+            for (_, sub_val) in obj.iter() {
+                if let Some(found) = find_recursive(sub_val, key) {
+                    return Some(found);
                 }
             }
         }
+        None
     }
-    None
+    find_recursive(val, key)
 }
 
 fn read_normal_color_from_config() -> Option<[f32; 4]> {
@@ -2877,37 +2892,60 @@ fn parse_hex(s: &str) -> Option<[u8; 3]> {
         None
     }
 }
-
-fn read_status_box_opacity_from_config() -> f32 {
-    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.kdl").unwrap_or_default();
-    let val = parse_json(&content);
-    json_find_key(&val, "status_box_opacity").and_then(|v| v.as_f64()).map(|n| n as f32).unwrap_or(1.0)
+fn parse_hex_rgba(s: &str) -> Option<[u8; 4]> {
+    let s = s.trim_start_matches('#');
+    if s.len() == 8 {
+        let r = u8::from_str_radix(&s[0..2], 16).ok()?;
+        let g = u8::from_str_radix(&s[2..4], 16).ok()?;
+        let b = u8::from_str_radix(&s[4..6], 16).ok()?;
+        let a = u8::from_str_radix(&s[6..8], 16).ok()?;
+        Some([r, g, b, a])
+    } else if s.len() == 6 {
+        let r = u8::from_str_radix(&s[0..2], 16).ok()?;
+        let g = u8::from_str_radix(&s[2..4], 16).ok()?;
+        let b = u8::from_str_radix(&s[4..6], 16).ok()?;
+        Some([r, g, b, 255])
+    } else {
+        None
+    }
 }
 
-fn read_status_box_blur_from_config() -> f32 {
+fn parse_rgba_color_from_key(content: &str, key: &str) -> Option<[f32; 4]> {
+    let val = parse_json(content);
+    if let Some(s) = json_find_key(&val, key).and_then(|v| v.as_str()) {
+        if let Some(rgba) = parse_hex_rgba(s) {
+            let r = (rgba[0] as f32 / 255.0).powf(2.2);
+            let g = (rgba[1] as f32 / 255.0).powf(2.2);
+            let b = (rgba[2] as f32 / 255.0).powf(2.2);
+            let a = rgba[3] as f32 / 255.0;
+            return Some([r, g, b, a]);
+        }
+    }
+    None
+}
+
+fn read_status_background_blur_from_config() -> f32 {
     let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.kdl").unwrap_or_default();
     let val = parse_json(&content);
-    json_find_key(&val, "status_box_blur").and_then(|v| v.as_f64()).map(|n| n as f32).unwrap_or(0.0)
+    json_find_key(&val, "status_background_blur").and_then(|v| v.as_f64()).map(|n| n as f32).unwrap_or(0.0)
 }
 
 fn read_status_box_background_color_from_config() -> Option<[f32; 4]> {
     let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.kdl").unwrap_or_default();
-    let mut color = parse_color_from_key(&content, "status_box_background_color")
+    let mut color = parse_rgba_color_from_key(&content, "status_background_color")
         .unwrap_or_else(|| {
             let r = (0x15 as f32 / 255.0).powf(2.2);
             let g = (0x15 as f32 / 255.0).powf(2.2);
             let b = (0x20 as f32 / 255.0).powf(2.2);
-            [r, g, b, 1.0]
+            [r, g, b, 0.9]
         });
 
-    let opacity = read_status_box_opacity_from_config();
-    let blur = read_status_box_blur_from_config();
+    let blur = read_status_background_blur_from_config();
     
     // Scale RGB by (1.0 - blur) to apply tint factor while keeping alpha as full opacity for the blur shader
     color[0] *= 1.0 - blur;
     color[1] *= 1.0 - blur;
     color[2] *= 1.0 - blur;
-    color[3] = opacity;
 
     Some(color)
 }
