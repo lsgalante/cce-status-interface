@@ -2888,7 +2888,7 @@ fn parse_font_for_alias(content: &str, alias: &str) -> Option<String> {
 
 fn read_bg_color_from_config() -> Option<[f32; 4]> {
     let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.kdl").ok()?;
-    parse_color_from_key(&content, "desktop_background")
+    parse_color_from_key(&content, "desktop_background_color")
         .or_else(|| parse_color_from_key(&content, "low_color"))
         .or_else(|| parse_color_from_key(&content, "background_color"))
 }
