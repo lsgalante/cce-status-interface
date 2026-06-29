@@ -312,6 +312,7 @@ struct StatusApp {
     left_modules: Vec<Box<dyn StatusModule>>,
     right_modules: Vec<Box<dyn StatusModule>>,
     sender: calloop::channel::Sender<CustomEvent>,
+    last_config_modified: Option<std::time::SystemTime>,
 }
 
 impl StatusApp {
@@ -1006,6 +1007,7 @@ impl cce_ui::engine::Application for StatusApp {
                 Box::new(ClockModule),
             ],
             sender,
+            last_config_modified: std::fs::metadata("/home/lsgalante/.config/cce/config.kdl").ok().and_then(|m| m.modified().ok()),
         };
 
         app.rebuild_layout();
@@ -1097,7 +1099,16 @@ impl cce_ui::engine::Application for StatusApp {
         *needs_rebuild = true;
     }
 
-    fn tick(&mut self, _dt: f32, _needs_rebuild: &mut bool) {
+    fn tick(&mut self, _dt: f32, needs_rebuild: &mut bool) {
+        if let Ok(metadata) = std::fs::metadata("/home/lsgalante/.config/cce/config.kdl") {
+            if let Ok(modified) = metadata.modified() {
+                if Some(modified) != self.last_config_modified {
+                    self.last_config_modified = Some(modified);
+                    *needs_rebuild = true;
+                    self.needs_rebuild = true;
+                }
+            }
+        }
         self.status_bar.prepare_text(&mut self.font_system);
     }
 
@@ -2954,4 +2965,30 @@ fn read_status_box_corner_radius_from_config() -> f32 {
     let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.kdl").unwrap_or_default();
     let val = parse_json(&content);
     json_find_key(&val, "status_box_corner_radius").and_then(|v| v.as_f64()).map(|n| n as f32).unwrap_or(4.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_status_config() {
+        let content = r##"
+style {
+    status normal_color=(color)"#ccccd8" background_color=(color)"#151520e6" background_blur=(f64)0.8
+}
+"##;
+        let val = parse_json(content);
+        println!("Parsed KDL to JSON: {:#?}", val);
+
+        let bg_color_val = json_find_key(&val, "status_background_color");
+        println!("bg_color_val = {:?}", bg_color_val);
+        assert!(bg_color_val.is_some());
+        assert_eq!(bg_color_val.unwrap().as_str().unwrap(), "#151520e6");
+
+        let blur_val = json_find_key(&val, "status_background_blur");
+        println!("blur_val = {:?}", blur_val);
+        assert!(blur_val.is_some());
+        assert_eq!(blur_val.unwrap().as_f64().unwrap(), 0.8);
+    }
 }
