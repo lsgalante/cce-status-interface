@@ -2806,6 +2806,12 @@ fn parse_srgb_color_from_key(content: &str, key: &str) -> Option<[f32; 4]> {
 }
 
 fn read_status_font_from_config() -> String {
+    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.kdl").unwrap_or_default();
+    let val = parse_json(&content);
+    if let Some(font_str) = json_find_key(&val, "status_font").and_then(|v| v.as_str()) {
+        return font_str.to_string();
+    }
+
     let font_conf_path = "/home/lsgalante/.config/fontconfig/fonts.conf";
     if let Ok(content) = std::fs::read_to_string(font_conf_path) {
         if let Some(font) = parse_font_for_alias(&content, "status-interface") {
@@ -2824,6 +2830,14 @@ fn read_status_height_from_config() -> f32 {
 fn read_status_font_size_from_config() -> f32 {
     let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.kdl").unwrap_or_default();
     let val = parse_json(&content);
+    
+    if let Some(font_str) = json_find_key(&val, "status_font").and_then(|v| v.as_str()) {
+        let (_, parsed_size) = cce_ui::layout::parse_font_string(font_str);
+        if let Some(size) = parsed_size {
+            return size;
+        }
+    }
+    
     json_find_key(&val, "status_font_size").and_then(|v| v.as_f64()).map(|n| n as f32).unwrap_or(11.0)
 }
 
@@ -2976,7 +2990,7 @@ mod tests {
     fn test_status_config() {
         let content = r##"
 style {
-    status normal_color=(color)"#ccccd8" background_color=(color)"#151520e6" background_blur=(f64)0.8
+    status normal_color=(color)"#ccccd8" background_color=(color)"#151520e6" background_blur=(f64)0.8 font="Berkeley Mono 14"
 }
 "##;
         let val = parse_json(content);
@@ -2991,5 +3005,10 @@ style {
         println!("blur_val = {:?}", blur_val);
         assert!(blur_val.is_some());
         assert_eq!(blur_val.unwrap().as_f64().unwrap(), 0.8);
+
+        let font_val = json_find_key(&val, "status_font");
+        println!("font_val = {:?}", font_val);
+        assert!(font_val.is_some());
+        assert_eq!(font_val.unwrap().as_str().unwrap(), "Berkeley Mono 14");
     }
 }
