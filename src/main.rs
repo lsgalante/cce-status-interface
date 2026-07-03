@@ -323,7 +323,12 @@ struct StatusApp {
 
 impl StatusApp {
     fn is_vertical(&self) -> bool {
-        if self.width < self.height {
+        let bar_thickness = read_status_height_from_config() as u32;
+        if self.width == bar_thickness && self.height != bar_thickness {
+            true
+        } else if self.height == bar_thickness && self.width != bar_thickness {
+            false
+        } else if self.width < self.height {
             true
         } else if self.width > self.height {
             false
