@@ -92,6 +92,7 @@ enum CustomEvent {
     CloudSpawned { pid: u32, source: String, switcher_stdin: Option<StdinWriter> },
     CloudClosed { pid: u32, source: String },
     SwitcherTriggered,
+    ToggleHideModules,
 }
 
 pub(crate) fn make_text_buffer(fs: &mut FontSystem, text: &str, size: f32, font_family: &str) -> Buffer {
@@ -315,6 +316,7 @@ struct StatusApp {
     last_config_modified: Option<std::time::SystemTime>,
     selected_module_name: Option<String>,
     selected_module_side: Option<Side>,
+    status_hide_mode: bool,
 }
 
 impl StatusApp {
@@ -1087,6 +1089,7 @@ impl cce_ui::engine::Application for StatusApp {
             last_config_modified: std::fs::metadata("/home/lsgalante/.config/cce/config.kdl").ok().and_then(|m| m.modified().ok()),
             selected_module_name: selected_module.as_ref().map(|(n, _)| n.clone()),
             selected_module_side: selected_module.as_ref().map(|(_, s)| s.clone()),
+            status_hide_mode: false,
         };
 
         app.rebuild_layout();
@@ -1186,6 +1189,14 @@ impl cce_ui::engine::Application for StatusApp {
             CustomEvent::SwitcherTriggered => {
                 eprintln!("[switcher] SwitcherTriggered event received, calling trigger_switcher");
                 self.trigger_switcher(true);
+            }
+            CustomEvent::ToggleHideModules => {
+                self.status_hide_mode = !self.status_hide_mode;
+                let cmd = if self.status_hide_mode { "true" } else { "false" };
+                let _ = std::process::Command::new(get_cce_cmd())
+                    .args(["control", "status-hide-mode", cmd])
+                    .status();
+                *needs_rebuild = true;
             }
         }
         self.needs_rebuild = true;
@@ -1528,11 +1539,18 @@ impl cce_ui::engine::Application for StatusApp {
                     let x_pos = mb.x as i32;
                     let y_pos = read_status_height_from_config() as i32;
 
+                    let menu_text = if self.status_hide_mode {
+                        "Show Modules"
+                    } else {
+                        "Hide Modules"
+                    };
+
                     let context_json = serde_json::json!({
                         "width": 160,
-                        "height": 60,
+                        "height": 80,
                         "widgets": [
-                            { "type": "label", "text": mb.name }
+                            { "type": "label", "text": mb.name },
+                            { "type": "button", "text": menu_text, "id": "toggle_hide" }
                         ]
                     }).to_string();
 
@@ -1572,6 +1590,16 @@ impl cce_ui::engine::Application for StatusApp {
                                 let err_str = String::from_utf8_lossy(&output.stderr);
                                 if !err_str.is_empty() {
                                     eprintln!("[cce-cloud context stderr] {}", err_str);
+                                }
+                                if output.status.success() {
+                                    let stdout_str = String::from_utf8_lossy(&output.stdout);
+                                    if let Ok(parsed_json) = serde_json::from_str::<serde_json::Value>(stdout_str.trim()) {
+                                        if let Some(btn_id) = parsed_json.get("button").and_then(|v| v.as_str()) {
+                                            if btn_id == "toggle_hide" {
+                                                let _ = thread_sender.send(CustomEvent::ToggleHideModules);
+                                            }
+                                        }
+                                    }
                                 }
                             }
                             let _ = thread_sender.send(CustomEvent::CloudClosed { pid, source: context_source_clone });
@@ -3247,4 +3275,14 @@ style {
         assert!(font_val.is_some());
         assert_eq!(font_val.unwrap().as_str().unwrap(), "Berkeley Mono 14");
     }
+}
+
+fn get_cce_cmd() -> String {
+    if let Ok(home) = std::env::var("HOME") {
+        let path = format!("{}/.local/bin/cce", home);
+        if std::path::Path::new(&path).exists() {
+            return path;
+        }
+    }
+    "cce".to_string()
 }
