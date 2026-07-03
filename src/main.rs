@@ -342,6 +342,8 @@ impl StatusApp {
         log::info!("[cce-status] rebuild_layout module={:?} size={}x{}", self.selected_module_name, self.width, self.height);
         let is_vertical = self.is_vertical();
         cce_ui::IS_VERTICAL.store(is_vertical, std::sync::atomic::Ordering::Relaxed);
+        let bar_thickness = read_status_height_from_config() as u32;
+        cce_ui::BAR_THICKNESS.store(bar_thickness, std::sync::atomic::Ordering::Relaxed);
 
         let font_family = read_status_font_from_config();
         let font_size = read_status_font_size_from_config();
@@ -1042,6 +1044,17 @@ fn get_active_viewport_from_camera(viewport_json: &str) -> u32 {
 }
 
 fn get_module_side(name: &str) -> Side {
+    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.kdl").unwrap_or_default();
+    let val = parse_json(&content);
+    if let Some(side_val) = json_find_key(&val, name) {
+        if let Some(side_str) = side_val.as_str() {
+            match side_str.to_lowercase().as_str() {
+                "left" | "top-left" | "bottom-left" | "top-center" | "bottom-center" => return Side::Left,
+                "right" | "top-right" | "bottom-right" => return Side::Right,
+                _ => {}
+            }
+        }
+    }
     match name {
         "viewport" | "window" => Side::Left,
         _ => Side::Right,
@@ -1132,7 +1145,7 @@ impl cce_ui::engine::Application for StatusApp {
             tokio::spawn(spawn_system_stats(sender.clone()));
         }
 
-        let font_system = FontSystem::new();
+        let font_system = cce_ui::create_font_system();
 
         let mut app = Self {
             viewport: String::new(),
