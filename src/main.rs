@@ -93,6 +93,7 @@ enum CustomEvent {
     CloudClosed { pid: u32, source: String },
     SwitcherTriggered,
     ToggleHideModules,
+    ToggleAdjustPositionMode,
 }
 
 pub(crate) fn make_text_buffer(fs: &mut FontSystem, text: &str, size: f32, font_family: &str) -> Buffer {
@@ -317,12 +318,16 @@ struct StatusApp {
     selected_module_name: Option<String>,
     selected_module_side: Option<Side>,
     status_hide_mode: bool,
+    adjust_position_mode: bool,
 }
 
 impl StatusApp {
     #[allow(unused_assignments)]
     fn rebuild_layout(&mut self) {
         log::info!("[cce-status] rebuild_layout module={:?} size={}x{}", self.selected_module_name, self.width, self.height);
+        let is_vertical = self.width < self.height || (self.selected_module_name.is_some() && self.height > self.width);
+        cce_ui::IS_VERTICAL.store(is_vertical, std::sync::atomic::Ordering::Relaxed);
+
         let font_family = read_status_font_from_config();
         let font_size = read_status_font_size_from_config();
         let show_separators = false;
@@ -330,8 +335,8 @@ impl StatusApp {
         let spacing = read_status_module_spacing_from_config();
         let separator_color = read_separator_color_from_config().unwrap_or(color::STATUS_ACCENT);
         let normal_color = read_normal_color_from_config().unwrap_or(color::TEXT_FG);
-        let sw_logical = self.width as f32;
-        let bar_h = read_status_height_from_config();
+        let sw_logical = if is_vertical { self.height as f32 } else { self.width as f32 };
+        let bar_h = if is_vertical { self.width as f32 } else { read_status_height_from_config() };
 
         self.current_bg_color = read_bg_color_from_config().unwrap_or(color::STATUS_BG);
         if let Some(opacity) = cce_ui::color::read_opacity_if_configured() {
@@ -353,7 +358,7 @@ impl StatusApp {
         let box_bg_color = read_status_box_background_color_from_config();
         let status_box_radius = read_status_box_corner_radius_from_config();
 
-        self.status_bar.set_rect(0.0, 0.0, sw_logical, bar_h);
+        self.status_bar.set_rect(0.0, 0.0, self.width as f32, self.height as f32);
         if self.selected_module_name.is_some() {
             self.status_bar.set_bg_color([0.0, 0.0, 0.0, 0.0]);
         } else {
@@ -620,11 +625,73 @@ impl StatusApp {
         }
 
         if self.selected_module_name.is_some() {
-            let old_w = self.width;
-            self.width = (left_x + margin_padding).round() as u32;
-            eprintln!("[module-{}] rebuild_layout: width calculated as {} (was {})", self.selected_module_name.as_deref().unwrap_or("none"), self.width, old_w);
-            self.input_regions.clear();
-            self.input_regions.push((0, 0, self.width as i32, bar_h.round() as i32));
+            if is_vertical {
+                let old_h = self.height;
+                self.height = (left_x + margin_padding).round() as u32;
+                eprintln!("[module-{}] rebuild_layout vertical: height calculated as {} (was {})", self.selected_module_name.as_deref().unwrap_or("none"), self.height, old_h);
+                self.input_regions.clear();
+                self.input_regions.push((0, 0, self.width as i32, self.height as i32));
+            } else {
+                let old_w = self.width;
+                self.width = (left_x + margin_padding).round() as u32;
+                eprintln!("[module-{}] rebuild_layout horizontal: width calculated as {} (was {})", self.selected_module_name.as_deref().unwrap_or("none"), self.width, old_w);
+                self.input_regions.clear();
+                self.input_regions.push((0, 0, self.width as i32, bar_h.round() as i32));
+            }
+        }
+
+        if is_vertical {
+            // Rotate rounded_boxes
+            for rb in &mut self.rounded_boxes {
+                let old_x = rb.x;
+                let old_y = rb.y;
+                let old_w = rb.w;
+                let old_h = rb.h;
+                rb.x = old_y;
+                rb.y = old_x;
+                rb.w = old_h;
+                rb.h = old_w;
+            }
+            // Rotate separators
+            for sep in &mut self.separators {
+                let old_x = sep.x;
+                let old_y = sep.y;
+                let old_w = sep.w;
+                let old_h = sep.h;
+                sep.x = old_y;
+                sep.y = old_x;
+                sep.w = old_h;
+                sep.h = old_w;
+            }
+            // Rotate rects
+            for r in &mut self.rects {
+                let old_x = r.x;
+                let old_y = r.y;
+                let old_w = r.w;
+                let old_h = r.h;
+                r.x = old_y;
+                r.y = old_x;
+                r.w = old_h;
+                r.h = old_w;
+            }
+            // Rotate text_items
+            for ti in &mut self.text_items {
+                let old_x = ti.x;
+                let old_y = ti.y;
+                ti.x = old_y;
+                ti.y = old_x;
+            }
+            // Rotate tray_item_bounds
+            for tib in &mut self.tray_item_bounds {
+                let old_x = tib.x;
+                let old_y = tib.y;
+                let old_w = tib.w;
+                let old_h = tib.h;
+                tib.x = old_y;
+                tib.y = old_x;
+                tib.w = old_h;
+                tib.h = old_w;
+            }
         }
 
         self.left_modules = left_modules;
@@ -1090,6 +1157,7 @@ impl cce_ui::engine::Application for StatusApp {
             selected_module_name: selected_module.as_ref().map(|(n, _)| n.clone()),
             selected_module_side: selected_module.as_ref().map(|(_, s)| s.clone()),
             status_hide_mode: false,
+            adjust_position_mode: false,
         };
 
         app.rebuild_layout();
@@ -1198,6 +1266,14 @@ impl cce_ui::engine::Application for StatusApp {
                     .status();
                 *needs_rebuild = true;
             }
+            CustomEvent::ToggleAdjustPositionMode => {
+                self.adjust_position_mode = !self.adjust_position_mode;
+                let cmd = if self.adjust_position_mode { "true" } else { "false" };
+                let _ = std::process::Command::new(get_cce_cmd())
+                    .args(["control", "adjust-position-mode", cmd])
+                    .status();
+                *needs_rebuild = true;
+            }
         }
         self.needs_rebuild = true;
         *needs_rebuild = true;
@@ -1288,9 +1364,11 @@ impl cce_ui::engine::Application for StatusApp {
     fn handle_pointer_move(&mut self, pos: cce_ui::engine::LogicalPosition, needs_rebuild: &mut bool) {
         let (lx, ly) = (pos.x, pos.y);
         self.cursor_pos = (lx as f64, ly as f64);
+        let is_vertical = self.width < self.height || (self.selected_module_name.is_some() && self.height > self.width);
+        let coord = if is_vertical { ly } else { lx };
 
         if self.dragged_module.is_some() {
-            if self.check_drag_swap(lx) {
+            if self.check_drag_swap(coord) {
                 *needs_rebuild = true;
                 self.needs_rebuild = true;
             }
@@ -1314,6 +1392,8 @@ impl cce_ui::engine::Application for StatusApp {
 
     fn handle_mouse_input(&mut self, button: MouseButton, state: ElementState, pos: cce_ui::engine::LogicalPosition, needs_rebuild: &mut bool) -> Option<Self::Message> {
         let (lx, ly) = (pos.x, pos.y);
+        let is_vertical = self.width < self.height || (self.selected_module_name.is_some() && self.height > self.width);
+        let coord = if is_vertical { ly } else { lx };
         let cx = lx as f64;
         let cy = ly as f64;
 
@@ -1491,7 +1571,7 @@ impl cce_ui::engine::Application for StatusApp {
                 // Find which module was right-clicked
                 let mut clicked_module = None;
                 for mb in &self.module_bounds {
-                    if lx >= mb.x && lx <= (mb.x + mb.w) {
+                    if coord >= mb.x && coord <= (mb.x + mb.w) {
                         clicked_module = Some(mb.clone());
                         break;
                     }
@@ -1538,21 +1618,31 @@ impl cce_ui::engine::Application for StatusApp {
 
                     let x_pos = mb.x as i32;
                     let y_pos = read_status_height_from_config() as i32;
-
-                    let menu_text = if self.status_hide_mode {
-                        "Show Modules"
+                    let context_json = if self.adjust_position_mode {
+                        serde_json::json!({
+                            "width": 180,
+                            "height": 80,
+                            "widgets": [
+                                { "type": "label", "text": mb.name },
+                                { "type": "button", "text": "Done", "id": "toggle_adjust" }
+                            ]
+                        }).to_string()
                     } else {
-                        "Hide Modules"
+                        let menu_text = if self.status_hide_mode {
+                            "Show Modules"
+                        } else {
+                            "Hide Modules"
+                        };
+                        serde_json::json!({
+                            "width": 180,
+                            "height": 110,
+                            "widgets": [
+                                { "type": "label", "text": mb.name },
+                                { "type": "button", "text": menu_text, "id": "toggle_hide" },
+                                { "type": "button", "text": "Adjust Module Positions", "id": "toggle_adjust" }
+                            ]
+                        }).to_string()
                     };
-
-                    let context_json = serde_json::json!({
-                        "width": 160,
-                        "height": 80,
-                        "widgets": [
-                            { "type": "label", "text": mb.name },
-                            { "type": "button", "text": menu_text, "id": "toggle_hide" }
-                        ]
-                    }).to_string();
 
                     let parent_app_id = if let (Some(ref name), Some(ref side)) = (&self.selected_module_name, &self.selected_module_side) {
                         format!("cce-status-{:?}-{}", side, name).to_lowercase()
@@ -1597,6 +1687,8 @@ impl cce_ui::engine::Application for StatusApp {
                                         if let Some(btn_id) = parsed_json.get("button").and_then(|v| v.as_str()) {
                                             if btn_id == "toggle_hide" {
                                                 let _ = thread_sender.send(CustomEvent::ToggleHideModules);
+                                            } else if btn_id == "toggle_adjust" {
+                                                let _ = thread_sender.send(CustomEvent::ToggleAdjustPositionMode);
                                             }
                                         }
                                     }
@@ -1753,7 +1845,7 @@ impl cce_ui::engine::Application for StatusApp {
                     let mut clicked_window = false;
                     for mb in &self.module_bounds {
                         if mb.name == "window" {
-                            if lx >= mb.x && lx <= (mb.x + mb.w) {
+                            if coord >= mb.x && coord <= (mb.x + mb.w) {
                                 clicked_window = true;
                                 break;
                             }
