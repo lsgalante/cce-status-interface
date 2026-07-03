@@ -273,12 +273,13 @@ impl StatusModule for ClockModule {
         _tray_items: &HashMap<String, TrayItem>,
         padding: f32,
     ) -> f32 {
-        if let Some(ref s) = stats {
-            let label = Label::new_with_family(font_system, &s.clock, font_size, [0.0, 0.0, 0.0, 1.0], font_family);
-            label.w + 2.0 * padding
+        let text = if let Some(ref s) = stats {
+            &s.clock
         } else {
-            0.0
-        }
+            "Monday, January 01, 2000 00:00 AM"
+        };
+        let label = Label::new_with_family(font_system, text, font_size, [0.0, 0.0, 0.0, 1.0], font_family);
+        label.w + 2.0 * padding
     }
 
     fn render(
@@ -331,16 +332,13 @@ impl StatusModule for BatteryModule {
         _tray_items: &HashMap<String, TrayItem>,
         padding: f32,
     ) -> f32 {
-        if let Some(ref s) = stats {
-            if !s.battery.is_empty() {
-                let label = Label::new_with_family(font_system, &s.battery, font_size, [0.0, 0.0, 0.0, 1.0], font_family);
-                label.w + 2.0 * padding
-            } else {
-                0.0
-            }
+        let text = if let Some(ref s) = stats {
+            if !s.battery.is_empty() { &s.battery } else { "Bat 100%" }
         } else {
-            0.0
-        }
+            "Bat 100%"
+        };
+        let label = Label::new_with_family(font_system, text, font_size, [0.0, 0.0, 0.0, 1.0], font_family);
+        label.w + 2.0 * padding
     }
 
     fn render(
@@ -400,16 +398,13 @@ impl StatusModule for VolumeModule {
         _tray_items: &HashMap<String, TrayItem>,
         padding: f32,
     ) -> f32 {
-        if let Some(ref s) = stats {
-            if !s.volume.is_empty() {
-                let label = Label::new_with_family(font_system, &s.volume, font_size, [0.0, 0.0, 0.0, 1.0], font_family);
-                label.w + 2.0 * padding
-            } else {
-                0.0
-            }
+        let text = if let Some(ref s) = stats {
+            if !s.volume.is_empty() { &s.volume } else { "Vol 100%" }
         } else {
-            0.0
-        }
+            "Vol 100%"
+        };
+        let label = Label::new_with_family(font_system, text, font_size, [0.0, 0.0, 0.0, 1.0], font_family);
+        label.w + 2.0 * padding
     }
 
     fn render(
@@ -482,16 +477,13 @@ impl StatusModule for BrightnessModule {
         _tray_items: &HashMap<String, TrayItem>,
         padding: f32,
     ) -> f32 {
-        if let Some(ref s) = stats {
-            if !s.brightness.is_empty() {
-                let label = Label::new_with_family(font_system, &s.brightness, font_size, [0.0, 0.0, 0.0, 1.0], font_family);
-                label.w + 2.0 * padding
-            } else {
-                0.0
-            }
+        let text = if let Some(ref s) = stats {
+            if !s.brightness.is_empty() { &s.brightness } else { "Bri 100%" }
         } else {
-            0.0
-        }
+            "Bri 100%"
+        };
+        let label = Label::new_with_family(font_system, text, font_size, [0.0, 0.0, 0.0, 1.0], font_family);
+        label.w + 2.0 * padding
     }
 
     fn render(
@@ -546,12 +538,13 @@ impl StatusModule for MemoryModule {
         _tray_items: &HashMap<String, TrayItem>,
         padding: f32,
     ) -> f32 {
-        if let Some(ref s) = stats {
-            let label = Label::new_with_family(font_system, &s.memory, font_size, [0.0, 0.0, 0.0, 1.0], font_family);
-            label.w + 2.0 * padding
+        let text = if let Some(ref s) = stats {
+            if !s.memory.is_empty() { &s.memory } else { "Mem 0.0/0.0G" }
         } else {
-            0.0
-        }
+            "Mem 0.0/0.0G"
+        };
+        let label = Label::new_with_family(font_system, text, font_size, [0.0, 0.0, 0.0, 1.0], font_family);
+        label.w + 2.0 * padding
     }
 
     fn render(
@@ -604,12 +597,13 @@ impl StatusModule for CpuModule {
         _tray_items: &HashMap<String, TrayItem>,
         padding: f32,
     ) -> f32 {
-        if let Some(ref s) = stats {
-            let label = Label::new_with_family(font_system, &s.cpu, font_size, [0.0, 0.0, 0.0, 1.0], font_family);
-            label.w + 2.0 * padding
+        let text = if let Some(ref s) = stats {
+            if !s.cpu.is_empty() { &s.cpu } else { "Cpu 0.0%" }
         } else {
-            0.0
-        }
+            "Cpu 0.0%"
+        };
+        let label = Label::new_with_family(font_system, text, font_size, [0.0, 0.0, 0.0, 1.0], font_family);
+        label.w + 2.0 * padding
     }
 
     fn render(

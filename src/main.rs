@@ -313,11 +313,14 @@ struct StatusApp {
     right_modules: Vec<Box<dyn StatusModule>>,
     sender: calloop::channel::Sender<CustomEvent>,
     last_config_modified: Option<std::time::SystemTime>,
+    selected_module_name: Option<String>,
+    selected_module_side: Option<Side>,
 }
 
 impl StatusApp {
     #[allow(unused_assignments)]
     fn rebuild_layout(&mut self) {
+        log::info!("[cce-status] rebuild_layout module={:?} size={}x{}", self.selected_module_name, self.width, self.height);
         let font_family = read_status_font_from_config();
         let font_size = read_status_font_size_from_config();
         let show_separators = false;
@@ -340,6 +343,7 @@ impl StatusApp {
         self.text_items.clear();
         self.input_regions.clear();
         self.module_bounds.clear();
+        self.tray_item_bounds.clear();
 
         let left_modules = std::mem::take(&mut self.left_modules);
         let right_modules = std::mem::take(&mut self.right_modules);
@@ -348,12 +352,19 @@ impl StatusApp {
         let status_box_radius = read_status_box_corner_radius_from_config();
 
         self.status_bar.set_rect(0.0, 0.0, sw_logical, bar_h);
-        self.status_bar.set_bg_color(self.current_bg_color);
+        if self.selected_module_name.is_some() {
+            self.status_bar.set_bg_color([0.0, 0.0, 0.0, 0.0]);
+        } else {
+            self.status_bar.set_bg_color(self.current_bg_color);
+        }
 
         self.viewport_bounds.clear();
         self.layout_bounds = None;
 
-        let mut left_x = 12.0;
+        let is_single = self.selected_module_name.is_some();
+        let margin_padding = if is_single { 6.0 } else { 12.0 };
+
+        let mut left_x = margin_padding;
         let mut is_first_left = true;
         for module in &left_modules {
             let w = module.width(
@@ -391,7 +402,7 @@ impl StatusApp {
                             h: bar_h,
                             radius: status_box_radius,
                             color,
-                            corners: (false, false, true, true),
+                            corners: if self.selected_module_name.is_some() { (true, true, true, true) } else { (false, false, true, true) },
                         });
                     }
                 }
@@ -436,8 +447,6 @@ impl StatusApp {
         let mut right_x = sw_logical - 12.0;
         let mut is_first_right = true;
         
-        self.tray_item_bounds.clear();
-
         for module in right_modules.iter().rev() {
             let w = module.width(
                 &self.stats,
@@ -483,7 +492,7 @@ impl StatusApp {
                             h: bar_h,
                             radius: status_box_radius,
                             color,
-                            corners: (false, false, true, true),
+                            corners: if self.selected_module_name.is_some() { (true, true, true, true) } else { (false, false, true, true) },
                         });
                     }
                 }
@@ -608,6 +617,14 @@ impl StatusApp {
             }
         }
 
+        if self.selected_module_name.is_some() {
+            let old_w = self.width;
+            self.width = (left_x + margin_padding).round() as u32;
+            eprintln!("[module-{}] rebuild_layout: width calculated as {} (was {})", self.selected_module_name.as_deref().unwrap_or("none"), self.width, old_w);
+            self.input_regions.clear();
+            self.input_regions.push((0, 0, self.width as i32, bar_h.round() as i32));
+        }
+
         self.left_modules = left_modules;
         self.right_modules = right_modules;
         self.needs_rebuild = false;
@@ -682,12 +699,12 @@ impl StatusApp {
     fn trigger_switcher(&mut self, is_switcher_mode: bool) {
         let switcher_source = "window".to_string();
 
-        // 1. Check if any clear-cloud instance is already running
+        // 1. Check if any cce-cloud instance is already running
         let mut running_cloud_pid = None;
         if let Some(pid) = self.active_cloud_pid {
             if std::path::Path::new(&format!("/proc/{}", pid)).exists() {
                 if let Ok(comm) = std::fs::read_to_string(format!("/proc/{}/comm", pid)) {
-                    if comm.trim() == "clear-cloud" {
+                    if comm.trim() == "cce-cloud" {
                         running_cloud_pid = Some(pid);
                     }
                 }
@@ -697,13 +714,13 @@ impl StatusApp {
         if let Some(pid) = running_cloud_pid {
             if is_switcher_mode && self.active_cloud_source.as_ref() == Some(&switcher_source) {
                 if let Some(ref writer) = self.active_switcher_stdin {
-                    eprintln!("[switcher] Already open, sending cycle command to clear-cloud stdin");
+                    eprintln!("[switcher] Already open, sending cycle command to cce-cloud stdin");
                     let _ = writer.0.send("__cce_switcher_next__\n".to_string());
                     return;
                 }
             } else {
                 // Kill it to switch focus
-                eprintln!("[switcher] Killing existing clear-cloud PID {}", pid);
+                eprintln!("[switcher] Killing existing cce-cloud PID {}", pid);
                 let _ = std::process::Command::new("kill").arg(pid.to_string()).status();
                 self.active_cloud_pid = None;
                 
@@ -831,7 +848,7 @@ impl StatusApp {
                 }
             }
 
-            let mut child = match std::process::Command::new(get_clear_cloud_cmd())
+            let mut child = match std::process::Command::new(get_cce_cloud_cmd())
                 .args(&cmd_args)
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
@@ -840,7 +857,7 @@ impl StatusApp {
             {
                 Ok(c) => c,
                 Err(e) => {
-                    eprintln!("[switcher] Failed to spawn clear-cloud: {:?}", e);
+                    eprintln!("[switcher] Failed to spawn cce-cloud: {:?}", e);
                     let _ = thread_sender.send(CustomEvent::CloudClosed { pid: 0, source: switcher_source_clone });
                     return;
                 }
@@ -940,25 +957,96 @@ fn get_active_viewport_from_camera(viewport_json: &str) -> u32 {
     1
 }
 
+fn get_module_side(name: &str) -> Side {
+    match name {
+        "viewport" | "window" => Side::Left,
+        _ => Side::Right,
+    }
+}
+
+fn parse_selected_module_from_args() -> Option<(String, Side)> {
+    let args: Vec<String> = std::env::args().collect();
+    for i in 0..args.len() {
+        if args[i] == "--module" && i + 1 < args.len() {
+            let name = args[i + 1].clone();
+            let side = get_module_side(&name);
+            return Some((name, side));
+        }
+    }
+    None
+}
+
 impl cce_ui::engine::Application for StatusApp {
     type Message = CustomEvent;
 
     fn new(_qh: &wayland_client::QueueHandle<cce_ui::engine::EngineState<Self>>, sender: calloop::channel::Sender<Self::Message>) -> Self {
-        let sender_viewport = sender.clone();
-        let sender_layout = sender.clone();
-        let sender_title = sender.clone();
-        let sender_modifiers = sender.clone();
-        let sender_stats = sender.clone();
-        let sender_tray = sender.clone();
-        let sender_switcher = sender.clone();
+        let selected_module = parse_selected_module_from_args();
 
-        tokio::spawn(spawn_status_listener("viewport", sender_viewport));
-        tokio::spawn(spawn_status_listener("layout", sender_layout));
-        tokio::spawn(spawn_status_listener("title", sender_title));
-        tokio::spawn(spawn_status_listener("modifiers", sender_modifiers));
-        tokio::spawn(spawn_system_stats(sender_stats));
-        tokio::spawn(spawn_status_tray(sender_tray));
-        tokio::spawn(spawn_switcher_listener(sender_switcher));
+        let mut left_modules: Vec<Box<dyn StatusModule>> = Vec::new();
+        let mut right_modules: Vec<Box<dyn StatusModule>> = Vec::new();
+
+        let mut has_viewport = false;
+        let mut has_window = false;
+
+        if let Some((ref name, _)) = selected_module {
+            let module: Box<dyn StatusModule> = match name.as_str() {
+                "viewport" => {
+                    has_viewport = true;
+                    Box::new(ViewportModule)
+                }
+                "window" => {
+                    has_window = true;
+                    Box::new(WindowModule)
+                }
+                "tray" => Box::new(TrayModule),
+                "cpu" => Box::new(CpuModule),
+                "memory" => Box::new(MemoryModule),
+                "brightness" => Box::new(BrightnessModule),
+                "volume" => Box::new(VolumeModule),
+                "battery" => Box::new(BatteryModule),
+                "clock" => Box::new(ClockModule),
+                _ => panic!("Unknown module: {}", name),
+            };
+            left_modules.push(module);
+        } else {
+            left_modules.push(Box::new(ViewportModule));
+            left_modules.push(Box::new(WindowModule));
+            right_modules.push(Box::new(TrayModule));
+            right_modules.push(Box::new(CpuModule));
+            right_modules.push(Box::new(MemoryModule));
+            right_modules.push(Box::new(BrightnessModule));
+            right_modules.push(Box::new(VolumeModule));
+            right_modules.push(Box::new(BatteryModule));
+            right_modules.push(Box::new(ClockModule));
+            has_viewport = true;
+            has_window = true;
+        }
+
+        if has_viewport {
+            tokio::spawn(spawn_status_listener("viewport", sender.clone()));
+            tokio::spawn(spawn_status_listener("layout", sender.clone()));
+        }
+        if has_window {
+            tokio::spawn(spawn_status_listener("title", sender.clone()));
+        }
+        if selected_module.is_none() {
+            tokio::spawn(spawn_status_listener("modifiers", sender.clone()));
+        }
+        let is_primary_for_switcher = selected_module.as_ref().map_or(true, |(name, _)| name == "window");
+        if is_primary_for_switcher {
+            tokio::spawn(spawn_switcher_listener(sender.clone()));
+        }
+
+        let has_tray = selected_module.as_ref().map_or(true, |(name, _)| name == "tray");
+        if has_tray {
+            tokio::spawn(spawn_status_tray(sender.clone()));
+        }
+        let has_stats = selected_module.as_ref().map_or(true, |(name, _)| {
+            name == "cpu" || name == "memory" || name == "brightness" || name == "volume" || name == "battery" || name == "clock"
+        });
+        if has_stats {
+            tokio::spawn(spawn_system_stats(sender.clone()));
+        }
 
         let font_system = FontSystem::new();
 
@@ -966,7 +1054,7 @@ impl cce_ui::engine::Application for StatusApp {
             viewport: String::new(),
             layout: String::new(),
             title: String::new(),
-            stats: None,
+            stats: if has_stats { Some(get_initial_stats()) } else { None },
             tray_items: HashMap::new(),
             cursor_pos: (0.0, 0.0),
             hovered_tray_item: None,
@@ -985,7 +1073,7 @@ impl cce_ui::engine::Application for StatusApp {
             separators: Vec::new(),
             text_items: Vec::new(),
             scale_factor: 1.0,
-            width: 1920,
+            width: if selected_module.is_some() { 120 } else { 1920 },
             height: read_status_height_from_config() as u32,
             needs_rebuild: true,
             current_bg_color: color::STATUS_BG,
@@ -993,21 +1081,12 @@ impl cce_ui::engine::Application for StatusApp {
             super_pressed: false,
             dragged_module: None,
             module_bounds: Vec::new(),
-            left_modules: vec![
-                Box::new(ViewportModule),
-                Box::new(WindowModule),
-            ],
-            right_modules: vec![
-                Box::new(TrayModule),
-                Box::new(CpuModule),
-                Box::new(MemoryModule),
-                Box::new(BrightnessModule),
-                Box::new(VolumeModule),
-                Box::new(BatteryModule),
-                Box::new(ClockModule),
-            ],
+            left_modules,
+            right_modules,
             sender,
             last_config_modified: std::fs::metadata("/home/lsgalante/.config/cce/config.kdl").ok().and_then(|m| m.modified().ok()),
+            selected_module_name: selected_module.as_ref().map(|(n, _)| n.clone()),
+            selected_module_side: selected_module.as_ref().map(|(_, s)| s.clone()),
         };
 
         app.rebuild_layout();
@@ -1015,13 +1094,26 @@ impl cce_ui::engine::Application for StatusApp {
     }
 
     fn settings(&self) -> cce_ui::engine::WindowSettings {
+        let app_id = if let (Some(ref name), Some(ref side)) = (&self.selected_module_name, &self.selected_module_side) {
+            format!("cce-status-{:?}-{}", side, name).to_lowercase()
+        } else {
+            "cce-status".to_string()
+        };
         cce_ui::engine::WindowSettings {
             title: "Status Interface".to_string(),
-            app_id: "cce-status".to_string(),
-            width: 1920,
-            height: read_status_height_from_config() as u32,
+            app_id,
+            width: self.width,
+            height: self.height,
             fullscreen: false,
             min_size: None,
+        }
+    }
+
+    fn desired_size(&self) -> Option<(u32, u32)> {
+        if self.selected_module_name.is_some() {
+            Some((self.width, self.height))
+        } else {
+            None
         }
     }
 
@@ -1048,6 +1140,7 @@ impl cce_ui::engine::Application for StatusApp {
                 }
             }
             CustomEvent::SystemStatsUpdated(s) => {
+                eprintln!("[module-{}] stats updated, current width={}", self.selected_module_name.as_deref().unwrap_or("none"), self.width);
                 self.stats = Some(s);
             }
             CustomEvent::TrayUpdated(item) => {
@@ -1120,8 +1213,8 @@ impl cce_ui::engine::Application for StatusApp {
             cce_ui::scale::set_scale_factor(scale as f32);
             self.rebuild_layout();
         }
-        // let (sb_x, sb_y, sb_w, sb_h) = self.status_bar.rect();
-        // quads.push((sb_x, sb_y, sb_w, sb_h, self.status_bar.color()));
+        let (sb_x, sb_y, sb_w, sb_h) = self.status_bar.rect();
+        quads.push((sb_x, sb_y, sb_w, sb_h, self.status_bar.color()));
         for r in &self.rects {
             quads.push((r.x, r.y, r.w, r.h, r.color));
         }
@@ -1255,12 +1348,12 @@ impl cce_ui::engine::Application for StatusApp {
                 let id = bound.id.clone();
                 let tray_source = format!("tray:{}", id);
 
-                // Check if any clear-cloud instance is already running
+                // Check if any cce-cloud instance is already running
                 let mut running_cloud_pid = None;
                 if let Some(pid) = self.active_cloud_pid {
                     if std::path::Path::new(&format!("/proc/{}", pid)).exists() {
                         if let Ok(comm) = std::fs::read_to_string(format!("/proc/{}/comm", pid)) {
-                            if comm.trim() == "clear-cloud" {
+                            if comm.trim() == "cce-cloud" {
                                 running_cloud_pid = Some(pid);
                             }
                         }
@@ -1270,7 +1363,7 @@ impl cce_ui::engine::Application for StatusApp {
                 if let Some(pid) = running_cloud_pid {
                     // There is an active dialog open.
                     // Kill it regardless of which one it is.
-                    eprintln!("[tray-click] clear-cloud (PID {}) is running, killing it", pid);
+                    eprintln!("[tray-click] cce-cloud (PID {}) is running, killing it", pid);
                     let _ = std::process::Command::new("kill").arg(pid.to_string()).status();
                     self.active_cloud_pid = None;
 
@@ -1340,8 +1433,8 @@ impl cce_ui::engine::Application for StatusApp {
                                             if should_show_menu {
                                                 if let Some(menu_p) = menu_path {
                                                     menu_shown = true;
-                                                    if let Err(e) = show_clear_cloud_menu(&conn, destination, menu_p.as_str(), x_pos, y_pos, true, thread_sender.clone(), tray_source_clone.clone()).await {
-                                                        eprintln!("[tray-click] show_clear_cloud_menu failed: {:?}", e);
+                                                    if let Err(e) = show_cce_cloud_menu(&conn, destination, menu_p.as_str(), x_pos, y_pos, true, thread_sender.clone(), tray_source_clone.clone()).await {
+                                                        eprintln!("[tray-click] show_cce_cloud_menu failed: {:?}", e);
                                                     }
                                                 }
                                             } else if btn_code == 272 {
@@ -1349,8 +1442,8 @@ impl cce_ui::engine::Application for StatusApp {
                                                     eprintln!("[tray-click] Activate failed: {:?}", e);
                                                     if let Some(menu_p) = menu_path {
                                                         menu_shown = true;
-                                                        if let Err(e) = show_clear_cloud_menu(&conn, destination, menu_p.as_str(), x_pos, y_pos, true, thread_sender.clone(), tray_source_clone.clone()).await {
-                                                            eprintln!("[tray-click] Fallback show_clear_cloud_menu failed: {:?}", e);
+                                                        if let Err(e) = show_cce_cloud_menu(&conn, destination, menu_p.as_str(), x_pos, y_pos, true, thread_sender.clone(), tray_source_clone.clone()).await {
+                                                            eprintln!("[tray-click] Fallback show_cce_cloud_menu failed: {:?}", e);
                                                         }
                                                     }
                                                 }
@@ -1392,12 +1485,12 @@ impl cce_ui::engine::Application for StatusApp {
                     eprintln!("[module-right-click] Right-clicked module: {}", mb.name);
                     let context_source = format!("context_menu:{}", mb.name);
 
-                    // Check if any clear-cloud instance is already running
+                    // Check if any cce-cloud instance is already running
                     let mut running_cloud_pid = None;
                     if let Some(pid) = self.active_cloud_pid {
                         if std::path::Path::new(&format!("/proc/{}", pid)).exists() {
                             if let Ok(comm) = std::fs::read_to_string(format!("/proc/{}/comm", pid)) {
-                                if comm.trim() == "clear-cloud" {
+                                if comm.trim() == "cce-cloud" {
                                     running_cloud_pid = Some(pid);
                                 }
                             }
@@ -1405,7 +1498,7 @@ impl cce_ui::engine::Application for StatusApp {
                     }
 
                     if let Some(pid) = running_cloud_pid {
-                        eprintln!("[module-right-click] clear-cloud (PID {}) is running, killing it", pid);
+                        eprintln!("[module-right-click] cce-cloud (PID {}) is running, killing it", pid);
                         let _ = std::process::Command::new("kill").arg(pid.to_string()).status();
                         self.active_cloud_pid = None;
 
@@ -1438,7 +1531,7 @@ impl cce_ui::engine::Application for StatusApp {
                         ]
                     }).to_string();
 
-                    if let Ok(mut child) = std::process::Command::new(get_clear_cloud_cmd())
+                    if let Ok(mut child) = std::process::Command::new(get_cce_cloud_cmd())
                         .args([
                             "--json",
                             "-x",
@@ -1453,7 +1546,7 @@ impl cce_ui::engine::Application for StatusApp {
                     {
                         let pid = child.id();
                         self.active_cloud_pid = Some(pid);
-                        eprintln!("[module-right-click] Spawned clear-cloud with PID {}", pid);
+                        eprintln!("[module-right-click] Spawned cce-cloud with PID {}", pid);
 
                         let thread_sender = self.sender.clone();
                         let context_source_clone = context_source.clone();
@@ -1465,7 +1558,7 @@ impl cce_ui::engine::Application for StatusApp {
                             if let Ok(output) = child.wait_with_output() {
                                 let err_str = String::from_utf8_lossy(&output.stderr);
                                 if !err_str.is_empty() {
-                                    eprintln!("[clear-cloud context stderr] {}", err_str);
+                                    eprintln!("[cce-cloud context stderr] {}", err_str);
                                 }
                             }
                             let _ = thread_sender.send(CustomEvent::CloudClosed { pid, source: context_source_clone });
@@ -1492,12 +1585,12 @@ impl cce_ui::engine::Application for StatusApp {
                     eprintln!("[layout-click] Layout mode clicked!");
                     let layout_source = "layout".to_string();
 
-                    // Check if any clear-cloud instance is already running
+                    // Check if any cce-cloud instance is already running
                     let mut running_cloud_pid = None;
                     if let Some(pid) = self.active_cloud_pid {
                         if std::path::Path::new(&format!("/proc/{}", pid)).exists() {
                             if let Ok(comm) = std::fs::read_to_string(format!("/proc/{}/comm", pid)) {
-                                if comm.trim() == "clear-cloud" {
+                                if comm.trim() == "cce-cloud" {
                                     running_cloud_pid = Some(pid);
                                 }
                             }
@@ -1507,7 +1600,7 @@ impl cce_ui::engine::Application for StatusApp {
                     if let Some(pid) = running_cloud_pid {
                         // There is an active dialog open.
                         // Kill it regardless of which one it is.
-                        eprintln!("[layout-click] clear-cloud (PID {}) is running, killing it", pid);
+                        eprintln!("[layout-click] cce-cloud (PID {}) is running, killing it", pid);
                         let _ = std::process::Command::new("kill").arg(pid.to_string()).status();
                         self.active_cloud_pid = None;
 
@@ -1549,7 +1642,7 @@ impl cce_ui::engine::Application for StatusApp {
                         ]
                     }).to_string();
 
-                    if let Ok(mut child) = std::process::Command::new(get_clear_cloud_cmd())
+                    if let Ok(mut child) = std::process::Command::new(get_cce_cloud_cmd())
                         .args([
                             "--json",
                             "-x",
@@ -1564,7 +1657,7 @@ impl cce_ui::engine::Application for StatusApp {
                     {
                         let pid = child.id();
                         self.active_cloud_pid = Some(pid);
-                        eprintln!("[layout-click] Spawned clear-cloud with PID {}", pid);
+                        eprintln!("[layout-click] Spawned cce-cloud with PID {}", pid);
                         
                         let active_viewport = get_active_viewport_from_camera(&self.viewport);
                         let thread_sender = self.sender.clone();
@@ -1577,7 +1670,7 @@ impl cce_ui::engine::Application for StatusApp {
                             if let Ok(output) = child.wait_with_output() {
                                 let err_str = String::from_utf8_lossy(&output.stderr);
                                 if !err_str.is_empty() {
-                                    eprintln!("[clear-cloud stderr] {}", err_str);
+                                    eprintln!("[cce-cloud stderr] {}", err_str);
                                 }
                                 if output.status.success() {
                                     let out_str = String::from_utf8_lossy(&output.stdout);
@@ -1763,6 +1856,31 @@ async fn read_volume() -> Option<(String, bool)> {
         (true, None) => Some(("Vol Muted".to_string(), true)),
         (false, Some(p)) => Some((format!("Vol {}%", p), false)),
         (false, None) => Some(("Vol N/A".to_string(), false)),
+    }
+}
+
+fn get_initial_stats() -> SystemStats {
+    let clock = chrono::Local::now().format("%A, %B %d, %Y %I:%M %p").to_string();
+    let memory = read_memory_usage().unwrap_or_else(|| "Mem N/A".to_string());
+
+    let (battery_str, battery_capacity, battery_charging) = if let Some((s, cap, chg)) = read_battery_details() {
+        (s, cap, chg)
+    } else {
+        ("".to_string(), 0, false)
+    };
+    let (volume, volume_muted) = pollster::block_on(read_volume()).unwrap_or_else(|| ("".to_string(), false));
+    let brightness = read_brightness().unwrap_or_default();
+
+    SystemStats {
+        clock,
+        memory,
+        cpu: "Cpu 0.0%".to_string(),
+        battery: battery_str,
+        battery_capacity,
+        battery_charging,
+        volume,
+        volume_muted,
+        brightness,
     }
 }
 
@@ -1976,14 +2094,14 @@ fn parse_menu_item(
     })
 }
 
-fn get_clear_cloud_cmd() -> String {
+fn get_cce_cloud_cmd() -> String {
     if let Ok(home) = std::env::var("HOME") {
-        let path = format!("{}/.local/bin/clear-cloud", home);
+        let path = format!("{}/.local/bin/cce-cloud", home);
         if std::path::Path::new(&path).exists() {
             return path;
         }
     }
-    "clear-cloud".to_string()
+    "cce-cloud".to_string()
 }
 
 fn get_currently_focused_window() -> Option<String> {
@@ -2028,7 +2146,7 @@ fn get_currently_focused_window() -> Option<String> {
     None
 }
 
-async fn show_clear_cloud_menu(
+async fn show_cce_cloud_menu(
     conn: &zbus::Connection,
     destination: &str,
     menu_path: &str,
@@ -2224,7 +2342,7 @@ async fn show_clear_cloud_menu(
             cmd_args.push("--align-right".to_string());
         }
 
-        let mut child = std::process::Command::new(get_clear_cloud_cmd())
+        let mut child = std::process::Command::new(get_cce_cloud_cmd())
             .args(&cmd_args)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -2731,6 +2849,7 @@ fn main() {
         .init();
 
     let args: Vec<String> = std::env::args().collect();
+    eprintln!("cce-status-interface started with args = {:?}", args);
     if args.len() > 1 && args[1] == "--trigger-switcher" {
         let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
         rt.block_on(async {
@@ -2739,6 +2858,106 @@ fn main() {
             use tokio::io::AsyncWriteExt;
             if let Ok(mut stream) = tokio::net::UnixStream::connect(&socket_path).await {
                 let _ = stream.write_all(b"trigger\n").await;
+            }
+        });
+        return;
+    }
+
+    let mut has_module = false;
+    let mut monolithic = false;
+    for i in 0..args.len() {
+        if args[i] == "--module" {
+            has_module = true;
+        }
+        if args[i] == "--monolithic" {
+            monolithic = true;
+        }
+    }
+
+    if !has_module && !monolithic {
+        log::info!("Starting cce-status-interface launcher daemon...");
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        rt.block_on(async {
+            use tokio::signal::unix::{signal, SignalKind};
+            let mut sigint = signal(SignalKind::interrupt()).expect("SIGINT");
+            let mut sigterm = signal(SignalKind::terminate()).expect("SIGTERM");
+            
+            let modules = vec![
+                "viewport", "window", "tray", "cpu", "memory", "brightness",
+                "volume", "battery", "clock"
+            ];
+            let current_exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("/home/lsgalante/.local/bin/cce-status-interface"));
+
+            let mut active_children: std::collections::HashMap<String, std::process::Child> = std::collections::HashMap::new();
+
+            for module in &modules {
+                let child = std::process::Command::new(&current_exe)
+                    .arg("--module")
+                    .arg(module)
+                    .spawn();
+                match child {
+                    Ok(c) => {
+                        log::info!("Spawned module process for: {}", module);
+                        active_children.insert(module.to_string(), c);
+                    }
+                    Err(e) => {
+                        log::error!("Failed to spawn module process for {}: {:?}", module, e);
+                    }
+                }
+            }
+
+            loop {
+                tokio::select! {
+                    _ = sigint.recv() => {
+                        log::info!("Received SIGINT, shutting down...");
+                        break;
+                    }
+                    _ = sigterm.recv() => {
+                        log::info!("Received SIGTERM, shutting down...");
+                        break;
+                    }
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(500)) => {
+                        for module in &modules {
+                            let mut restart = false;
+                            if let Some(child) = active_children.get_mut(*module) {
+                                match child.try_wait() {
+                                    Ok(Some(status)) => {
+                                        log::warn!("Module process '{}' exited with status: {:?}. Restarting...", module, status);
+                                        restart = true;
+                                    }
+                                    Ok(None) => {}
+                                    Err(e) => {
+                                        log::error!("Error checking status for module '{}': {:?}. Restarting...", module, e);
+                                        restart = true;
+                                    }
+                                }
+                            } else {
+                                restart = true;
+                            }
+
+                            if restart {
+                                let child = std::process::Command::new(&current_exe)
+                                    .arg("--module")
+                                    .arg(module)
+                                    .spawn();
+                                match child {
+                                    Ok(c) => {
+                                        log::info!("Restarted module process for: {}", module);
+                                        active_children.insert(module.to_string(), c);
+                                    }
+                                    Err(e) => {
+                                        log::error!("Failed to restart module process for {}: {:?}", module, e);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            for (module, mut child) in active_children {
+                log::info!("Killing module process: {}", module);
+                let _ = child.kill();
             }
         });
         return;
@@ -2888,19 +3107,20 @@ fn parse_font_for_alias(content: &str, alias: &str) -> Option<String> {
 
 fn read_bg_color_from_config() -> Option<[f32; 4]> {
     let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.kdl").ok()?;
-    parse_color_from_key(&content, "desktop_background_color")
+    parse_color_from_key(&content, "background_color")
         .or_else(|| parse_color_from_key(&content, "low_color"))
-        .or_else(|| parse_color_from_key(&content, "background_color"))
+        .or_else(|| parse_color_from_key(&content, "desktop_gap_color"))
 }
 
 fn parse_color_from_key(content: &str, key: &str) -> Option<[f32; 4]> {
     let val = parse_json(content);
     if let Some(s) = json_find_key(&val, key).and_then(|v| v.as_str()) {
-        if let Some(rgb) = parse_hex(s) {
-            let r = (rgb[0] as f32 / 255.0).powf(2.2);
-            let g = (rgb[1] as f32 / 255.0).powf(2.2);
-            let b = (rgb[2] as f32 / 255.0).powf(2.2);
-            return Some([r, g, b, 1.0]);
+        if let Some(rgba) = parse_hex_rgba(s) {
+            let r = (rgba[0] as f32 / 255.0).powf(2.2);
+            let g = (rgba[1] as f32 / 255.0).powf(2.2);
+            let b = (rgba[2] as f32 / 255.0).powf(2.2);
+            let a = rgba[3] as f32 / 255.0;
+            return Some([r, g, b, a]);
         }
     }
     None
