@@ -322,10 +322,20 @@ struct StatusApp {
 }
 
 impl StatusApp {
+    fn is_vertical(&self) -> bool {
+        if self.width < self.height {
+            true
+        } else if self.width > self.height {
+            false
+        } else {
+            cce_ui::IS_VERTICAL.load(std::sync::atomic::Ordering::Relaxed)
+        }
+    }
+
     #[allow(unused_assignments)]
     fn rebuild_layout(&mut self) {
         log::info!("[cce-status] rebuild_layout module={:?} size={}x{}", self.selected_module_name, self.width, self.height);
-        let is_vertical = self.width < self.height || (self.selected_module_name.is_some() && self.height > self.width);
+        let is_vertical = self.is_vertical();
         cce_ui::IS_VERTICAL.store(is_vertical, std::sync::atomic::Ordering::Relaxed);
 
         let font_family = read_status_font_from_config();
@@ -1365,7 +1375,7 @@ impl cce_ui::engine::Application for StatusApp {
     fn handle_pointer_move(&mut self, pos: cce_ui::engine::LogicalPosition, needs_rebuild: &mut bool) {
         let (lx, ly) = (pos.x, pos.y);
         self.cursor_pos = (lx as f64, ly as f64);
-        let is_vertical = self.width < self.height || (self.selected_module_name.is_some() && self.height > self.width);
+        let is_vertical = self.is_vertical();
         let coord = if is_vertical { ly } else { lx };
 
         if self.dragged_module.is_some() {
@@ -1393,7 +1403,7 @@ impl cce_ui::engine::Application for StatusApp {
 
     fn handle_mouse_input(&mut self, button: MouseButton, state: ElementState, pos: cce_ui::engine::LogicalPosition, needs_rebuild: &mut bool) -> Option<Self::Message> {
         let (lx, ly) = (pos.x, pos.y);
-        let is_vertical = self.width < self.height || (self.selected_module_name.is_some() && self.height > self.width);
+        let is_vertical = self.is_vertical();
         let coord = if is_vertical { ly } else { lx };
         let cx = lx as f64;
         let cy = ly as f64;
