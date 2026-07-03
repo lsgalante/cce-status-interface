@@ -1398,6 +1398,11 @@ impl cce_ui::engine::Application for StatusApp {
                 let bar_height = read_status_height_from_config() as i32;
                 let bound_x = bound.x;
                 let bound_w = bound.w;
+                let parent_app_id = if let (Some(ref name), Some(ref side)) = (&self.selected_module_name, &self.selected_module_side) {
+                    format!("cce-status-{:?}-{}", side, name).to_lowercase()
+                } else {
+                    "cce-status".to_string()
+                };
                 let thread_sender = self.sender.clone();
                 let tray_source_clone = tray_source.clone();
                 std::thread::spawn(move || {
@@ -1431,25 +1436,25 @@ impl cce_ui::engine::Application for StatusApp {
                                             eprintln!("[tray-click] Clicked tray item at bound_x={}, bound_w={}, screen_width={}, calculated x_pos={}, y_pos={}", bound_x, bound_w, screen_width, x_pos, y_pos);
 
                                             if should_show_menu {
-                                                if let Some(menu_p) = menu_path {
-                                                    menu_shown = true;
-                                                    if let Err(e) = show_cce_cloud_menu(&conn, destination, menu_p.as_str(), x_pos, y_pos, true, thread_sender.clone(), tray_source_clone.clone()).await {
-                                                        eprintln!("[tray-click] show_cce_cloud_menu failed: {:?}", e);
-                                                    }
-                                                }
-                                            } else if btn_code == 272 {
-                                                if let Err(e) = proxy.activate(cx_i, cy_i).await {
-                                                    eprintln!("[tray-click] Activate failed: {:?}", e);
-                                                    if let Some(menu_p) = menu_path {
-                                                        menu_shown = true;
-                                                        if let Err(e) = show_cce_cloud_menu(&conn, destination, menu_p.as_str(), x_pos, y_pos, true, thread_sender.clone(), tray_source_clone.clone()).await {
-                                                            eprintln!("[tray-click] Fallback show_cce_cloud_menu failed: {:?}", e);
-                                                        }
-                                                    }
-                                                }
-                                            } else if btn_code == 273 {
-                                                let _ = proxy.context_menu(cx_i, cy_i).await;
-                                            }
+                                                 if let Some(menu_p) = menu_path {
+                                                     menu_shown = true;
+                                                     if let Err(e) = show_cce_cloud_menu(&conn, destination, menu_p.as_str(), x_pos, y_pos, true, thread_sender.clone(), tray_source_clone.clone(), parent_app_id.clone()).await {
+                                                         eprintln!("[tray-click] show_cce_cloud_menu failed: {:?}", e);
+                                                     }
+                                                 }
+                                             } else if btn_code == 272 {
+                                                 if let Err(e) = proxy.activate(cx_i, cy_i).await {
+                                                     eprintln!("[tray-click] Activate failed: {:?}", e);
+                                                     if let Some(menu_p) = menu_path {
+                                                         menu_shown = true;
+                                                         if let Err(e) = show_cce_cloud_menu(&conn, destination, menu_p.as_str(), x_pos, y_pos, true, thread_sender.clone(), tray_source_clone.clone(), parent_app_id.clone()).await {
+                                                             eprintln!("[tray-click] Fallback show_cce_cloud_menu failed: {:?}", e);
+                                                         }
+                                                     }
+                                                 }
+                                             } else if btn_code == 273 {
+                                                 let _ = proxy.context_menu(cx_i, cy_i).await;
+                                             }
                                         }
                                         Err(e) => {
                                             eprintln!("[tray-click] Failed to build proxy: {:?}", e);
@@ -1531,6 +1536,12 @@ impl cce_ui::engine::Application for StatusApp {
                         ]
                     }).to_string();
 
+                    let parent_app_id = if let (Some(ref name), Some(ref side)) = (&self.selected_module_name, &self.selected_module_side) {
+                        format!("cce-status-{:?}-{}", side, name).to_lowercase()
+                    } else {
+                        "cce-status".to_string()
+                    };
+
                     if let Ok(mut child) = std::process::Command::new(get_cce_cloud_cmd())
                         .args([
                             "--json",
@@ -1538,6 +1549,8 @@ impl cce_ui::engine::Application for StatusApp {
                             &x_pos.to_string(),
                             "-y",
                             &y_pos.to_string(),
+                            "--parent-app-id",
+                            &parent_app_id,
                         ])
                         .stdin(std::process::Stdio::piped())
                         .stdout(std::process::Stdio::piped())
@@ -2155,6 +2168,7 @@ async fn show_cce_cloud_menu(
     align_right: bool,
     thread_sender: calloop::channel::Sender<CustomEvent>,
     source: String,
+    parent_app_id: String,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut last_spawned_pid = 0;
 
@@ -2337,6 +2351,8 @@ async fn show_cce_cloud_menu(
             x_pos.to_string(),
             "-y".to_string(),
             y_pos.to_string(),
+            "--parent-app-id".to_string(),
+            parent_app_id,
         ];
         if align_right {
             cmd_args.push("--align-right".to_string());
