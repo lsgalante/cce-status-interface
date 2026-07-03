@@ -1267,6 +1267,7 @@ impl cce_ui::engine::Application for StatusApp {
                 *needs_rebuild = true;
             }
             CustomEvent::ToggleAdjustPositionMode => {
+                self.adjust_position_mode = std::path::Path::new("/tmp/cce-status-adjust-mode").exists();
                 self.adjust_position_mode = !self.adjust_position_mode;
                 let cmd = if self.adjust_position_mode { "true" } else { "false" };
                 let _ = std::process::Command::new(get_cce_cmd())
@@ -1568,6 +1569,7 @@ impl cce_ui::engine::Application for StatusApp {
             }
 
             if button == MouseButton::Right {
+                self.adjust_position_mode = std::path::Path::new("/tmp/cce-status-adjust-mode").exists();
                 // Find which module was right-clicked
                 let mut clicked_module = None;
                 for mb in &self.module_bounds {
