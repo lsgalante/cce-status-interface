@@ -11,7 +11,7 @@ use crate::{
 pub trait StatusModule {
     fn name(&self) -> &'static str;
     
-    fn has_custom_background(&self) -> bool { false }
+    fn has_custom_background(&self, _title: &str) -> bool { false }
 
     fn width(
         &self,
@@ -54,102 +54,19 @@ pub trait StatusModule {
     );
 }
 
-pub struct ViewportModule;
-
-impl StatusModule for ViewportModule {
-    fn name(&self) -> &'static str { "viewport" }
-    
-    fn has_custom_background(&self) -> bool { true }
-
-    fn width(
-        &self,
-        _stats: &Option<SystemStats>,
-        viewport: &str,
-        _layout: &str,
-        _title: &str,
-        font_system: &mut FontSystem,
-        font_family: &str,
-        font_size: f32,
-        _tray_items: &HashMap<String, TrayItem>,
-        padding: f32,
-    ) -> f32 {
-        let viewport_parsed = parse_viewport_text(viewport);
-        if viewport_parsed.is_empty() {
-            0.0
-        } else {
-            let mut total_w = 0.0;
-            for (col, text) in &viewport_parsed {
-                let label = Label::new_with_family(font_system, text, font_size, *col, font_family);
-                total_w += label.w + 2.0 * padding + 4.0;
-            }
-            if total_w > 0.0 { total_w - 4.0 } else { 0.0 }
-        }
-    }
-
-    fn render(
-        &self,
-        x: f32,
-        _w: f32,
-        _stats: &Option<SystemStats>,
-        viewport: &str,
-        _layout: &str,
-        _title: &str,
-        font_system: &mut FontSystem,
-        font_family: &str,
-        font_size: f32,
-        _normal_color: [f32; 4],
-        bar_h: f32,
-        _scale_factor: f64,
-        text_items: &mut Vec<TextItem>,
-        _rects: &mut Vec<RectWidget>,
-        _overlay_rects: &mut Vec<RectWidget>,
-        viewport_bounds: &mut Vec<ViewportBounds>,
-        _layout_bounds: &mut Option<LayoutBounds>,
-        _tray_items: &HashMap<String, TrayItem>,
-        _tray_item_bounds: &mut Vec<TrayIconBounds>,
-        box_bg_color: Option<[f32; 4]>,
-        status_box_radius: f32,
-        rounded_boxes: &mut Vec<RoundedBox>,
-        padding: f32,
-    ) {
-        let viewport_parsed = parse_viewport_text(viewport);
-        let mut cur_x = x;
-        for (col, text) in viewport_parsed {
-            let label = Label::new_with_family(font_system, &text, font_size, col, font_family);
-            let box_w = label.w + 2.0 * padding;
-            if let Some(color) = box_bg_color {
-                rounded_boxes.push(RoundedBox {
-                    x: cur_x,
-                    y: 0.0,
-                    w: box_w,
-                    h: bar_h,
-                    radius: status_box_radius,
-                    color,
-                    corners: (false, false, true, true),
-                });
-            }
-            label.draw(text_items, cur_x + padding, (bar_h - font_size * 1.4) / 2.0);
-            viewport_bounds.push(ViewportBounds {
-                name: text.clone(),
-                x: cur_x,
-                y: 0.0,
-                w: box_w,
-                h: bar_h,
-            });
-            cur_x += box_w + 4.0;
-        }
-    }
-}
-
 pub struct WindowModule;
 
 impl StatusModule for WindowModule {
     fn name(&self) -> &'static str { "window" }
 
+    fn has_custom_background(&self, title: &str) -> bool {
+        title.is_empty() || title == "(none)"
+    }
+
     fn width(
         &self,
         _stats: &Option<SystemStats>,
-        _viewport: &str,
+        viewport: &str,
         layout: &str,
         title: &str,
         font_system: &mut FontSystem,
@@ -159,33 +76,42 @@ impl StatusModule for WindowModule {
         padding: f32,
     ) -> f32 {
         let has_title = !title.is_empty() && title != "(none)";
-        let has_layout = !layout.is_empty();
-
-        if !has_title && !has_layout {
-            return 0.0;
-        }
-
-        let mut total_w = 0.0;
         if has_title {
-            let mut display_title = title.to_string();
-            if display_title.chars().count() > 40 {
-                display_title = display_title.chars().take(37).collect::<String>() + "...";
+            let has_layout = !layout.is_empty();
+            let mut total_w = 0.0;
+            if has_title {
+                let mut display_title = title.to_string();
+                if display_title.chars().count() > 40 {
+                    display_title = display_title.chars().take(37).collect::<String>() + "...";
+                }
+                let label = Label::new_with_family(font_system, &display_title, font_size, [0.0, 0.0, 0.0, 1.0], font_family);
+                total_w += label.w;
             }
-            let label = Label::new_with_family(font_system, &display_title, font_size, [0.0, 0.0, 0.0, 1.0], font_family);
-            total_w += label.w;
-        }
 
-        if has_title && has_layout {
-            let sep_label = Label::new_with_family(font_system, " - ", font_size, [0.0, 0.0, 0.0, 1.0], font_family);
-            total_w += sep_label.w;
-        }
+            if has_title && has_layout {
+                let sep_label = Label::new_with_family(font_system, " - ", font_size, [0.0, 0.0, 0.0, 1.0], font_family);
+                total_w += sep_label.w;
+            }
 
-        if has_layout {
-            let layout_label = Label::new_with_family(font_system, layout, font_size, [0.0, 0.0, 0.0, 1.0], font_family);
-            total_w += layout_label.w;
-        }
+            if has_layout {
+                let layout_label = Label::new_with_family(font_system, layout, font_size, [0.0, 0.0, 0.0, 1.0], font_family);
+                total_w += layout_label.w;
+            }
 
-        total_w + 2.0 * padding
+            total_w + 2.0 * padding
+        } else {
+            let viewport_parsed = parse_viewport_text(viewport);
+            if viewport_parsed.is_empty() {
+                0.0
+            } else {
+                let mut total_w = 0.0;
+                for (col, text) in &viewport_parsed {
+                    let label = Label::new_with_family(font_system, text, font_size, *col, font_family);
+                    total_w += label.w + 2.0 * padding + 4.0;
+                }
+                if total_w > 0.0 { total_w - 4.0 } else { 0.0 }
+            }
+        }
     }
 
     fn render(
@@ -193,7 +119,7 @@ impl StatusModule for WindowModule {
         x: f32,
         _w: f32,
         _stats: &Option<SystemStats>,
-        _viewport: &str,
+        viewport: &str,
         layout: &str,
         title: &str,
         font_system: &mut FontSystem,
@@ -205,53 +131,77 @@ impl StatusModule for WindowModule {
         text_items: &mut Vec<TextItem>,
         _rects: &mut Vec<RectWidget>,
         _overlay_rects: &mut Vec<RectWidget>,
-        _viewport_bounds: &mut Vec<ViewportBounds>,
+        viewport_bounds: &mut Vec<ViewportBounds>,
         layout_bounds: &mut Option<LayoutBounds>,
         _tray_items: &HashMap<String, TrayItem>,
         _tray_item_bounds: &mut Vec<TrayIconBounds>,
-        _box_bg_color: Option<[f32; 4]>,
-        _status_box_radius: f32,
-        _rounded_boxes: &mut Vec<RoundedBox>,
+        box_bg_color: Option<[f32; 4]>,
+        status_box_radius: f32,
+        rounded_boxes: &mut Vec<RoundedBox>,
         padding: f32,
     ) {
         let has_title = !title.is_empty() && title != "(none)";
-        let has_layout = !layout.is_empty();
-
-        if !has_title && !has_layout {
-            return;
-        }
-
-        let mut cur_x = x + padding;
-        let y_pos = (bar_h - font_size * 1.4) / 2.0;
-
         if has_title {
-            let mut display_title = title.to_string();
-            if display_title.chars().count() > 40 {
-                display_title = display_title.chars().take(37).collect::<String>() + "...";
+            let has_layout = !layout.is_empty();
+            let mut cur_x = x + padding;
+            let y_pos = (bar_h - font_size * 1.4) / 2.0;
+
+            if has_title {
+                let mut display_title = title.to_string();
+                if display_title.chars().count() > 40 {
+                    display_title = display_title.chars().take(37).collect::<String>() + "...";
+                }
+                let label = Label::new_with_family(font_system, &display_title, font_size, normal_color, font_family);
+                let w = label.w;
+                label.draw(text_items, cur_x, y_pos);
+                cur_x += w;
             }
-            let label = Label::new_with_family(font_system, &display_title, font_size, normal_color, font_family);
-            let w = label.w;
-            label.draw(text_items, cur_x, y_pos);
-            cur_x += w;
-        }
 
-        if has_title && has_layout {
-            let sep_label = Label::new_with_family(font_system, " - ", font_size, normal_color, font_family);
-            let w = sep_label.w;
-            sep_label.draw(text_items, cur_x, y_pos);
-            cur_x += w;
-        }
+            if has_title && has_layout {
+                let sep_label = Label::new_with_family(font_system, " - ", font_size, normal_color, font_family);
+                let w = sep_label.w;
+                sep_label.draw(text_items, cur_x, y_pos);
+                cur_x += w;
+            }
 
-        if has_layout {
-            let layout_label = Label::new_with_family(font_system, layout, font_size, normal_color, font_family);
-            let w = layout_label.w;
-            layout_label.draw(text_items, cur_x, y_pos);
-            *layout_bounds = Some(LayoutBounds {
-                x: cur_x - 2.0,
-                y: 0.0,
-                w: w + 4.0,
-                h: bar_h,
-            });
+            if has_layout {
+                let layout_label = Label::new_with_family(font_system, layout, font_size, normal_color, font_family);
+                let w = layout_label.w;
+                layout_label.draw(text_items, cur_x, y_pos);
+                *layout_bounds = Some(LayoutBounds {
+                    x: cur_x - 2.0,
+                    y: 0.0,
+                    w: w + 4.0,
+                    h: bar_h,
+                });
+            }
+        } else {
+            let viewport_parsed = parse_viewport_text(viewport);
+            let mut cur_x = x;
+            for (col, text) in viewport_parsed {
+                let label = Label::new_with_family(font_system, &text, font_size, col, font_family);
+                let box_w = label.w + 2.0 * padding;
+                if let Some(color) = box_bg_color {
+                    rounded_boxes.push(RoundedBox {
+                        x: cur_x,
+                        y: 0.0,
+                        w: box_w,
+                        h: bar_h,
+                        radius: status_box_radius,
+                        color,
+                        corners: (false, false, true, true),
+                    });
+                }
+                label.draw(text_items, cur_x + padding, (bar_h - font_size * 1.4) / 2.0);
+                viewport_bounds.push(ViewportBounds {
+                    name: text.clone(),
+                    x: cur_x,
+                    y: 0.0,
+                    w: box_w,
+                    h: bar_h,
+                });
+                cur_x += box_w + 4.0;
+            }
         }
     }
 }

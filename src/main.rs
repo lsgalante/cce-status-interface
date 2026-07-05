@@ -1,5 +1,5 @@
 mod modules;
-use modules::{StatusModule, ViewportModule, WindowModule, ClockModule, BatteryModule, VolumeModule, BrightnessModule, MemoryModule, CpuModule, TrayModule};
+use modules::{StatusModule, WindowModule, ClockModule, BatteryModule, VolumeModule, BrightnessModule, MemoryModule, CpuModule, TrayModule};
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -417,7 +417,7 @@ impl StatusApp {
                 }
                 is_first_left = false;
 
-                if !module.has_custom_background() {
+                if !module.has_custom_background(&self.title) {
                     if let Some(color) = box_bg_color {
                         self.rounded_boxes.push(RoundedBox {
                             x: left_x,
@@ -507,7 +507,7 @@ impl StatusApp {
                 });
                 self.input_regions.push((right_x.round() as i32, 0, w.round() as i32, bar_h.round() as i32));
 
-                if !module.has_custom_background() {
+                if !module.has_custom_background(&self.title) {
                     if let Some(color) = box_bg_color {
                         self.rounded_boxes.push(RoundedBox {
                             x: right_x,
@@ -1056,7 +1056,7 @@ fn get_module_side(name: &str) -> Side {
         }
     }
     match name {
-        "viewport" | "window" => Side::Left,
+        "window" => Side::Left,
         _ => Side::Right,
     }
 }
@@ -1082,15 +1082,10 @@ impl cce_ui::engine::Application for StatusApp {
         let mut left_modules: Vec<Box<dyn StatusModule>> = Vec::new();
         let mut right_modules: Vec<Box<dyn StatusModule>> = Vec::new();
 
-        let mut has_viewport = false;
         let mut has_window = false;
 
         if let Some((ref name, _)) = selected_module {
             let module: Box<dyn StatusModule> = match name.as_str() {
-                "viewport" => {
-                    has_viewport = true;
-                    Box::new(ViewportModule)
-                }
                 "window" => {
                     has_window = true;
                     Box::new(WindowModule)
@@ -1106,7 +1101,6 @@ impl cce_ui::engine::Application for StatusApp {
             };
             left_modules.push(module);
         } else {
-            left_modules.push(Box::new(ViewportModule));
             left_modules.push(Box::new(WindowModule));
             right_modules.push(Box::new(TrayModule));
             right_modules.push(Box::new(CpuModule));
@@ -1115,15 +1109,12 @@ impl cce_ui::engine::Application for StatusApp {
             right_modules.push(Box::new(VolumeModule));
             right_modules.push(Box::new(BatteryModule));
             right_modules.push(Box::new(ClockModule));
-            has_viewport = true;
             has_window = true;
         }
 
-        if has_viewport {
+        if has_window {
             tokio::spawn(spawn_status_listener("viewport", sender.clone()));
             tokio::spawn(spawn_status_listener("layout", sender.clone()));
-        }
-        if has_window {
             tokio::spawn(spawn_status_listener("title", sender.clone()));
         }
         if selected_module.is_none() {
@@ -1669,7 +1660,7 @@ impl cce_ui::engine::Application for StatusApp {
                             "widgets": [
                                 { "type": "label", "text": mb.name },
                                 { "type": "button", "text": menu_text, "id": "toggle_hide" },
-                                { "type": "button", "text": "Adjust Module Positions", "id": "toggle_adjust" }
+                                { "type": "button", "text": "Adjust Positions", "id": "toggle_adjust" }
                             ]
                         }).to_string()
                     };
@@ -1883,23 +1874,30 @@ impl cce_ui::engine::Application for StatusApp {
                     }
 
                     if clicked_window {
-                        eprintln!("[window-click] Window module clicked!");
-                        self.trigger_switcher(false);
-                    } else {
-                        for bound in &self.viewport_bounds {
-                            eprintln!("[viewport-click] Checking Viewport '{}' bounds: x=[{}..{}], y=[{}..{}]", 
-                                bound.name, bound.x, bound.x + bound.w, bound.y, bound.y + bound.h);
-                            if cx >= bound.x as f64 && cx <= (bound.x + bound.w) as f64
-                                && cy >= bound.y as f64 && cy <= (bound.y + bound.h) as f64 {
-                                eprintln!("[viewport-click] Viewport matched: {}", bound.name);
-                                let name = bound.name.clone();
-                                std::thread::spawn(move || {
-                                    let _ = std::process::Command::new("clearctl")
-                                        .args(["view", &name])
-                                        .spawn();
-                                });
-                                break;
+                        let has_focus = !self.title.is_empty() && self.title != "(none)";
+                        if !has_focus {
+                            let mut clicked_viewport = false;
+                            for bound in &self.viewport_bounds {
+                                if cx >= bound.x as f64 && cx <= (bound.x + bound.w) as f64
+                                    && cy >= bound.y as f64 && cy <= (bound.y + bound.h) as f64 {
+                                    eprintln!("[viewport-click-via-window] Viewport matched: {}", bound.name);
+                                    let name = bound.name.clone();
+                                    std::thread::spawn(move || {
+                                        let _ = std::process::Command::new("clearctl")
+                                            .args(["view", &name])
+                                            .spawn();
+                                    });
+                                    clicked_viewport = true;
+                                    break;
+                                }
                             }
+                            if !clicked_viewport {
+                                eprintln!("[window-click] Window module clicked (no window focused, fallback to switcher)!");
+                                self.trigger_switcher(false);
+                            }
+                        } else {
+                            eprintln!("[window-click] Window module clicked (window focused)!");
+                            self.trigger_switcher(false);
                         }
                     }
                 }
@@ -3049,7 +3047,7 @@ fn main() {
             let mut sigterm = signal(SignalKind::terminate()).expect("SIGTERM");
             
             let modules = vec![
-                "viewport", "window", "tray", "cpu", "memory", "brightness",
+                "window", "tray", "cpu", "memory", "brightness",
                 "volume", "battery", "clock"
             ];
             let current_exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("/home/lsgalante/.local/bin/cce-status-interface"));
