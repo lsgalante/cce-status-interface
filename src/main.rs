@@ -1063,7 +1063,7 @@ fn get_active_viewport_from_camera(viewport_json: &str) -> u32 {
 }
 
 fn get_module_side(name: &str) -> Side {
-    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.kdl").unwrap_or_default();
+    let content = std::fs::read_to_string(cce_ui::config::get_config_path()).unwrap_or_default();
     let val = parse_json(&content);
     
     if name == "light_source" {
@@ -1226,7 +1226,7 @@ impl cce_ui::engine::Application for StatusApp {
             left_modules,
             right_modules,
             sender,
-            last_config_modified: std::fs::metadata("/home/lsgalante/.config/cce/config.kdl").ok().and_then(|m| m.modified().ok()),
+            last_config_modified: std::fs::metadata(cce_ui::config::get_config_path()).ok().and_then(|m| m.modified().ok()),
             selected_module_name: selected_module.as_ref().map(|(n, _)| n.clone()),
             selected_module_side: selected_module.as_ref().map(|(_, s)| s.clone()),
             status_hide_mode: false,
@@ -1352,7 +1352,7 @@ impl cce_ui::engine::Application for StatusApp {
     }
 
     fn tick(&mut self, _dt: f32, needs_rebuild: &mut bool) {
-        if let Ok(metadata) = std::fs::metadata("/home/lsgalante/.config/cce/config.kdl") {
+        if let Ok(metadata) = std::fs::metadata(cce_ui::config::get_config_path()) {
             if let Ok(modified) = metadata.modified() {
                 if Some(modified) != self.last_config_modified {
                     self.last_config_modified = Some(modified);
@@ -3108,7 +3108,10 @@ fn main() {
                 "window", "tray", "cpu", "memory", "brightness",
                 "volume", "battery", "clock", "light_source"
             ];
-            let current_exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("/home/lsgalante/.local/bin/cce-status-interface"));
+            let current_exe = std::env::current_exe().unwrap_or_else(|_| {
+                std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default())
+                    .join(".local/bin/cce-status-interface")
+            });
 
             let mut active_children: std::collections::HashMap<String, std::process::Child> = std::collections::HashMap::new();
 
@@ -3195,7 +3198,7 @@ fn parse_json(content: &str) -> serde_json::Value {
     cce_ui::config::parse_kdl_to_json(content)
 }
 
-fn json_find_key<'a>(val: &'a serde_json::Value, key: &str) -> Option<&'a serde_json::Value> {
+pub(crate) fn json_find_key<'a>(val: &'a serde_json::Value, key: &str) -> Option<&'a serde_json::Value> {
     fn find_recursive<'a>(val: &'a serde_json::Value, key: &str) -> Option<&'a serde_json::Value> {
         if let Some(obj) = val.as_object() {
             if let Some(v) = obj.get(key) {
@@ -3233,9 +3236,9 @@ static CONFIG_CACHE: std::sync::RwLock<CachedConfig> = std::sync::RwLock::new(Ca
     raw_content: String::new(),
 });
 
-fn get_cached_config() -> serde_json::Value {
-    let path = "/home/lsgalante/.config/cce/config.kdl";
-    let current_modified = std::fs::metadata(path).ok().and_then(|m| m.modified().ok());
+pub(crate) fn get_cached_config() -> serde_json::Value {
+    let path = cce_ui::config::get_config_path();
+    let current_modified = std::fs::metadata(&path).ok().and_then(|m| m.modified().ok());
     
     if let Ok(cache) = CONFIG_CACHE.read() {
         if cache.last_modified.is_some() && cache.last_modified == current_modified {
@@ -3245,7 +3248,7 @@ fn get_cached_config() -> serde_json::Value {
         }
     }
     
-    let content = std::fs::read_to_string(path).unwrap_or_default();
+    let content = std::fs::read_to_string(&path).unwrap_or_default();
     let val = parse_json(&content);
     if let Ok(mut cache) = CONFIG_CACHE.write() {
         cache.last_modified = current_modified;
@@ -3255,7 +3258,7 @@ fn get_cached_config() -> serde_json::Value {
     val
 }
 
-fn get_cached_config_content() -> String {
+pub(crate) fn get_cached_config_content() -> String {
     let _ = get_cached_config();
     if let Ok(cache) = CONFIG_CACHE.read() {
         cache.raw_content.clone()
@@ -3293,8 +3296,8 @@ fn read_status_font_from_config() -> String {
         return font_str.to_string();
     }
 
-    let font_conf_path = "/home/lsgalante/.config/fontconfig/fonts.conf";
-    if let Ok(content) = std::fs::read_to_string(font_conf_path) {
+    let font_conf_path = cce_ui::config::config_home().join("fontconfig").join("fonts.conf");
+    if let Ok(content) = std::fs::read_to_string(&font_conf_path) {
         if let Some(font) = parse_font_for_alias(&content, "status-interface") {
             return font;
         }
