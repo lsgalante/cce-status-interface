@@ -3224,47 +3224,14 @@ pub(crate) fn json_find_key<'a>(val: &'a serde_json::Value, key: &str) -> Option
         None
     }
     find_recursive(val, key)
-}struct CachedConfig {
-    last_modified: Option<std::time::SystemTime>,
-    parsed: Option<serde_json::Value>,
-    raw_content: String,
 }
 
-static CONFIG_CACHE: std::sync::RwLock<CachedConfig> = std::sync::RwLock::new(CachedConfig {
-    last_modified: None,
-    parsed: None,
-    raw_content: String::new(),
-});
-
 pub(crate) fn get_cached_config() -> serde_json::Value {
-    let path = cce_ui::config::get_config_path();
-    let current_modified = std::fs::metadata(&path).ok().and_then(|m| m.modified().ok());
-    
-    if let Ok(cache) = CONFIG_CACHE.read() {
-        if cache.last_modified.is_some() && cache.last_modified == current_modified {
-            if let Some(ref val) = cache.parsed {
-                return val.clone();
-            }
-        }
-    }
-    
-    let content = std::fs::read_to_string(&path).unwrap_or_default();
-    let val = parse_json(&content);
-    if let Ok(mut cache) = CONFIG_CACHE.write() {
-        cache.last_modified = current_modified;
-        cache.parsed = Some(val.clone());
-        cache.raw_content = content;
-    }
-    val
+    cce_ui::config::cached_config()
 }
 
 pub(crate) fn get_cached_config_content() -> String {
-    let _ = get_cached_config();
-    if let Ok(cache) = CONFIG_CACHE.read() {
-        cache.raw_content.clone()
-    } else {
-        String::new()
-    }
+    cce_ui::config::cached_config_content()
 }
 
 fn read_normal_color_from_config() -> Option<[f32; 4]> {
