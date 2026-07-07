@@ -787,28 +787,14 @@ impl StatusModule for TrayModule {
 pub struct LightSourceModule;
 
 fn get_light_source_pos_from_config() -> f32 {
-    let path = "/home/lsgalante/.config/cce/config.kdl";
-    if let Ok(content) = std::fs::read_to_string(path) {
-        if let Ok(doc) = content.parse::<kdl::KdlDocument>() {
-            if let Some(wm_node) = doc.get("window_manager") {
-                if let Some(children) = wm_node.children() {
-                    if let Some(pos_node) = children.get("light_source_position") {
-                        if let Some(entry) = pos_node.entries().first() {
-                            match entry.value() {
-                                kdl::KdlValue::Base10Float(f) => return *f as f32,
-                                kdl::KdlValue::Base10(i) => {
-                                    let val = *i as f32;
-                                    if val > 2.0 * std::f32::consts::PI {
-                                        return val.to_radians();
-                                    } else {
-                                        return val;
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                }
+    let val = crate::get_cached_config();
+    if let Some(pos_val) = crate::json_find_key(&val, "light_source_position") {
+        if let Some(f) = pos_val.as_f64() {
+            let val = f as f32;
+            if val > 2.0 * std::f32::consts::PI {
+                return val.to_radians();
+            } else {
+                return val;
             }
         }
     }
