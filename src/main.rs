@@ -71,15 +71,6 @@ pub struct SystemStats {
     pub brightness: String,
 }
 
-#[derive(Clone)]
-struct StdinWriter(std::sync::mpsc::Sender<String>);
-
-impl std::fmt::Debug for StdinWriter {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "StdinWriter")
-    }
-}
-
 #[derive(Debug, Clone)]
 enum CustomEvent {
     ViewportUpdated(String),
@@ -89,7 +80,7 @@ enum CustomEvent {
     SystemStatsUpdated(SystemStats),
     TrayUpdated(TrayItem),
     TrayRemoved(String),
-    CloudSpawned { pid: u32, source: String, switcher_stdin: Option<StdinWriter> },
+    CloudSpawned { pid: u32, source: String },
     CloudClosed { pid: u32, source: String },
     SwitcherTriggered,
     ToggleHideModules,
@@ -282,7 +273,6 @@ struct StatusApp {
     layout_bounds: Option<LayoutBounds>,
     active_cloud_pid: Option<u32>,
     active_cloud_source: Option<String>,
-    active_switcher_stdin: Option<StdinWriter>,
     previously_focused_window: Option<String>,
 
     font_system: FontSystem,
@@ -794,45 +784,36 @@ impl StatusApp {
     }
 
     fn trigger_switcher(&mut self, is_switcher_mode: bool) {
-        let switcher_source = "window".to_string();
-
-        // 1. Check if any cce-cloud instance is already running
-        let mut running_cloud_pid = None;
-        if let Some(pid) = self.active_cloud_pid {
-            if std::path::Path::new(&format!("/proc/{}", pid)).exists() {
-                if let Ok(comm) = std::fs::read_to_string(format!("/proc/{}/comm", pid)) {
-                    if comm.trim() == "cce-cloud" {
-                        running_cloud_pid = Some(pid);
-                    }
-                }
-            }
+        // Keyboard alt-tab switching is implemented natively by the compositor
+        // (bound to super+tab via the window_manager.window_switcher config key).
+        // Delegate to it so there is a single window-switcher implementation.
+        if is_switcher_mode {
+            std::thread::spawn(|| {
+                let _ = std::process::Command::new(get_ccectl_cmd())
+                    .arg("window-switcher")
+                    .spawn();
+            });
+            return;
         }
 
-        if let Some(pid) = running_cloud_pid {
-            if is_switcher_mode && self.active_cloud_source.as_ref() == Some(&switcher_source) {
-                if let Some(ref writer) = self.active_switcher_stdin {
-                    eprintln!("[switcher] Already open, sending cycle command to cce-cloud stdin");
-                    let _ = writer.0.send("__cce_switcher_next__\n".to_string());
-                    return;
+        // Otherwise this is a click on the status-bar "window" module: show a
+        // click-to-pick list of the current windows.
+        let switcher_source = "window".to_string();
+
+        // If a picker is already open (or pending) for this source, toggle it off.
+        let running = self
+            .active_cloud_pid
+            .map_or(false, |pid| std::path::Path::new(&format!("/proc/{}", pid)).exists());
+        if self.active_cloud_source.as_ref() == Some(&switcher_source) {
+            if running {
+                if let Some(pid) = self.active_cloud_pid {
+                    eprintln!("[window-picker] Toggling off existing cce-cloud PID {}", pid);
+                    let _ = std::process::Command::new("kill").arg(pid.to_string()).status();
                 }
-            } else {
-                // Kill it to switch focus
-                eprintln!("[switcher] Killing existing cce-cloud PID {}", pid);
-                let _ = std::process::Command::new("kill").arg(pid.to_string()).status();
                 self.active_cloud_pid = None;
-                
-                // If it was a normal click on the same thing, toggle it off
-                if !is_switcher_mode && self.active_cloud_source.as_ref() == Some(&switcher_source) {
-                    self.active_cloud_source = None;
-                    return;
-                }
             }
-        } else {
-            // No active dialog is running, check if pending for same source
-            if !is_switcher_mode && self.active_cloud_source.as_ref() == Some(&switcher_source) {
-                self.active_cloud_source = None;
-                return;
-            }
+            self.active_cloud_source = None;
+            return;
         }
 
         // Set active cloud source
@@ -912,9 +893,8 @@ impl StatusApp {
                 return;
             }
 
-            // Format items for dmenu, keeping the stable order returned by clearctl
+            // Format items for dmenu, keeping the stable order returned by ccectl
             let mut input_str = String::new();
-            let mut display_items = Vec::new();
             for (_, app_id, title, _) in &windows {
                 let display = if title.is_empty() {
                     app_id.clone()
@@ -923,10 +903,9 @@ impl StatusApp {
                 };
                 input_str.push_str(&display);
                 input_str.push('\n');
-                display_items.push(display);
             }
 
-            let mut cmd_args = vec![
+            let cmd_args = vec![
                 "--dmenu".to_string(),
                 "-p".to_string(),
                 "Windows:".to_string(),
@@ -935,15 +914,6 @@ impl StatusApp {
                 "-y".to_string(),
                 y_pos.to_string(),
             ];
-            if is_switcher_mode {
-                cmd_args.push("--switcher".to_string());
-                if let Some(focused_idx) = windows.iter().position(|w| w.3) {
-                    let target_idx = (focused_idx + 1) % windows.len();
-                    let target_display = &display_items[target_idx];
-                    cmd_args.push("-s".to_string());
-                    cmd_args.push(target_display.clone());
-                }
-            }
 
             let mut child = match std::process::Command::new(get_cce_cloud_cmd())
                 .args(&cmd_args)
@@ -964,20 +934,11 @@ impl StatusApp {
             let mut stdin = child.stdin.take().unwrap();
             let mut stdout = child.stdout.take().unwrap();
 
-            // Create channels for stdin writing and spawn forwarder
-            let (stdin_tx, stdin_rx) = std::sync::mpsc::channel::<String>();
+            // Write the item list, then drop stdin so cce-cloud sees EOF.
             use std::io::Write;
             let _ = stdin.write_all(input_str.as_bytes());
             let _ = stdin.flush();
-
-            std::thread::spawn(move || {
-                while let Ok(msg) = stdin_rx.recv() {
-                    if stdin.write_all(msg.as_bytes()).is_err() {
-                        break;
-                    }
-                    let _ = stdin.flush();
-                }
-            });
+            drop(stdin);
 
             // Spawn stdout reader
             let (stdout_tx, stdout_rx) = std::sync::mpsc::channel();
@@ -988,7 +949,7 @@ impl StatusApp {
                 let _ = stdout_tx.send(out_str);
             });
 
-            let _ = thread_sender.send(CustomEvent::CloudSpawned { pid, source: switcher_source_clone.clone(), switcher_stdin: Some(StdinWriter(stdin_tx)) });
+            let _ = thread_sender.send(CustomEvent::CloudSpawned { pid, source: switcher_source_clone.clone() });
 
             let _ = child.wait();
             let stdout_str = stdout_rx.recv().unwrap_or_default();
@@ -1197,7 +1158,6 @@ impl cce_ui::engine::Application for StatusApp {
             layout_bounds: None,
             active_cloud_pid: None,
             active_cloud_source: None,
-            active_switcher_stdin: None,
             previously_focused_window: None,
             font_system,
             status_bar: cce_ui::widget::StatusBar::new(),
@@ -1263,15 +1223,7 @@ impl cce_ui::engine::Application for StatusApp {
                 self.title = t;
             }
             CustomEvent::ModifiersUpdated(m) => {
-                let was_super = self.super_pressed;
                 self.super_pressed = m.contains("super");
-
-                if was_super && !self.super_pressed {
-                    if let Some(ref writer) = self.active_switcher_stdin {
-                        eprintln!("[switcher] Super modifier released (via status updates), triggering select and close");
-                        let _ = writer.0.send("__cce_switcher_select_and_close__\n".to_string());
-                    }
-                }
             }
             CustomEvent::SystemStatsUpdated(s) => {
                 eprintln!("[module-{}] stats updated, current width={}", self.selected_module_name.as_deref().unwrap_or("none"), self.width);
@@ -1283,13 +1235,10 @@ impl cce_ui::engine::Application for StatusApp {
             CustomEvent::TrayRemoved(id) => {
                 self.tray_items.remove(&id);
             }
-            CustomEvent::CloudSpawned { pid, source, switcher_stdin } => {
+            CustomEvent::CloudSpawned { pid, source } => {
                 if self.active_cloud_source.as_ref() == Some(&source) {
                     eprintln!("[cloud-event] CloudSpawned: pid {} for source {} matches expected, tracking", pid, source);
                     self.active_cloud_pid = Some(pid);
-                    if source == "window" {
-                        self.active_switcher_stdin = switcher_stdin;
-                    }
                 } else {
                     eprintln!("[cloud-event] CloudSpawned: pid {} for source {} is obsolete/canceled, killing", pid, source);
                     let _ = std::process::Command::new("kill").arg(pid.to_string()).status();
@@ -1301,7 +1250,6 @@ impl cce_ui::engine::Application for StatusApp {
                     self.active_cloud_pid = None;
                     self.active_cloud_source = None;
                     if source == "window" {
-                        self.active_switcher_stdin = None;
                         self.previously_focused_window = None;
                     } else if source == "layout" || source.starts_with("context_menu:") || source.starts_with("tray:") {
                         if let Some(ref focus_query) = self.previously_focused_window {
@@ -2565,7 +2513,7 @@ async fn show_cce_cloud_menu(
 
         let pid = child.id();
         last_spawned_pid = pid;
-        let _ = thread_sender.send(CustomEvent::CloudSpawned { pid, source: source.clone(), switcher_stdin: None });
+        let _ = thread_sender.send(CustomEvent::CloudSpawned { pid, source: source.clone() });
 
         if let Some(mut stdin) = child.stdin.take() {
             use std::io::Write;
