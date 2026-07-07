@@ -783,3 +783,88 @@ impl StatusModule for TrayModule {
         }
     }
 }
+
+pub struct LightSourceModule;
+
+fn get_light_source_pos_from_config() -> f32 {
+    let path = "/home/lsgalante/.config/cce/config.kdl";
+    if let Ok(content) = std::fs::read_to_string(path) {
+        if let Ok(doc) = content.parse::<kdl::KdlDocument>() {
+            if let Some(wm_node) = doc.get("window_manager") {
+                if let Some(children) = wm_node.children() {
+                    if let Some(pos_node) = children.get("light_source_position") {
+                        if let Some(entry) = pos_node.entries().first() {
+                            match entry.value() {
+                                kdl::KdlValue::Base10Float(f) => return *f as f32,
+                                kdl::KdlValue::Base10(i) => {
+                                    let val = *i as f32;
+                                    if val > 2.0 * std::f32::consts::PI {
+                                        return val.to_radians();
+                                    } else {
+                                        return val;
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    2.35619
+}
+
+impl StatusModule for LightSourceModule {
+    fn name(&self) -> &'static str { "light_source" }
+
+    fn width(
+        &self,
+        _stats: &Option<SystemStats>,
+        _viewport: &str,
+        _layout: &str,
+        _title: &str,
+        font_system: &mut FontSystem,
+        font_family: &str,
+        font_size: f32,
+        _tray_items: &HashMap<String, TrayItem>,
+        padding: f32,
+    ) -> f32 {
+        let pos = get_light_source_pos_from_config();
+        let text = format!("Light: {:.2} rad", pos);
+        let label = Label::new_with_family(font_system, &text, font_size, [0.0, 0.0, 0.0, 1.0], font_family);
+        label.w + 2.0 * padding
+    }
+
+    fn render(
+        &self,
+        x: f32,
+        _w: f32,
+        _stats: &Option<SystemStats>,
+        _viewport: &str,
+        _layout: &str,
+        _title: &str,
+        font_system: &mut FontSystem,
+        font_family: &str,
+        font_size: f32,
+        normal_color: [f32; 4],
+        bar_h: f32,
+        _scale_factor: f64,
+        text_items: &mut Vec<TextItem>,
+        _rects: &mut Vec<RectWidget>,
+        _overlay_rects: &mut Vec<RectWidget>,
+        _viewport_bounds: &mut Vec<ViewportBounds>,
+        _layout_bounds: &mut Option<LayoutBounds>,
+        _tray_items: &HashMap<String, TrayItem>,
+        _tray_item_bounds: &mut Vec<TrayIconBounds>,
+        _box_bg_color: Option<[f32; 4]>,
+        _status_box_radius: f32,
+        _rounded_boxes: &mut Vec<RoundedBox>,
+        padding: f32,
+    ) {
+        let pos = get_light_source_pos_from_config();
+        let text = format!("Light: {:.2} rad", pos);
+        let label = Label::new_with_family(font_system, &text, font_size, normal_color, font_family);
+        label.draw(text_items, x + padding, (bar_h - font_size * 1.4) / 2.0);
+    }
+}

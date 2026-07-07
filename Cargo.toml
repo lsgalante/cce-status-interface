@@ -1,5 +1,5 @@
 [package]
-name = "cce-status"
+name = "cce-status-interface"
 version = "0.1.0"
 edition = "2021"
 
@@ -25,6 +25,7 @@ resvg = "0.41.0"
 png = "0.17"
 log = "0.4"
 env_logger = "0.11"
+kdl = "4.6"
 
 
 

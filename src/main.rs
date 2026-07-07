@@ -1,5 +1,5 @@
 mod modules;
-use modules::{StatusModule, WindowModule, ClockModule, BatteryModule, VolumeModule, BrightnessModule, MemoryModule, CpuModule, TrayModule};
+use modules::{StatusModule, WindowModule, ClockModule, BatteryModule, VolumeModule, BrightnessModule, MemoryModule, CpuModule, TrayModule, LightSourceModule};
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -322,6 +322,25 @@ struct StatusApp {
 }
 
 impl StatusApp {
+    fn get_app_id(&self) -> String {
+        let display = std::env::var("WAYLAND_DISPLAY").unwrap_or_else(|_| "wayland-0".to_string());
+        let use_interface_prefix = std::path::Path::new(&format!("/tmp/cce-status-interface-{}.sock", display)).exists();
+
+        if let (Some(ref name), Some(ref side)) = (&self.selected_module_name, &self.selected_module_side) {
+            if use_interface_prefix {
+                format!("cce-status-interface-{:?}-{}", side, name).to_lowercase()
+            } else {
+                format!("cce-status-{:?}-{}", side, name).to_lowercase()
+            }
+        } else {
+            if use_interface_prefix {
+                "cce-status-interface".to_string()
+            } else {
+                "cce-status".to_string()
+            }
+        }
+    }
+
     fn is_vertical(&self) -> bool {
         let bar_thickness = read_status_height_from_config() as u32;
         if self.width == bar_thickness && self.height != bar_thickness {
@@ -339,7 +358,7 @@ impl StatusApp {
 
     #[allow(unused_assignments)]
     fn rebuild_layout(&mut self) {
-        log::info!("[cce-status] rebuild_layout module={:?} size={}x{}", self.selected_module_name, self.width, self.height);
+        log::info!("[cce-status-interface] rebuild_layout module={:?} size={}x{}", self.selected_module_name, self.width, self.height);
         let is_vertical = self.is_vertical();
         cce_ui::IS_VERTICAL.store(is_vertical, std::sync::atomic::Ordering::Relaxed);
         let bar_thickness = read_status_height_from_config() as u32;
@@ -846,8 +865,8 @@ impl StatusApp {
         let switcher_source_clone = switcher_source.clone();
 
         std::thread::spawn(move || {
-            // Run "clearctl windows" to fetch the windows list
-            let output = std::process::Command::new("clearctl")
+            // Run "ccectl windows" to fetch the windows list
+            let output = std::process::Command::new(get_ccectl_cmd())
                 .arg("windows")
                 .output();
 
@@ -863,7 +882,7 @@ impl StatusApp {
                         continue;
                     };
 
-                    if app_id == "cce-status" || app_id == "cce-cloud" {
+                    if app_id == "cce-status" || app_id == "cce-status-interface" || app_id == "cce-cloud" {
                         continue;
                     }
 
@@ -993,7 +1012,7 @@ impl StatusApp {
                     };
                     if display == selected {
                         eprintln!("[switcher] Selecting window title: {}, app_id: {}, id: {}", title, app_id, id);
-                        let _ = std::process::Command::new("clearctl")
+                        let _ = std::process::Command::new(get_ccectl_cmd())
                             .args(["focus-window", &id])
                             .spawn();
                         break;
@@ -1046,6 +1065,39 @@ fn get_active_viewport_from_camera(viewport_json: &str) -> u32 {
 fn get_module_side(name: &str) -> Side {
     let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.kdl").unwrap_or_default();
     let val = parse_json(&content);
+    
+    if name == "light_source" {
+        let mut light_pos = 2.356194490192345_f32; // Default 135 deg in rad
+        if let Some(wm_obj) = json_find_key(&val, "window_manager") {
+            if let Some(pos_val) = json_find_key(&wm_obj, "light_source_position") {
+                if let Some(f) = pos_val.as_f64() {
+                    light_pos = f as f32;
+                } else if let Some(i) = pos_val.as_i64() {
+                    let deg = i as f32;
+                    if deg > 2.0 * std::f32::consts::PI {
+                        light_pos = deg.to_radians();
+                    } else {
+                        light_pos = deg;
+                    }
+                }
+            }
+        }
+        
+        let two_pi = 2.0 * std::f32::consts::PI;
+        let mut angle = light_pos % two_pi;
+        if angle < 0.0 {
+            angle += two_pi;
+        }
+        
+        let pi = std::f32::consts::PI;
+        // Side mapping: Left side is roughly [5pi/8, 11pi/8)
+        if angle >= 5.0 * pi / 8.0 && angle < 11.0 * pi / 8.0 {
+            return Side::Left;
+        } else {
+            return Side::Right;
+        }
+    }
+
     if let Some(side_val) = json_find_key(&val, name) {
         if let Some(side_str) = side_val.as_str() {
             match side_str.to_lowercase().as_str() {
@@ -1097,6 +1149,7 @@ impl cce_ui::engine::Application for StatusApp {
                 "volume" => Box::new(VolumeModule),
                 "battery" => Box::new(BatteryModule),
                 "clock" => Box::new(ClockModule),
+                "light_source" => Box::new(LightSourceModule),
                 _ => panic!("Unknown module: {}", name),
             };
             left_modules.push(module);
@@ -1109,6 +1162,7 @@ impl cce_ui::engine::Application for StatusApp {
             right_modules.push(Box::new(VolumeModule));
             right_modules.push(Box::new(BatteryModule));
             right_modules.push(Box::new(ClockModule));
+            right_modules.push(Box::new(LightSourceModule));
             has_window = true;
         }
 
@@ -1183,12 +1237,10 @@ impl cce_ui::engine::Application for StatusApp {
         app
     }
 
+
+
     fn settings(&self) -> cce_ui::engine::WindowSettings {
-        let app_id = if let (Some(ref name), Some(ref side)) = (&self.selected_module_name, &self.selected_module_side) {
-            format!("cce-status-{:?}-{}", side, name).to_lowercase()
-        } else {
-            "cce-status".to_string()
-        };
+        let app_id = self.get_app_id();
         cce_ui::engine::WindowSettings {
             title: "Status Interface".to_string(),
             app_id,
@@ -1264,7 +1316,7 @@ impl cce_ui::engine::Application for StatusApp {
                             eprintln!("[cloud-event] Restoring focus to: {}", focus_query);
                             let focus_query_clone = focus_query.clone();
                             std::thread::spawn(move || {
-                                let _ = std::process::Command::new("clearctl")
+                                let _ = std::process::Command::new(get_ccectl_cmd())
                                     .args(["focus-window", &focus_query_clone])
                                     .status();
                             });
@@ -1286,7 +1338,7 @@ impl cce_ui::engine::Application for StatusApp {
                 *needs_rebuild = true;
             }
             CustomEvent::ToggleAdjustPositionMode => {
-                self.adjust_position_mode = std::path::Path::new("/tmp/cce-status-adjust-mode").exists();
+                self.adjust_position_mode = std::path::Path::new("/tmp/cce-status-interface-adjust-mode").exists();
                 self.adjust_position_mode = !self.adjust_position_mode;
                 let cmd = if self.adjust_position_mode { "true" } else { "false" };
                 let _ = std::process::Command::new(get_cce_cmd())
@@ -1509,11 +1561,7 @@ impl cce_ui::engine::Application for StatusApp {
                 let bar_height = read_status_height_from_config() as i32;
                 let bound_x = bound.x;
                 let bound_w = bound.w;
-                let parent_app_id = if let (Some(ref name), Some(ref side)) = (&self.selected_module_name, &self.selected_module_side) {
-                    format!("cce-status-{:?}-{}", side, name).to_lowercase()
-                } else {
-                    "cce-status".to_string()
-                };
+                let parent_app_id = self.get_app_id();
                 let thread_sender = self.sender.clone();
                 let tray_source_clone = tray_source.clone();
                 std::thread::spawn(move || {
@@ -1588,7 +1636,7 @@ impl cce_ui::engine::Application for StatusApp {
             }
 
             if button == MouseButton::Right {
-                self.adjust_position_mode = std::path::Path::new("/tmp/cce-status-adjust-mode").exists();
+                self.adjust_position_mode = std::path::Path::new("/tmp/cce-status-interface-adjust-mode").exists();
                 // Find which module was right-clicked
                 let mut clicked_module = None;
                 for mb in &self.module_bounds {
@@ -1665,11 +1713,7 @@ impl cce_ui::engine::Application for StatusApp {
                         }).to_string()
                     };
 
-                    let parent_app_id = if let (Some(ref name), Some(ref side)) = (&self.selected_module_name, &self.selected_module_side) {
-                        format!("cce-status-{:?}-{}", side, name).to_lowercase()
-                    } else {
-                        "cce-status".to_string()
-                    };
+                    let parent_app_id = self.get_app_id();
 
                     if let Ok(mut child) = std::process::Command::new(get_cce_cloud_cmd())
                         .args([
@@ -1838,12 +1882,12 @@ impl cce_ui::engine::Application for StatusApp {
                                         let apply_all = val.checkboxes.get("apply_all").copied().unwrap_or(false);
                                         if apply_all {
                                             eprintln!("[layout-click] Selected mode: {}, applying to all windows sharing mode", selected_mode);
-                                            let _ = std::process::Command::new("clearctl")
+                                            let _ = std::process::Command::new(get_ccectl_cmd())
                                                 .args(["apply-mode-sharing", &selected_mode])
                                                 .spawn();
                                         } else {
                                             eprintln!("[layout-click] Selected mode: {}, setting for tag {}", selected_mode, active_viewport);
-                                            let _ = std::process::Command::new("clearctl")
+                                            let _ = std::process::Command::new(get_ccectl_cmd())
                                                 .args(["viewport-layout", &active_viewport.to_string(), &selected_mode])
                                                 .spawn();
                                         }
@@ -1852,7 +1896,7 @@ impl cce_ui::engine::Application for StatusApp {
                                         let selected = out_str.trim().to_string();
                                         if !selected.is_empty() {
                                             let selected_lower = selected.to_lowercase();
-                                            let _ = std::process::Command::new("clearctl")
+                                            let _ = std::process::Command::new(get_ccectl_cmd())
                                                 .args(["viewport-layout", &active_viewport.to_string(), &selected_lower])
                                                 .spawn();
                                         }
@@ -1883,7 +1927,7 @@ impl cce_ui::engine::Application for StatusApp {
                                     eprintln!("[viewport-click-via-window] Viewport matched: {}", bound.name);
                                     let name = bound.name.clone();
                                     std::thread::spawn(move || {
-                                        let _ = std::process::Command::new("clearctl")
+                                        let _ = std::process::Command::new(get_ccectl_cmd())
                                             .args(["view", &name])
                                             .spawn();
                                     });
@@ -1916,8 +1960,22 @@ async fn spawn_status_listener(sub: &'static str, sender: calloop::channel::Send
     use tokio::net::UnixStream;
     loop {
         let socket_path = match std::env::var("WAYLAND_DISPLAY") {
-            Ok(display) => format!("/tmp/cce-status-{}.sock", display),
-            Err(_) => "/tmp/cce-status.sock".to_string(),
+            Ok(display) => {
+                let primary = format!("/tmp/cce-status-interface-{}.sock", display);
+                if std::path::Path::new(&primary).exists() {
+                    primary
+                } else {
+                    format!("/tmp/cce-status-{}.sock", display)
+                }
+            }
+            Err(_) => {
+                let primary = "/tmp/cce-status-interface.sock".to_string();
+                if std::path::Path::new(&primary).exists() {
+                    primary
+                } else {
+                    "/tmp/cce-status.sock".to_string()
+                }
+            }
         };
         if let Ok(mut stream) = UnixStream::connect(&socket_path).await {
             eprintln!("[status-listener] connected to {} for sub '{}'", socket_path, sub);
@@ -1949,7 +2007,7 @@ async fn spawn_switcher_listener(sender: calloop::channel::Sender<CustomEvent>) 
     use tokio::io::AsyncBufReadExt;
     use tokio::net::UnixListener;
     let display = std::env::var("WAYLAND_DISPLAY").unwrap_or_else(|_| "wayland-0".to_string());
-    let socket_path = format!("/tmp/cce-status-switcher-{}.sock", display);
+    let socket_path = format!("/tmp/cce-status-interface-switcher-{}.sock", display);
     let _ = std::fs::remove_file(&socket_path);
 
     if let Ok(listener) = UnixListener::bind(&socket_path) {
@@ -2266,7 +2324,7 @@ fn get_cce_cloud_cmd() -> String {
 }
 
 fn get_currently_focused_window() -> Option<String> {
-    let output = std::process::Command::new("clearctl")
+    let output = std::process::Command::new(get_ccectl_cmd())
         .arg("windows")
         .output();
     if let Ok(out) = output {
@@ -3018,7 +3076,7 @@ fn main() {
         let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
         rt.block_on(async {
             let display = std::env::var("WAYLAND_DISPLAY").unwrap_or_else(|_| "wayland-0".to_string());
-            let socket_path = format!("/tmp/cce-status-switcher-{}.sock", display);
+            let socket_path = format!("/tmp/cce-status-interface-switcher-{}.sock", display);
             use tokio::io::AsyncWriteExt;
             if let Ok(mut stream) = tokio::net::UnixStream::connect(&socket_path).await {
                 let _ = stream.write_all(b"trigger\n").await;
@@ -3048,7 +3106,7 @@ fn main() {
             
             let modules = vec![
                 "window", "tray", "cpu", "memory", "brightness",
-                "volume", "battery", "clock"
+                "volume", "battery", "clock", "light_source"
             ];
             let current_exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("/home/lsgalante/.local/bin/cce-status-interface"));
 
@@ -3163,15 +3221,56 @@ fn json_find_key<'a>(val: &'a serde_json::Value, key: &str) -> Option<&'a serde_
         None
     }
     find_recursive(val, key)
+}struct CachedConfig {
+    last_modified: Option<std::time::SystemTime>,
+    parsed: Option<serde_json::Value>,
+    raw_content: String,
+}
+
+static CONFIG_CACHE: std::sync::RwLock<CachedConfig> = std::sync::RwLock::new(CachedConfig {
+    last_modified: None,
+    parsed: None,
+    raw_content: String::new(),
+});
+
+fn get_cached_config() -> serde_json::Value {
+    let path = "/home/lsgalante/.config/cce/config.kdl";
+    let current_modified = std::fs::metadata(path).ok().and_then(|m| m.modified().ok());
+    
+    if let Ok(cache) = CONFIG_CACHE.read() {
+        if cache.last_modified.is_some() && cache.last_modified == current_modified {
+            if let Some(ref val) = cache.parsed {
+                return val.clone();
+            }
+        }
+    }
+    
+    let content = std::fs::read_to_string(path).unwrap_or_default();
+    let val = parse_json(&content);
+    if let Ok(mut cache) = CONFIG_CACHE.write() {
+        cache.last_modified = current_modified;
+        cache.parsed = Some(val.clone());
+        cache.raw_content = content;
+    }
+    val
+}
+
+fn get_cached_config_content() -> String {
+    let _ = get_cached_config();
+    if let Ok(cache) = CONFIG_CACHE.read() {
+        cache.raw_content.clone()
+    } else {
+        String::new()
+    }
 }
 
 fn read_normal_color_from_config() -> Option<[f32; 4]> {
-    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.kdl").ok()?;
+    let content = get_cached_config_content();
     parse_srgb_color_from_key(&content, "status_normal_color")
 }
 
 pub(crate) fn read_disabled_color_from_config() -> Option<[f32; 4]> {
-    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.kdl").ok()?;
+    let content = get_cached_config_content();
     parse_srgb_color_from_key(&content, "disabled_color")
 }
 
@@ -3189,8 +3288,7 @@ fn parse_srgb_color_from_key(content: &str, key: &str) -> Option<[f32; 4]> {
 }
 
 fn read_status_font_from_config() -> String {
-    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.kdl").unwrap_or_default();
-    let val = parse_json(&content);
+    let val = get_cached_config();
     if let Some(font_str) = json_find_key(&val, "status_font").and_then(|v| v.as_str()) {
         return font_str.to_string();
     }
@@ -3205,14 +3303,12 @@ fn read_status_font_from_config() -> String {
 }
 
 fn read_status_height_from_config() -> f32 {
-    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.kdl").unwrap_or_default();
-    let val = parse_json(&content);
+    let val = get_cached_config();
     json_find_key(&val, "bar_height").and_then(|v| v.as_f64()).map(|n| n as f32).unwrap_or(28.0)
 }
 
 fn read_status_font_size_from_config() -> f32 {
-    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.kdl").unwrap_or_default();
-    let val = parse_json(&content);
+    let val = get_cached_config();
     
     if let Some(font_str) = json_find_key(&val, "status_font").and_then(|v| v.as_str()) {
         let (_, parsed_size) = cce_ui::layout::parse_font_string(font_str);
@@ -3224,21 +3320,18 @@ fn read_status_font_size_from_config() -> f32 {
     json_find_key(&val, "status_font_size").and_then(|v| v.as_f64()).map(|n| n as f32).unwrap_or(11.0)
 }
 
-
 fn read_status_padding_from_config() -> f32 {
-    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.kdl").unwrap_or_default();
-    let val = parse_json(&content);
+    let val = get_cached_config();
     json_find_key(&val, "status_padding").and_then(|v| v.as_f64()).map(|n| n as f32).unwrap_or(8.0)
 }
 
 fn read_status_module_spacing_from_config() -> f32 {
-    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.kdl").unwrap_or_default();
-    let val = parse_json(&content);
+    let val = get_cached_config();
     json_find_key(&val, "status_module_spacing").and_then(|v| v.as_f64()).map(|n| n as f32).unwrap_or(8.0)
 }
 
 fn read_separator_color_from_config() -> Option<[f32; 4]> {
-    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.kdl").ok()?;
+    let content = get_cached_config_content();
     parse_color_from_key(&content, "status_separator_color")
 }
 
@@ -3270,7 +3363,7 @@ fn parse_font_for_alias(content: &str, alias: &str) -> Option<String> {
 }
 
 fn read_bg_color_from_config() -> Option<[f32; 4]> {
-    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.kdl").ok()?;
+    let content = get_cached_config_content();
     parse_color_from_key(&content, "background_color")
         .or_else(|| parse_color_from_key(&content, "low_color"))
         .or_else(|| parse_color_from_key(&content, "desktop_gap_color"))
@@ -3334,13 +3427,12 @@ fn parse_rgba_color_from_key(content: &str, key: &str) -> Option<[f32; 4]> {
 }
 
 fn read_status_background_blur_from_config() -> f32 {
-    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.kdl").unwrap_or_default();
-    let val = parse_json(&content);
+    let val = get_cached_config();
     json_find_key(&val, "status_background_blur").and_then(|v| v.as_f64()).map(|n| n as f32).unwrap_or(0.0)
 }
 
 fn read_status_box_background_color_from_config() -> Option<[f32; 4]> {
-    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.kdl").unwrap_or_default();
+    let content = get_cached_config_content();
     let mut color = parse_rgba_color_from_key(&content, "status_background_color")
         .unwrap_or_else(|| {
             let r = (0x15 as f32 / 255.0).powf(2.2);
@@ -3360,8 +3452,7 @@ fn read_status_box_background_color_from_config() -> Option<[f32; 4]> {
 }
 
 fn read_status_box_corner_radius_from_config() -> f32 {
-    let content = std::fs::read_to_string("/home/lsgalante/.config/cce/config.kdl").unwrap_or_default();
-    let val = parse_json(&content);
+    let val = get_cached_config();
     json_find_key(&val, "status_box_corner_radius").and_then(|v| v.as_f64()).map(|n| n as f32).unwrap_or(4.0)
 }
 
@@ -3405,4 +3496,14 @@ fn get_cce_cmd() -> String {
         }
     }
     "cce".to_string()
+}
+
+fn get_ccectl_cmd() -> String {
+    if let Ok(home) = std::env::var("HOME") {
+        let path = format!("{}/.local/bin/ccectl", home);
+        if std::path::Path::new(&path).exists() {
+            return path;
+        }
+    }
+    "ccectl".to_string()
 }
