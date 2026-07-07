@@ -125,15 +125,7 @@ pub(crate) fn make_text_buffer(fs: &mut FontSystem, text: &str, size: f32, font_
 }
 
 pub(crate) fn parse_hex_to_rgba(hex: &str) -> Option<[f32; 4]> {
-    let s = hex.trim_start_matches('#');
-    if s.len() == 6 {
-        let r = u8::from_str_radix(&s[0..2], 16).ok()? as f32 / 255.0;
-        let g = u8::from_str_radix(&s[2..4], 16).ok()? as f32 / 255.0;
-        let b = u8::from_str_radix(&s[4..6], 16).ok()? as f32 / 255.0;
-        Some([r, g, b, 1.0])
-    } else {
-        None
-    }
+    cce_ui::color::parse_hex_rgba(hex)
 }
 
 pub(crate) fn parse_viewport_text(input: &str) -> Vec<([f32; 4], String)> {
@@ -3354,32 +3346,10 @@ fn parse_color_from_key(content: &str, key: &str) -> Option<[f32; 4]> {
 }
 
 fn parse_hex(s: &str) -> Option<[u8; 3]> {
-    let s = s.trim_start_matches('#');
-    if s.len() >= 6 {
-        let r = u8::from_str_radix(&s[0..2], 16).ok()?;
-        let g = u8::from_str_radix(&s[2..4], 16).ok()?;
-        let b = u8::from_str_radix(&s[4..6], 16).ok()?;
-        Some([r, g, b])
-    } else {
-        None
-    }
+    cce_ui::color::parse_hex_bytes(s).map(|[r, g, b, _]| [r, g, b])
 }
 fn parse_hex_rgba(s: &str) -> Option<[u8; 4]> {
-    let s = s.trim_start_matches('#');
-    if s.len() == 8 {
-        let r = u8::from_str_radix(&s[0..2], 16).ok()?;
-        let g = u8::from_str_radix(&s[2..4], 16).ok()?;
-        let b = u8::from_str_radix(&s[4..6], 16).ok()?;
-        let a = u8::from_str_radix(&s[6..8], 16).ok()?;
-        Some([r, g, b, a])
-    } else if s.len() == 6 {
-        let r = u8::from_str_radix(&s[0..2], 16).ok()?;
-        let g = u8::from_str_radix(&s[2..4], 16).ok()?;
-        let b = u8::from_str_radix(&s[4..6], 16).ok()?;
-        Some([r, g, b, 255])
-    } else {
-        None
-    }
+    cce_ui::color::parse_hex_bytes(s)
 }
 
 fn parse_rgba_color_from_key(content: &str, key: &str) -> Option<[f32; 4]> {
