@@ -8,7 +8,7 @@ use glyphon::{
 };
 use cce_ui::color;
 use cce_ui::widget::{
-    TextItem, Separator, Element,
+    Adapted, TextItem, Separator, Element,
     MouseButton, ElementState, MouseScrollDelta, KeyEvent,
 };
 
@@ -281,7 +281,7 @@ struct StatusApp {
     rects: Vec<RectWidget>,
     overlay_rects: Vec<RectWidget>,
     rounded_boxes: Vec<RoundedBox>,
-    separators: Vec<Separator>,
+    separators: Vec<Adapted<Separator>>,
     text_items: Vec<TextItem>,
 
     scale_factor: f64,
@@ -670,16 +670,10 @@ impl StatusApp {
                 rb.w = old_h;
                 rb.h = old_w;
             }
-            // Rotate separators
+            // Rotate separators (rect lives on the Adapted base since the Phase 5 migration)
             for sep in &mut self.separators {
-                let old_x = sep.x;
-                let old_y = sep.y;
-                let old_w = sep.w;
-                let old_h = sep.h;
-                sep.x = old_y;
-                sep.y = old_x;
-                sep.w = old_h;
-                sep.h = old_w;
+                let (old_x, old_y, old_w, old_h) = sep.rect();
+                sep.set_rect(old_y, old_x, old_h, old_w);
             }
             // Rotate rects
             for r in &mut self.rects {
