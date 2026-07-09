@@ -276,7 +276,7 @@ struct StatusApp {
     previously_focused_window: Option<String>,
 
     font_system: FontSystem,
-    status_bar: cce_ui::widget::StatusBar,
+    status_bar: cce_ui::widget::Adapted<cce_ui::widget::StatusBar>,
 
     rects: Vec<RectWidget>,
     overlay_rects: Vec<RectWidget>,
