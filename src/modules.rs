@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use glyphon::FontSystem;
 use cce_ui::color;
-use cce_ui::widget::{StyledLabel as Label, TextItem};
+use cce_ui::widget::StyledLabel as Label;
 
 use crate::{
     RectWidget, RoundedBox, ViewportBounds, LayoutBounds, SystemStats, TrayItem,
@@ -40,7 +40,7 @@ pub trait StatusModule {
         normal_color: [f32; 4],
         bar_h: f32,
         scale_factor: f64,
-        text_items: &mut Vec<TextItem>,
+        text_prims: &mut Vec<crate::TextPrim>,
         rects: &mut Vec<RectWidget>,
         overlay_rects: &mut Vec<RectWidget>,
         viewport_bounds: &mut Vec<ViewportBounds>,
@@ -128,7 +128,7 @@ impl StatusModule for WindowModule {
         normal_color: [f32; 4],
         bar_h: f32,
         _scale_factor: f64,
-        text_items: &mut Vec<TextItem>,
+        text_prims: &mut Vec<crate::TextPrim>,
         _rects: &mut Vec<RectWidget>,
         _overlay_rects: &mut Vec<RectWidget>,
         viewport_bounds: &mut Vec<ViewportBounds>,
@@ -153,21 +153,21 @@ impl StatusModule for WindowModule {
                 }
                 let label = Label::new_with_family(font_system, &display_title, font_size, normal_color, font_family);
                 let w = label.w;
-                label.draw(text_items, cur_x, y_pos);
+                crate::draw_label(text_prims, label, cur_x, y_pos);
                 cur_x += w;
             }
 
             if has_title && has_layout {
                 let sep_label = Label::new_with_family(font_system, " - ", font_size, normal_color, font_family);
                 let w = sep_label.w;
-                sep_label.draw(text_items, cur_x, y_pos);
+                crate::draw_label(text_prims, sep_label, cur_x, y_pos);
                 cur_x += w;
             }
 
             if has_layout {
                 let layout_label = Label::new_with_family(font_system, layout, font_size, normal_color, font_family);
                 let w = layout_label.w;
-                layout_label.draw(text_items, cur_x, y_pos);
+                crate::draw_label(text_prims, layout_label, cur_x, y_pos);
                 *layout_bounds = Some(LayoutBounds {
                     x: cur_x - 2.0,
                     y: 0.0,
@@ -192,7 +192,7 @@ impl StatusModule for WindowModule {
                         corners: (false, false, true, true),
                     });
                 }
-                label.draw(text_items, cur_x + padding, (bar_h - font_size * 1.4) / 2.0);
+                crate::draw_label(text_prims, label, cur_x + padding, (bar_h - font_size * 1.4) / 2.0);
                 viewport_bounds.push(ViewportBounds {
                     name: text.clone(),
                     x: cur_x,
@@ -246,7 +246,7 @@ impl StatusModule for ClockModule {
         normal_color: [f32; 4],
         bar_h: f32,
         _scale_factor: f64,
-        text_items: &mut Vec<TextItem>,
+        text_prims: &mut Vec<crate::TextPrim>,
         _rects: &mut Vec<RectWidget>,
         _overlay_rects: &mut Vec<RectWidget>,
         _viewport_bounds: &mut Vec<ViewportBounds>,
@@ -260,7 +260,7 @@ impl StatusModule for ClockModule {
     ) {
         if let Some(ref s) = stats {
             let label = Label::new_with_family(font_system, &s.clock, font_size, normal_color, font_family);
-            label.draw(text_items, x + padding, (bar_h - font_size * 1.4) / 2.0);
+            crate::draw_label(text_prims, label, x + padding, (bar_h - font_size * 1.4) / 2.0);
         }
     }
 }
@@ -305,7 +305,7 @@ impl StatusModule for BatteryModule {
         normal_color: [f32; 4],
         bar_h: f32,
         _scale_factor: f64,
-        text_items: &mut Vec<TextItem>,
+        text_prims: &mut Vec<crate::TextPrim>,
         _rects: &mut Vec<RectWidget>,
         _overlay_rects: &mut Vec<RectWidget>,
         _viewport_bounds: &mut Vec<ViewportBounds>,
@@ -325,7 +325,7 @@ impl StatusModule for BatteryModule {
                     color::TEXT_ACCENT
                 };
                 let label = Label::new_with_family(font_system, &s.battery, font_size, bat_color, font_family);
-                label.draw(text_items, x + padding, (bar_h - font_size * 1.4) / 2.0);
+                crate::draw_label(text_prims, label, x + padding, (bar_h - font_size * 1.4) / 2.0);
             }
         }
     }
@@ -371,7 +371,7 @@ impl StatusModule for VolumeModule {
         normal_color: [f32; 4],
         bar_h: f32,
         scale_factor: f64,
-        text_items: &mut Vec<TextItem>,
+        text_prims: &mut Vec<crate::TextPrim>,
         _rects: &mut Vec<RectWidget>,
         overlay_rects: &mut Vec<RectWidget>,
         _viewport_bounds: &mut Vec<ViewportBounds>,
@@ -404,7 +404,7 @@ impl StatusModule for VolumeModule {
                         color: color::to_linear(scol),
                     });
                 }
-                label.draw(text_items, draw_x, start_y);
+                crate::draw_label(text_prims, label, draw_x, start_y);
             }
         }
     }
@@ -450,7 +450,7 @@ impl StatusModule for BrightnessModule {
         normal_color: [f32; 4],
         bar_h: f32,
         _scale_factor: f64,
-        text_items: &mut Vec<TextItem>,
+        text_prims: &mut Vec<crate::TextPrim>,
         _rects: &mut Vec<RectWidget>,
         _overlay_rects: &mut Vec<RectWidget>,
         _viewport_bounds: &mut Vec<ViewportBounds>,
@@ -465,7 +465,7 @@ impl StatusModule for BrightnessModule {
         if let Some(ref s) = stats {
             if !s.brightness.is_empty() {
                 let label = Label::new_with_family(font_system, &s.brightness, font_size, normal_color, font_family);
-                label.draw(text_items, x + padding, (bar_h - font_size * 1.4) / 2.0);
+                crate::draw_label(text_prims, label, x + padding, (bar_h - font_size * 1.4) / 2.0);
             }
         }
     }
@@ -511,7 +511,7 @@ impl StatusModule for MemoryModule {
         normal_color: [f32; 4],
         bar_h: f32,
         _scale_factor: f64,
-        text_items: &mut Vec<TextItem>,
+        text_prims: &mut Vec<crate::TextPrim>,
         _rects: &mut Vec<RectWidget>,
         _overlay_rects: &mut Vec<RectWidget>,
         _viewport_bounds: &mut Vec<ViewportBounds>,
@@ -525,7 +525,7 @@ impl StatusModule for MemoryModule {
     ) {
         if let Some(ref s) = stats {
             let label = Label::new_with_family(font_system, &s.memory, font_size, normal_color, font_family);
-            label.draw(text_items, x + padding, (bar_h - font_size * 1.4) / 2.0);
+            crate::draw_label(text_prims, label, x + padding, (bar_h - font_size * 1.4) / 2.0);
         }
     }
 }
@@ -570,7 +570,7 @@ impl StatusModule for CpuModule {
         normal_color: [f32; 4],
         bar_h: f32,
         _scale_factor: f64,
-        text_items: &mut Vec<TextItem>,
+        text_prims: &mut Vec<crate::TextPrim>,
         _rects: &mut Vec<RectWidget>,
         _overlay_rects: &mut Vec<RectWidget>,
         _viewport_bounds: &mut Vec<ViewportBounds>,
@@ -584,7 +584,7 @@ impl StatusModule for CpuModule {
     ) {
         if let Some(ref s) = stats {
             let label = Label::new_with_family(font_system, &s.cpu, font_size, normal_color, font_family);
-            label.draw(text_items, x + padding, (bar_h - font_size * 1.4) / 2.0);
+            crate::draw_label(text_prims, label, x + padding, (bar_h - font_size * 1.4) / 2.0);
         }
     }
 }
@@ -628,7 +628,7 @@ impl StatusModule for TrayModule {
         _normal_color: [f32; 4],
         bar_h: f32,
         scale_factor: f64,
-        text_items: &mut Vec<TextItem>,
+        text_prims: &mut Vec<crate::TextPrim>,
         _rects: &mut Vec<RectWidget>,
         overlay_rects: &mut Vec<RectWidget>,
         _viewport_bounds: &mut Vec<ViewportBounds>,
@@ -763,22 +763,26 @@ impl StatusModule for TrayModule {
                     "⚙"
                 };
 
+                // Measure the throwaway buffer for centering, then emit a text prim.
                 let buf = make_text_buffer(font_system, symbol, font_size, font_family);
                 let scale = cce_ui::scale::scale_factor();
                 let tw = buf.layout_runs().next().map(|r| r.line_w).unwrap_or(0.0) / scale;
                 let tx = icon_x + (icon_size - tw) / 2.0;
                 let ty = icon_y + (icon_size - font_size * 1.4) / 2.0;
-                text_items.push(TextItem {
-                    buffer: buf,
-                    x: tx,
-                    y: ty,
-                    color: glyphon::Color::rgb(
+                text_prims.push((
+                    symbol.to_string(),
+                    font_size,
+                    tx,
+                    ty,
+                    [
                         (color::TEXT_ACCENT[0] * 255.0) as u8,
                         (color::TEXT_ACCENT[1] * 255.0) as u8,
                         (color::TEXT_ACCENT[2] * 255.0) as u8,
-                    ),
-                    bounds: None,
-                });
+                    ],
+                    Some(font_family.to_string()),
+                    None,
+                    None,
+                ));
             }
         }
     }
@@ -836,7 +840,7 @@ impl StatusModule for LightSourceModule {
         normal_color: [f32; 4],
         bar_h: f32,
         _scale_factor: f64,
-        text_items: &mut Vec<TextItem>,
+        text_prims: &mut Vec<crate::TextPrim>,
         _rects: &mut Vec<RectWidget>,
         _overlay_rects: &mut Vec<RectWidget>,
         _viewport_bounds: &mut Vec<ViewportBounds>,
@@ -851,6 +855,6 @@ impl StatusModule for LightSourceModule {
         let pos = get_light_source_pos_from_config();
         let text = format!("Light: {:.2} rad", pos);
         let label = Label::new_with_family(font_system, &text, font_size, normal_color, font_family);
-        label.draw(text_items, x + padding, (bar_h - font_size * 1.4) / 2.0);
+        crate::draw_label(text_prims, label, x + padding, (bar_h - font_size * 1.4) / 2.0);
     }
 }

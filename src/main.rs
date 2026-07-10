@@ -4,11 +4,11 @@ use modules::{StatusModule, WindowModule, ClockModule, BatteryModule, VolumeModu
 use std::collections::HashMap;
 use std::sync::Arc;
 use glyphon::{
-    Attrs, Buffer, FontSystem, Metrics, TextArea, TextBounds,
+    Attrs, Buffer, FontSystem, Metrics,
 };
 use cce_ui::color;
 use cce_ui::widget::{
-    Adapted, TextItem, Separator, Element,
+    Adapted, Separator, Element,
     MouseButton, ElementState, MouseScrollDelta, KeyEvent,
 };
 
@@ -282,7 +282,7 @@ struct StatusApp {
     overlay_rects: Vec<RectWidget>,
     rounded_boxes: Vec<RoundedBox>,
     separators: Vec<Adapted<Separator>>,
-    text_items: Vec<TextItem>,
+    text_prims: Vec<TextPrim>,
 
     scale_factor: f64,
     width: u32,
@@ -365,7 +365,7 @@ impl StatusApp {
         self.overlay_rects.clear();
         self.rounded_boxes.clear();
         self.separators.clear();
-        self.text_items.clear();
+        self.text_prims.clear();
         self.input_regions.clear();
         self.module_bounds.clear();
         self.tray_item_bounds.clear();
@@ -445,7 +445,7 @@ impl StatusApp {
                     normal_color,
                     bar_h,
                     self.scale_factor,
-                    &mut self.text_items,
+                    &mut self.text_prims,
                     &mut self.rects,
                     &mut self.overlay_rects,
                     &mut self.viewport_bounds,
@@ -535,7 +535,7 @@ impl StatusApp {
                     normal_color,
                     bar_h,
                     self.scale_factor,
-                    &mut self.text_items,
+                    &mut self.text_prims,
                     &mut self.rects,
                     &mut self.overlay_rects,
                     &mut self.viewport_bounds,
@@ -628,17 +628,21 @@ impl StatusApp {
                 });
 
                 // Tooltip text
-                self.text_items.push(TextItem {
-                    buffer: buf,
-                    x: tx + padding,
-                    y: ty + padding,
-                    color: glyphon::Color::rgb(
+                let _ = buf; // shaped only to measure `text_w` above
+                self.text_prims.push((
+                    tooltip_text.clone(),
+                    tooltip_font_size,
+                    tx + padding,
+                    ty + padding,
+                    [
                         (color::TEXT_FG[0] * 255.0) as u8,
                         (color::TEXT_FG[1] * 255.0) as u8,
                         (color::TEXT_FG[2] * 255.0) as u8,
-                    ),
-                    bounds: None,
-                });
+                    ],
+                    Some(font_family.clone()),
+                    None,
+                    None,
+                ));
             }
         }
 
@@ -686,12 +690,12 @@ impl StatusApp {
                 r.w = old_h;
                 r.h = old_w;
             }
-            // Rotate text_items
-            for ti in &mut self.text_items {
-                let old_x = ti.x;
-                let old_y = ti.y;
-                ti.x = old_y;
-                ti.y = old_x;
+            // Rotate text prims (swap x/y — tuple fields .2 and .3)
+            for tp in &mut self.text_prims {
+                let old_x = tp.2;
+                let old_y = tp.3;
+                tp.2 = old_y;
+                tp.3 = old_x;
             }
             // Rotate tray_item_bounds
             for tib in &mut self.tray_item_bounds {
@@ -1072,6 +1076,19 @@ fn parse_selected_module_from_args() -> Option<(String, Side)> {
     None
 }
 
+/// The frame's text as prim data: (text, size, x, y, color_u8, font, bounds, box-layout).
+pub(crate) type TextPrim = (String, f32, f32, f32, [u8; 3], Option<String>, Option<[f32; 4]>, Option<cce_ui::scene::paint::TextLayout>);
+
+/// Emit a measured `StyledLabel` as a text-prim tuple, returning its width (like the legacy
+/// `StyledLabel::draw`). The label was built for its width; `into_prim` carries the source
+/// text/size/family/box-layout so the engine reshapes it through the shared cache.
+pub(crate) fn draw_label(prims: &mut Vec<TextPrim>, label: cce_ui::widget::StyledLabel, x: f32, y: f32) -> f32 {
+    let w = label.w;
+    let p = label.into_prim(x, y);
+    prims.push((p.text, p.size, p.x, p.y, p.color, p.font, None, p.layout));
+    w
+}
+
 impl cce_ui::engine::Application for StatusApp {
     type Message = CustomEvent;
 
@@ -1159,7 +1176,7 @@ impl cce_ui::engine::Application for StatusApp {
             overlay_rects: Vec::new(),
             rounded_boxes: Vec::new(),
             separators: Vec::new(),
-            text_items: Vec::new(),
+            text_prims: Vec::new(),
             scale_factor: 1.0,
             width: if selected_module.is_some() { 120 } else { 1920 },
             height: read_status_height_from_config() as u32,
@@ -1295,10 +1312,15 @@ impl cce_ui::engine::Application for StatusApp {
                 }
             }
         }
-        self.status_bar.prepare_text(&mut self.font_system);
     }
 
-    fn view(&mut self, quads: &mut Vec<(f32, f32, f32, f32, [f32; 4])>, size: cce_ui::engine::LogicalSize, scale: f64) {
+    fn display_list(&mut self, size: cce_ui::engine::LogicalSize, scale: f64) -> Option<cce_ui::scene::paint::DisplayList> {
+        // Phase 6ak single paint path: the rounded boxes, the status-bar bg / module rects /
+        // separators (the legacy view_rounded_quads then view() bodies, in the wrapper's
+        // order), and the module text (prims, reshaped by the engine cache). overlay_quads
+        // stays a separate on-top pass. The status bar's own text is never set in this app,
+        // so it contributes only its background quad.
+        use cce_ui::scene::layout::Rect;
         if self.needs_rebuild || self.width != size.width as u32 || self.height != size.height as u32 || self.scale_factor != scale {
             self.width = size.width as u32;
             self.height = size.height as u32;
@@ -1306,57 +1328,45 @@ impl cce_ui::engine::Application for StatusApp {
             cce_ui::scale::set_scale_factor(scale as f32);
             self.rebuild_layout();
         }
+        let mut pc = cce_ui::scene::paint::PaintCtx::new();
+
+        for rb in &self.rounded_boxes {
+            let rect = Rect { x: rb.x, y: rb.y, width: rb.w, height: rb.h };
+            if rb.radius > 0.1 {
+                pc.rounded_rect(rect, rb.radius, rb.corners, rb.color);
+            } else {
+                pc.quad(rect, rb.color);
+            }
+        }
+
         let (sb_x, sb_y, sb_w, sb_h) = self.status_bar.rect();
-        quads.push((sb_x, sb_y, sb_w, sb_h, self.status_bar.color()));
+        pc.quad(Rect { x: sb_x, y: sb_y, width: sb_w, height: sb_h }, self.status_bar.color());
         for r in &self.rects {
-            quads.push((r.x, r.y, r.w, r.h, r.color));
+            pc.quad(Rect { x: r.x, y: r.y, width: r.w, height: r.h }, r.color);
         }
         for sep in &self.separators {
             let (x, y, w, h) = sep.rect();
-            quads.push((x, y, w, h, sep.color()));
+            pc.quad(Rect { x, y, width: w, height: h }, sep.color());
         }
+
+        for (text, tsize, x, y, color, font, bounds, layout) in &self.text_prims {
+            match layout {
+                Some(l) => pc.text_boxed(text.clone(), *x, *y, *tsize, *color, font.clone(), *bounds, cce_ui::scene::paint::TextAttrs::default(), *l),
+                None => pc.text_with(text.clone(), *x, *y, *tsize, *color, font.clone(), *bounds),
+            }
+        }
+
+        Some(pc.finish())
     }
 
-    fn view_rounded_quads(&mut self, quads: &mut Vec<(f32, f32, f32, f32, f32, [f32; 4], (bool, bool, bool, bool))>, _size: cce_ui::engine::LogicalSize, _scale: f64) {
-        for rb in &self.rounded_boxes {
-            quads.push((rb.x, rb.y, rb.w, rb.h, rb.radius, rb.color, rb.corners));
-        }
+    fn display_list_text(&self) -> bool {
+        true
     }
 
     fn overlay_quads(&mut self, quads: &mut Vec<(f32, f32, f32, f32, [f32; 4])>, _size: cce_ui::engine::LogicalSize, _scale: f64) {
         for r in &self.overlay_rects {
             quads.push((r.x, r.y, r.w, r.h, r.color));
         }
-    }
-
-    fn text_items(&self) -> &[TextItem] {
-        &self.text_items
-    }
-
-    fn text_areas(&self, scale_f32: f32, bounds: TextBounds) -> Vec<TextArea<'_>> {
-        let mut areas = self.text_items().iter().map(|ti| TextArea {
-            buffer: &ti.buffer,
-            left: (ti.x * scale_f32).round(),
-            top: (ti.y * scale_f32).round(),
-            scale: 1.0,
-            bounds,
-            default_color: ti.color,
-            custom_glyphs: &[],
-        }).collect::<Vec<_>>();
-
-        for (buf, x, y, col) in self.status_bar.get_text_items() {
-            areas.push(TextArea {
-                buffer: buf,
-                left: (x * scale_f32).round(),
-                top: (y * scale_f32).round(),
-                scale: 1.0,
-                bounds,
-                default_color: col,
-                custom_glyphs: &[],
-            });
-        }
-
-        areas
     }
 
     fn clear_color(&self) -> [f32; 4] {
