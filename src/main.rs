@@ -8,7 +8,7 @@ use glyphon::{
 };
 use cce_ui::color;
 use cce_ui::widget::{
-    Adapted, Separator, Element,
+    Adapted, Separator, WidgetHost,
     MouseButton, ElementState, MouseScrollDelta, KeyEvent,
 };
 
