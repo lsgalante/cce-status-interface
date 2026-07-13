@@ -841,49 +841,11 @@ impl StatusApp {
                 .arg("windows")
                 .output();
 
-            let mut windows = Vec::new();
-            if let Ok(out) = output {
-                let stdout_str = String::from_utf8_lossy(&out.stdout);
-                for line in stdout_str.lines() {
-                    let app_id = if let Some(idx) = line.find("app_id=") {
-                        let rest = &line[idx + 7..];
-                        let end = rest.find(' ').unwrap_or(rest.len());
-                        rest[..end].to_string()
-                    } else {
-                        continue;
-                    };
-
-                    if app_id == "cce-status" || app_id == "cce-status-interface" || app_id == "cce-cloud" {
-                        continue;
-                    }
-
-                    let title = if let Some(idx) = line.find("title=\"") {
-                        let rest = &line[idx + 7..];
-                        let end = rest.find('"').unwrap_or(rest.len());
-                        rest[..end].to_string()
-                    } else {
-                        "".to_string()
-                    };
-
-                    let focused = if let Some(idx) = line.find("focused=") {
-                        let rest = &line[idx + 8..];
-                        let end = rest.find(' ').unwrap_or(rest.len());
-                        rest[..end].trim() == "true"
-                    } else {
-                        false
-                    };
-
-                    let id = if let Some(idx) = line.find("window id=") {
-                        let rest = &line[idx + 10..];
-                        let end = rest.find(' ').unwrap_or(rest.len());
-                        rest[..end].to_string()
-                    } else {
-                        continue;
-                    };
-
-                    windows.push((id, app_id, title, focused));
-                }
-            }
+            let windows = if let Ok(out) = output {
+                parse_ccectl_windows(&String::from_utf8_lossy(&out.stdout))
+            } else {
+                Vec::new()
+            };
 
             if windows.is_empty() {
                 // If there are no windows, don't open a switcher and clear state
@@ -1016,10 +978,13 @@ fn get_active_viewport_from_camera(viewport_json: &str) -> u32 {
 fn get_module_side(name: &str) -> Side {
     let content = std::fs::read_to_string(cce_ui::config::get_config_path()).unwrap_or_default();
     let val = parse_json(&content);
-    
+    module_side_from_json(&val, name)
+}
+
+fn module_side_from_json(val: &serde_json::Value, name: &str) -> Side {
     if name == "light_source" {
         let mut light_pos = 2.356194490192345_f32; // Default 135 deg in rad
-        if let Some(wm_obj) = json_find_key(&val, "window_manager") {
+        if let Some(wm_obj) = json_find_key(val, "window_manager") {
             if let Some(pos_val) = json_find_key(&wm_obj, "light_source_position") {
                 if let Some(f) = pos_val.as_f64() {
                     light_pos = f as f32;
@@ -1049,7 +1014,7 @@ fn get_module_side(name: &str) -> Side {
         }
     }
 
-    if let Some(side_val) = json_find_key(&val, name) {
+    if let Some(side_val) = json_find_key(val, name) {
         if let Some(side_str) = side_val.as_str() {
             match side_str.to_lowercase().as_str() {
                 "left" | "top-left" | "bottom-left" | "top-center" | "bottom-center" => return Side::Left,
@@ -1074,6 +1039,58 @@ fn parse_selected_module_from_args() -> Option<(String, Side)> {
         }
     }
     None
+}
+
+/// One window from `ccectl windows` output: (id, app_id, title, focused).
+pub(crate) type CcectlWindow = (String, String, String, bool);
+
+/// Parse one line of `ccectl windows` output. `window id=` and `app_id=` are
+/// required; `title="…"` (truncated at the first inner quote — the wire format
+/// does not escape) and `focused=` are optional.
+pub(crate) fn parse_ccectl_window_line(line: &str) -> Option<CcectlWindow> {
+    let app_id = {
+        let idx = line.find("app_id=")?;
+        let rest = &line[idx + 7..];
+        let end = rest.find(' ').unwrap_or(rest.len());
+        rest[..end].to_string()
+    };
+
+    let title = if let Some(idx) = line.find("title=\"") {
+        let rest = &line[idx + 7..];
+        let end = rest.find('"').unwrap_or(rest.len());
+        rest[..end].to_string()
+    } else {
+        "".to_string()
+    };
+
+    let focused = if let Some(idx) = line.find("focused=") {
+        let rest = &line[idx + 8..];
+        let end = rest.find(' ').unwrap_or(rest.len());
+        rest[..end].trim() == "true"
+    } else {
+        false
+    };
+
+    let id = {
+        let idx = line.find("window id=")?;
+        let rest = &line[idx + 10..];
+        let end = rest.find(' ').unwrap_or(rest.len());
+        rest[..end].to_string()
+    };
+
+    Some((id, app_id, title, focused))
+}
+
+/// Parse `ccectl windows` output, dropping this app's own surfaces and cce-cloud
+/// popups (they should never appear in the window picker).
+pub(crate) fn parse_ccectl_windows(output: &str) -> Vec<CcectlWindow> {
+    output
+        .lines()
+        .filter_map(parse_ccectl_window_line)
+        .filter(|(_, app_id, _, _)| {
+            app_id != "cce-status" && app_id != "cce-status-interface" && app_id != "cce-cloud"
+        })
+        .collect()
 }
 
 /// The frame's text as prim data: (text, size, x, y, color_u8, font, bounds, box-layout).
@@ -3377,6 +3394,260 @@ style {
         println!("font_val = {:?}", font_val);
         assert!(font_val.is_some());
         assert_eq!(font_val.unwrap().as_str().unwrap(), "Berkeley Mono 14");
+    }
+
+    // ------------------------------------------------------------------
+    // Characterization tests (phase 0): these pin down current behavior
+    // before the refactors in PROPOSAL.md. Where the behavior is odd, the
+    // test documents it rather than fixing it.
+    // ------------------------------------------------------------------
+
+    fn assert_rgba_close(actual: [f32; 4], expected: [f32; 4]) {
+        for i in 0..4 {
+            assert!(
+                (actual[i] - expected[i]).abs() < 1e-3,
+                "channel {} differs: actual {:?} vs expected {:?}",
+                i,
+                actual,
+                expected
+            );
+        }
+    }
+
+    // --- parse_viewport_text ---
+
+    #[test]
+    fn viewport_text_single_span() {
+        let out = parse_viewport_text("<span color='#ff0000'>1</span>");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].1, "1");
+        assert_rgba_close(out[0].0, [1.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn viewport_text_multiple_spans() {
+        let out = parse_viewport_text(
+            "<span color='#ff0000'>1</span><span color='#00ff00'>2</span>",
+        );
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].1, "1");
+        assert_eq!(out[1].1, "2");
+        assert_rgba_close(out[1].0, [0.0, 1.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn viewport_text_json_wrapped() {
+        let out = parse_viewport_text(r##"{"text": "<span color='#0000ff'>3</span>"}"##);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].1, "3");
+        assert_rgba_close(out[0].0, [0.0, 0.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn viewport_text_plain_text_falls_back_to_default_color() {
+        let out = parse_viewport_text("hello");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].1, "hello");
+        assert_rgba_close(out[0].0, [0.8, 0.8, 0.8, 1.0]);
+    }
+
+    #[test]
+    fn viewport_text_unterminated_span_falls_back_to_raw_input() {
+        // A span with no closing tag aborts markup parsing; the whole raw
+        // input (markup included) is emitted with the default color.
+        let input = "<span color='#ff0000'>abc";
+        let out = parse_viewport_text(input);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].1, input);
+        assert_rgba_close(out[0].0, [0.8, 0.8, 0.8, 1.0]);
+    }
+
+    #[test]
+    fn viewport_text_bad_hex_gets_default_color() {
+        let out = parse_viewport_text("<span color='zzz'>x</span>");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].1, "x");
+        assert_rgba_close(out[0].0, [0.8, 0.8, 0.8, 1.0]);
+    }
+
+    #[test]
+    fn viewport_text_empty_input_is_empty() {
+        assert!(parse_viewport_text("").is_empty());
+    }
+
+    // --- json_find_key ---
+
+    #[test]
+    fn find_key_exact_match_at_top_level() {
+        let val = serde_json::json!({"bar_height": 30.0});
+        assert_eq!(json_find_key(&val, "bar_height").and_then(|v| v.as_f64()), Some(30.0));
+    }
+
+    #[test]
+    fn find_key_splits_snake_case_across_nesting() {
+        // "status_background_color" matches status { background_color }.
+        let val = serde_json::json!({"style": {"status": {"background_color": "#101010"}}});
+        assert_eq!(
+            json_find_key(&val, "status_background_color").and_then(|v| v.as_str()),
+            Some("#101010")
+        );
+    }
+
+    #[test]
+    fn find_key_exact_match_wins_over_split() {
+        // An exact "status_font" key beats descending into status { font }.
+        let val = serde_json::json!({
+            "status_font": "Exact Font",
+            "status": {"font": "Split Font"}
+        });
+        assert_eq!(
+            json_find_key(&val, "status_font").and_then(|v| v.as_str()),
+            Some("Exact Font")
+        );
+    }
+
+    #[test]
+    fn find_key_recurses_into_unrelated_parents() {
+        // The key is found even under a parent the key name never mentions.
+        let val = serde_json::json!({"unrelated": {"deeply": {"bar_height": 42.0}}});
+        assert_eq!(json_find_key(&val, "bar_height").and_then(|v| v.as_f64()), Some(42.0));
+    }
+
+    #[test]
+    fn find_key_miss_is_none() {
+        let val = serde_json::json!({"style": {"status": {}}});
+        assert!(json_find_key(&val, "nonexistent_key").is_none());
+    }
+
+    // --- module_side_from_json ---
+
+    #[test]
+    fn module_side_explicit_values() {
+        let val = serde_json::json!({"clock": "left", "window": "right"});
+        assert_eq!(module_side_from_json(&val, "clock"), Side::Left);
+        assert_eq!(module_side_from_json(&val, "window"), Side::Right);
+    }
+
+    #[test]
+    fn module_side_snap_aliases() {
+        for (snap, side) in [
+            ("top-left", Side::Left),
+            ("bottom-left", Side::Left),
+            ("top-center", Side::Left),
+            ("bottom-center", Side::Left),
+            ("top-right", Side::Right),
+            ("bottom-right", Side::Right),
+            ("TOP-LEFT", Side::Left), // case-insensitive
+        ] {
+            let val = serde_json::json!({"cpu": snap});
+            assert_eq!(module_side_from_json(&val, "cpu"), side, "snap {}", snap);
+        }
+    }
+
+    #[test]
+    fn module_side_defaults() {
+        let val = serde_json::json!({});
+        assert_eq!(module_side_from_json(&val, "window"), Side::Left);
+        assert_eq!(module_side_from_json(&val, "clock"), Side::Right);
+        assert_eq!(module_side_from_json(&val, "tray"), Side::Right);
+    }
+
+    #[test]
+    fn module_side_unknown_value_falls_through_to_default() {
+        let val = serde_json::json!({"window": "sideways", "clock": "sideways"});
+        assert_eq!(module_side_from_json(&val, "window"), Side::Left);
+        assert_eq!(module_side_from_json(&val, "clock"), Side::Right);
+    }
+
+    #[test]
+    fn module_side_light_source_from_angle() {
+        // Left iff angle (rad) in [5π/8, 11π/8); default 135° is Left.
+        let mk = |v: serde_json::Value| serde_json::json!({"window_manager": {"light_source_position": v}});
+        assert_eq!(module_side_from_json(&serde_json::json!({}), "light_source"), Side::Left);
+        // Float values are radians.
+        assert_eq!(
+            module_side_from_json(&mk(serde_json::json!(std::f64::consts::PI)), "light_source"),
+            Side::Left
+        );
+        assert_eq!(module_side_from_json(&mk(serde_json::json!(0.0)), "light_source"), Side::Right);
+        // Integers > 2π are degrees, otherwise radians.
+        assert_eq!(module_side_from_json(&mk(serde_json::json!(180)), "light_source"), Side::Left);
+        assert_eq!(module_side_from_json(&mk(serde_json::json!(3)), "light_source"), Side::Left);
+        assert_eq!(module_side_from_json(&mk(serde_json::json!(0)), "light_source"), Side::Right);
+    }
+
+    // --- parse_ccectl_windows ---
+
+    #[test]
+    fn ccectl_windows_full_line() {
+        let out = parse_ccectl_windows(
+            "window id=3 app_id=firefox title=\"Mozilla Firefox\" focused=true\n\
+             window id=7 app_id=kitty title=\"~\" focused=false",
+        );
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0], ("3".into(), "firefox".into(), "Mozilla Firefox".into(), true));
+        assert_eq!(out[1], ("7".into(), "kitty".into(), "~".into(), false));
+    }
+
+    #[test]
+    fn ccectl_windows_missing_required_fields_skips_line() {
+        // No app_id → skipped; no window id → skipped.
+        assert!(parse_ccectl_windows("window id=3 title=\"x\"").is_empty());
+        assert!(parse_ccectl_windows("app_id=firefox title=\"x\"").is_empty());
+    }
+
+    #[test]
+    fn ccectl_windows_optional_fields_default() {
+        let out = parse_ccectl_windows("window id=3 app_id=firefox");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0], ("3".into(), "firefox".into(), "".into(), false));
+    }
+
+    #[test]
+    fn ccectl_windows_filters_own_surfaces() {
+        let out = parse_ccectl_windows(
+            "window id=1 app_id=cce-status\n\
+             window id=2 app_id=cce-status-interface\n\
+             window id=3 app_id=cce-cloud\n\
+             window id=4 app_id=firefox",
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].1, "firefox");
+    }
+
+    #[test]
+    fn ccectl_windows_title_truncates_at_inner_quote() {
+        // Known wire-format limitation: titles are not escaped, so an inner
+        // quote truncates the title. Documented here, to be fixed by the
+        // --json output in PROPOSAL.md phase 3.
+        let out = parse_ccectl_windows("window id=3 app_id=x title=\"say \"hi\"\" focused=false");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].2, "say ");
+    }
+
+    // --- color parsing gamma (spec for PROPOSAL.md phase 2) ---
+
+    #[test]
+    fn color_from_key_is_gamma_corrected_but_srgb_variant_is_not() {
+        // parse_color_from_key / parse_rgba_color_from_key apply ^2.2 to RGB
+        // (alpha stays raw); parse_srgb_color_from_key returns raw sRGB.
+        // #808080 = 128/255 ≈ 0.50196 per channel; 0.50196^2.2 ≈ 0.21952.
+        let content = r##"
+style {
+    status normal_color=(color)"#808080" background_color=(color)"#80808080"
+}
+"##;
+        let raw = 128.0f32 / 255.0;
+        let linearized = raw.powf(2.2);
+
+        let srgb = parse_srgb_color_from_key(content, "status_normal_color").unwrap();
+        assert_rgba_close(srgb, [raw, raw, raw, 1.0]);
+
+        let gamma = parse_color_from_key(content, "status_background_color").unwrap();
+        assert_rgba_close(gamma, [linearized, linearized, linearized, raw]);
+
+        let gamma_rgba = parse_rgba_color_from_key(content, "status_background_color").unwrap();
+        assert_rgba_close(gamma_rgba, [linearized, linearized, linearized, raw]);
     }
 }
 
