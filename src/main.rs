@@ -1682,22 +1682,48 @@ fn main() {
                     .join(".local/bin/cce-status-interface")
             });
 
-            let mut active_children: std::collections::HashMap<String, std::process::Child> = std::collections::HashMap::new();
+            // Restart crashed modules with exponential backoff: a module
+            // that keeps dying quickly waits longer each time (up to
+            // RESTART_MAX) instead of respawning twice a second; a run of
+            // HEALTHY_UPTIME resets its backoff.
+            const RESTART_BASE: std::time::Duration = std::time::Duration::from_millis(500);
+            const RESTART_MAX: std::time::Duration = std::time::Duration::from_secs(30);
+            const HEALTHY_UPTIME: std::time::Duration = std::time::Duration::from_secs(30);
 
-            for module in &modules {
-                let child = std::process::Command::new(&current_exe)
+            struct Supervised {
+                child: Option<std::process::Child>,
+                spawned_at: std::time::Instant,
+                backoff: std::time::Duration,
+                restart_at: std::time::Instant,
+            }
+
+            let spawn_module = |module: &str| {
+                std::process::Command::new(&current_exe)
                     .arg("--module")
                     .arg(module)
-                    .spawn();
-                match child {
+                    .spawn()
+            };
+
+            let mut supervised: std::collections::HashMap<String, Supervised> = std::collections::HashMap::new();
+
+            for module in &modules {
+                let now = std::time::Instant::now();
+                let child = match spawn_module(module) {
                     Ok(c) => {
                         log::info!("Spawned module process for: {}", module);
-                        active_children.insert(module.to_string(), c);
+                        Some(c)
                     }
                     Err(e) => {
                         log::error!("Failed to spawn module process for {}: {:?}", module, e);
+                        None
                     }
-                }
+                };
+                supervised.insert(module.to_string(), Supervised {
+                    child,
+                    spawned_at: now,
+                    backoff: RESTART_BASE,
+                    restart_at: now + RESTART_BASE,
+                });
             }
 
             loop {
@@ -1711,36 +1737,47 @@ fn main() {
                         break;
                     }
                     _ = tokio::time::sleep(std::time::Duration::from_millis(500)) => {
+                        let now = std::time::Instant::now();
                         for module in &modules {
-                            let mut restart = false;
-                            if let Some(child) = active_children.get_mut(*module) {
+                            let Some(entry) = supervised.get_mut(*module) else { continue };
+
+                            if let Some(child) = entry.child.as_mut() {
                                 match child.try_wait() {
+                                    Ok(None) => continue,
                                     Ok(Some(status)) => {
-                                        log::warn!("Module process '{}' exited with status: {:?}. Restarting...", module, status);
-                                        restart = true;
+                                        entry.child = None;
+                                        if entry.spawned_at.elapsed() >= HEALTHY_UPTIME {
+                                            entry.backoff = RESTART_BASE;
+                                        } else {
+                                            entry.backoff = (entry.backoff * 2).min(RESTART_MAX);
+                                        }
+                                        entry.restart_at = now + entry.backoff;
+                                        log::warn!(
+                                            "Module process '{}' exited with status: {:?}. Restarting in {:?}...",
+                                            module, status, entry.backoff
+                                        );
                                     }
-                                    Ok(None) => {}
                                     Err(e) => {
-                                        log::error!("Error checking status for module '{}': {:?}. Restarting...", module, e);
-                                        restart = true;
+                                        log::error!("Error checking status for module '{}': {:?}", module, e);
+                                        continue;
                                     }
                                 }
-                            } else {
-                                restart = true;
                             }
 
-                            if restart {
-                                let child = std::process::Command::new(&current_exe)
-                                    .arg("--module")
-                                    .arg(module)
-                                    .spawn();
-                                match child {
+                            if now >= entry.restart_at {
+                                match spawn_module(module) {
                                     Ok(c) => {
                                         log::info!("Restarted module process for: {}", module);
-                                        active_children.insert(module.to_string(), c);
+                                        entry.child = Some(c);
+                                        entry.spawned_at = now;
                                     }
                                     Err(e) => {
-                                        log::error!("Failed to restart module process for {}: {:?}", module, e);
+                                        entry.backoff = (entry.backoff * 2).min(RESTART_MAX);
+                                        entry.restart_at = now + entry.backoff;
+                                        log::error!(
+                                            "Failed to restart module process for {}: {:?}. Retrying in {:?}...",
+                                            module, e, entry.backoff
+                                        );
                                     }
                                 }
                             }
@@ -1749,9 +1786,11 @@ fn main() {
                 }
             }
 
-            for (module, mut child) in active_children {
-                log::info!("Killing module process: {}", module);
-                let _ = child.kill();
+            for (module, entry) in supervised {
+                if let Some(mut child) = entry.child {
+                    log::info!("Killing module process: {}", module);
+                    let _ = child.kill();
+                }
             }
         });
         return;
