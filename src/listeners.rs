@@ -38,7 +38,6 @@ pub(crate) async fn spawn_status_listener(sub: &'static str, sender: calloop::ch
                             "viewport" => CustomEvent::ViewportUpdated(val.clone()),
                             "layout" => CustomEvent::LayoutUpdated(val.clone()),
                             "title" => CustomEvent::TitleUpdated(val.clone()),
-                            "modifiers" => CustomEvent::ModifiersUpdated(val.clone()),
                             _ => unreachable!(),
                         };
                         let _ = sender.send(ev);

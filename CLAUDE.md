@@ -24,22 +24,23 @@ sockets); there is no meaningful headless mode.
 
 ## Process model (the most important thing to know)
 
-One binary, four modes, selected by CLI args in `main()`:
+One binary, three modes, selected by CLI args in `main()`:
 
 - **No args — launcher daemon.** Spawns one child process per module
   (`--module window`, `--module clock`, …), polls every 500ms and restarts crashed
-  children. This is the normal production mode: each module is its own process and its
-  own Wayland surface.
+  children with exponential backoff (500ms doubling to 30s; 30s of healthy uptime
+  resets it). This is the normal production mode: each module is its own process and
+  its own Wayland surface.
 - **`--module <name>`** — a single-module bar segment. Valid names: `window`, `tray`,
   `cpu`, `memory`, `brightness`, `volume`, `battery`, `clock`, `light_source`.
-- **`--monolithic`** — all modules in one window (window on the left, the rest on the
-  right). Useful for debugging layout without nine processes.
 - **`--trigger-switcher`** — one-shot: writes `trigger` to the switcher socket of the
   running instance and exits (used as a keybinding target).
 
+(The old `--monolithic` all-modules-in-one-window mode is gone, along with the
+app-side super+drag module reordering that only made sense there.)
+
 The compositor places each segment by its Wayland `app_id`, computed in
-`StatusApp::get_app_id()`: `cce-status-{side}-{name}` (e.g. `cce-status-left-window`),
-or plain `cce-status` for the monolithic bar. If
+`StatusApp::get_app_id()`: `cce-status-{side}-{name}` (e.g. `cce-status-left-window`). If
 `/tmp/cce-status-interface-{WAYLAND_DISPLAY}.sock` exists, the `cce-status-interface-`
 prefix is used instead — keep both spellings in mind when matching app_ids. A module's
 side comes from the config (`get_module_side`, which also maps snap positions like
@@ -121,8 +122,10 @@ mtime in `tick()`, so there is no reload event to wire up.
 
 ## Interactions worth knowing before touching input code
 
-- **Super + left-drag** moves a module along the bar (`dragged_module`,
-  `ModifiersUpdated` tracks the super key from the compositor feed).
+- **Super + left-drag on a segment is handled by the compositor**, not this app: it
+  starts the same segment drag as adjust-position mode (snap to an edge on release,
+  persisted to `layout.status_bar.<module>` in config.kdl). This app never sees those
+  clicks and no longer tracks the super key.
 - Viewport tabs in the window module are clickable (`viewport_bounds` → `ccectl view`);
   the layout indicator opens the layout-mode menu; tray icons left-click activate /
   right-click open their DBusMenu.

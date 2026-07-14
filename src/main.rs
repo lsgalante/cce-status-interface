@@ -89,7 +89,6 @@ pub(crate) enum CustomEvent {
     ViewportUpdated(String),
     LayoutUpdated(String),
     TitleUpdated(String),
-    ModifiersUpdated(String),
     SystemStatsUpdated(SystemStats),
     TrayUpdated(TrayItem),
     TrayRemoved(String),
@@ -222,8 +221,6 @@ struct StatusApp {
     needs_rebuild: bool,
     current_bg_color: [f32; 4],
     input_regions: Vec<(i32, i32, i32, i32)>,
-    super_pressed: bool,
-    dragged_module: Option<(String, Side, f32)>,
     module_bounds: Vec<ModuleBounds>,
     left_modules: Vec<Box<dyn StatusModule>>,
     right_modules: Vec<Box<dyn StatusModule>>,
@@ -647,72 +644,6 @@ impl StatusApp {
         self.needs_rebuild = false;
     }
 
-    fn check_drag_swap(&mut self, mouse_x: f32) -> bool {
-        if let Some((ref dragged_name, side, _)) = self.dragged_module {
-            match side {
-                Side::Left => {
-                    if let Some(curr_idx) = self.left_modules.iter().position(|m| m.name() == dragged_name) {
-                        let curr_bounds = self.module_bounds.iter().find(|mb| mb.name == *dragged_name && mb.side == Side::Left);
-                        if curr_bounds.is_some() {
-                            // Check left neighbor
-                            if curr_idx > 0 {
-                                let prev_name = self.left_modules[curr_idx - 1].name();
-                                if let Some(prev) = self.module_bounds.iter().find(|mb| mb.name == prev_name && mb.side == Side::Left) {
-                                    let prev_center = prev.x + prev.w / 2.0;
-                                    if mouse_x < prev_center {
-                                        self.left_modules.swap(curr_idx, curr_idx - 1);
-                                        return true;
-                                    }
-                                }
-                            }
-                            // Check right neighbor
-                            if curr_idx < self.left_modules.len() - 1 {
-                                let next_name = self.left_modules[curr_idx + 1].name();
-                                if let Some(next) = self.module_bounds.iter().find(|mb| mb.name == next_name && mb.side == Side::Left) {
-                                    let next_center = next.x + next.w / 2.0;
-                                    if mouse_x > next_center {
-                                        self.left_modules.swap(curr_idx, curr_idx + 1);
-                                        return true;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                Side::Right => {
-                    if let Some(curr_idx) = self.right_modules.iter().position(|m| m.name() == dragged_name) {
-                        let curr_bounds = self.module_bounds.iter().find(|mb| mb.name == *dragged_name && mb.side == Side::Right);
-                        if curr_bounds.is_some() {
-                            // Check left neighbor
-                            if curr_idx > 0 {
-                                let prev_name = self.right_modules[curr_idx - 1].name();
-                                if let Some(prev) = self.module_bounds.iter().find(|mb| mb.name == prev_name && mb.side == Side::Right) {
-                                    let prev_center = prev.x + prev.w / 2.0;
-                                    if mouse_x < prev_center {
-                                        self.right_modules.swap(curr_idx, curr_idx - 1);
-                                        return true;
-                                    }
-                                }
-                            }
-                            // Check right neighbor
-                            if curr_idx < self.right_modules.len() - 1 {
-                                let next_name = self.right_modules[curr_idx + 1].name();
-                                if let Some(next) = self.module_bounds.iter().find(|mb| mb.name == next_name && mb.side == Side::Right) {
-                                    let next_center = next.x + next.w / 2.0;
-                                    if mouse_x > next_center {
-                                        self.right_modules.swap(curr_idx, curr_idx + 1);
-                                        return true;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        false
-    }
-
     fn trigger_switcher(&mut self, is_switcher_mode: bool) {
         // Keyboard alt-tab switching is implemented natively by the compositor
         // (bound to super+tab via the window_manager.window_switcher config key).
@@ -966,47 +897,34 @@ impl cce_ui::engine::Application for StatusApp {
         let selected_module = parse_selected_module_from_args();
 
         let mut left_modules: Vec<Box<dyn StatusModule>> = Vec::new();
-        let mut right_modules: Vec<Box<dyn StatusModule>> = Vec::new();
+        let right_modules: Vec<Box<dyn StatusModule>> = Vec::new();
 
         let mut has_window = false;
 
-        if let Some((ref name, _)) = selected_module {
-            let module: Box<dyn StatusModule> = match name.as_str() {
-                "window" => {
-                    has_window = true;
-                    Box::new(WindowModule)
-                }
-                "tray" => Box::new(TrayModule),
-                "cpu" => Box::new(CpuModule),
-                "memory" => Box::new(MemoryModule),
-                "brightness" => Box::new(BrightnessModule),
-                "volume" => Box::new(VolumeModule),
-                "battery" => Box::new(BatteryModule),
-                "clock" => Box::new(ClockModule),
-                "light_source" => Box::new(LightSourceModule),
-                _ => panic!("Unknown module: {}", name),
-            };
-            left_modules.push(module);
-        } else {
-            left_modules.push(Box::new(WindowModule));
-            right_modules.push(Box::new(TrayModule));
-            right_modules.push(Box::new(CpuModule));
-            right_modules.push(Box::new(MemoryModule));
-            right_modules.push(Box::new(BrightnessModule));
-            right_modules.push(Box::new(VolumeModule));
-            right_modules.push(Box::new(BatteryModule));
-            right_modules.push(Box::new(ClockModule));
-            right_modules.push(Box::new(LightSourceModule));
-            has_window = true;
-        }
+        let (ref name, _) = selected_module
+            .as_ref()
+            .expect("StatusApp requires --module <name>; the no-arg form runs the launcher daemon");
+        let module: Box<dyn StatusModule> = match name.as_str() {
+            "window" => {
+                has_window = true;
+                Box::new(WindowModule)
+            }
+            "tray" => Box::new(TrayModule),
+            "cpu" => Box::new(CpuModule),
+            "memory" => Box::new(MemoryModule),
+            "brightness" => Box::new(BrightnessModule),
+            "volume" => Box::new(VolumeModule),
+            "battery" => Box::new(BatteryModule),
+            "clock" => Box::new(ClockModule),
+            "light_source" => Box::new(LightSourceModule),
+            _ => panic!("Unknown module: {}", name),
+        };
+        left_modules.push(module);
 
         if has_window {
             tokio::spawn(spawn_status_listener("viewport", sender.clone()));
             tokio::spawn(spawn_status_listener("layout", sender.clone()));
             tokio::spawn(spawn_status_listener("title", sender.clone()));
-        }
-        if selected_module.is_none() {
-            tokio::spawn(spawn_status_listener("modifiers", sender.clone()));
         }
         let is_primary_for_switcher = selected_module.as_ref().map_or(true, |(name, _)| name == "window");
         if is_primary_for_switcher {
@@ -1052,8 +970,6 @@ impl cce_ui::engine::Application for StatusApp {
             needs_rebuild: true,
             current_bg_color: color::STATUS_BG,
             input_regions: Vec::new(),
-            super_pressed: false,
-            dragged_module: None,
             module_bounds: Vec::new(),
             left_modules,
             right_modules,
@@ -1101,9 +1017,6 @@ impl cce_ui::engine::Application for StatusApp {
             }
             CustomEvent::TitleUpdated(t) => {
                 self.title = t;
-            }
-            CustomEvent::ModifiersUpdated(m) => {
-                self.super_pressed = m.contains("super");
             }
             CustomEvent::SystemStatsUpdated(s) => {
                 log::debug!("[module-{}] stats updated, current width={}", self.selected_module_name.as_deref().unwrap_or("none"), self.width);
@@ -1249,16 +1162,6 @@ impl cce_ui::engine::Application for StatusApp {
     fn handle_pointer_move(&mut self, pos: cce_ui::engine::LogicalPosition, needs_rebuild: &mut bool) {
         let (lx, ly) = (pos.x, pos.y);
         self.cursor_pos = (lx as f64, ly as f64);
-        let is_vertical = self.is_vertical();
-        let coord = if is_vertical { ly } else { lx };
-
-        if self.dragged_module.is_some() {
-            if self.check_drag_swap(coord) {
-                *needs_rebuild = true;
-                self.needs_rebuild = true;
-            }
-            return;
-        }
 
         let mut newly_hovered = None;
         for bound in &self.tray_item_bounds {
@@ -1275,39 +1178,12 @@ impl cce_ui::engine::Application for StatusApp {
         }
     }
 
-    fn handle_mouse_input(&mut self, button: MouseButton, state: ElementState, pos: cce_ui::engine::LogicalPosition, needs_rebuild: &mut bool) -> Option<Self::Message> {
+    fn handle_mouse_input(&mut self, button: MouseButton, state: ElementState, pos: cce_ui::engine::LogicalPosition, _needs_rebuild: &mut bool) -> Option<Self::Message> {
         let (lx, ly) = (pos.x, pos.y);
         let is_vertical = self.is_vertical();
         let coord = if is_vertical { ly } else { lx };
         let cx = lx as f64;
         let cy = ly as f64;
-
-        if button == MouseButton::Left {
-            if state == ElementState::Pressed {
-                if self.super_pressed {
-                    let mut clicked_module = None;
-                    for mb in &self.module_bounds {
-                        if lx >= mb.x && lx <= (mb.x + mb.w) {
-                            clicked_module = Some((mb.name.clone(), mb.side));
-                            break;
-                        }
-                    }
-                    if let Some((name, side)) = clicked_module {
-                        self.dragged_module = Some((name, side, lx));
-                        *needs_rebuild = true;
-                        self.needs_rebuild = true;
-                        return None;
-                    }
-                }
-            } else {
-                if self.dragged_module.is_some() {
-                    self.dragged_module = None;
-                    *needs_rebuild = true;
-                    self.needs_rebuild = true;
-                    return None;
-                }
-            }
-        }
 
         if state == ElementState::Pressed {
             // Check if tray icon was clicked
@@ -1654,18 +1530,9 @@ fn main() {
         return;
     }
 
-    let mut has_module = false;
-    let mut monolithic = false;
-    for i in 0..args.len() {
-        if args[i] == "--module" {
-            has_module = true;
-        }
-        if args[i] == "--monolithic" {
-            monolithic = true;
-        }
-    }
+    let has_module = args.iter().any(|arg| arg == "--module");
 
-    if !has_module && !monolithic {
+    if !has_module {
         log::info!("Starting cce-status-interface launcher daemon...");
         let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
         rt.block_on(async {
