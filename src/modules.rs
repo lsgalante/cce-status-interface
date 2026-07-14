@@ -8,6 +8,14 @@ use crate::{
     TrayIconBounds, make_text_buffer, parse_viewport_text,
 };
 
+/// Vertical offset that centers a text run in a box `box_h` tall. The engine
+/// shapes horizontal text with a line box of exactly `font_size` (cce-ui
+/// window_runner uses line_height = physical_size * 1.0), so centering must
+/// use that height — not a CSS-ish 1.4em line box.
+pub(crate) fn centered_text_y(box_h: f32, font_size: f32) -> f32 {
+    (box_h - font_size) / 2.0
+}
+
 pub trait StatusModule {
     fn name(&self) -> &'static str;
     
@@ -144,7 +152,7 @@ impl StatusModule for WindowModule {
         if has_title {
             let has_layout = !layout.is_empty();
             let mut cur_x = x + padding;
-            let y_pos = (bar_h - font_size * 1.4) / 2.0;
+            let y_pos = centered_text_y(bar_h, font_size);
 
             if has_title {
                 let mut display_title = title.to_string();
@@ -192,7 +200,7 @@ impl StatusModule for WindowModule {
                         corners: (false, false, true, true),
                     });
                 }
-                crate::draw_label(text_prims, label, cur_x + padding, (bar_h - font_size * 1.4) / 2.0);
+                crate::draw_label(text_prims, label, cur_x + padding, centered_text_y(bar_h, font_size));
                 viewport_bounds.push(ViewportBounds {
                     name: text.clone(),
                     x: cur_x,
@@ -260,7 +268,7 @@ impl StatusModule for ClockModule {
     ) {
         if let Some(ref s) = stats {
             let label = Label::new_with_family(font_system, &s.clock, font_size, normal_color, font_family);
-            crate::draw_label(text_prims, label, x + padding, (bar_h - font_size * 1.4) / 2.0);
+            crate::draw_label(text_prims, label, x + padding, centered_text_y(bar_h, font_size));
         }
     }
 }
@@ -325,7 +333,7 @@ impl StatusModule for BatteryModule {
                     color::TEXT_ACCENT
                 };
                 let label = Label::new_with_family(font_system, &s.battery, font_size, bat_color, font_family);
-                crate::draw_label(text_prims, label, x + padding, (bar_h - font_size * 1.4) / 2.0);
+                crate::draw_label(text_prims, label, x + padding, centered_text_y(bar_h, font_size));
             }
         }
     }
@@ -394,7 +402,7 @@ impl StatusModule for VolumeModule {
                 let label = Label::new_with_family(font_system, &s.volume, font_size, color_val, font_family)
                     .with_strikethrough(is_muted);
                 let draw_x = x + padding;
-                let start_y = (bar_h - font_size * 1.4) / 2.0;
+                let start_y = centered_text_y(bar_h, font_size);
                 if let Some((sx, sy, sw_rect, sh_rect, scol)) = label.strikethrough_rect(draw_x, start_y, scale_factor as f32) {
                     overlay_rects.push(RectWidget {
                         x: sx,
@@ -465,7 +473,7 @@ impl StatusModule for BrightnessModule {
         if let Some(ref s) = stats {
             if !s.brightness.is_empty() {
                 let label = Label::new_with_family(font_system, &s.brightness, font_size, normal_color, font_family);
-                crate::draw_label(text_prims, label, x + padding, (bar_h - font_size * 1.4) / 2.0);
+                crate::draw_label(text_prims, label, x + padding, centered_text_y(bar_h, font_size));
             }
         }
     }
@@ -525,7 +533,7 @@ impl StatusModule for MemoryModule {
     ) {
         if let Some(ref s) = stats {
             let label = Label::new_with_family(font_system, &s.memory, font_size, normal_color, font_family);
-            crate::draw_label(text_prims, label, x + padding, (bar_h - font_size * 1.4) / 2.0);
+            crate::draw_label(text_prims, label, x + padding, centered_text_y(bar_h, font_size));
         }
     }
 }
@@ -584,7 +592,7 @@ impl StatusModule for CpuModule {
     ) {
         if let Some(ref s) = stats {
             let label = Label::new_with_family(font_system, &s.cpu, font_size, normal_color, font_family);
-            crate::draw_label(text_prims, label, x + padding, (bar_h - font_size * 1.4) / 2.0);
+            crate::draw_label(text_prims, label, x + padding, centered_text_y(bar_h, font_size));
         }
     }
 }
@@ -768,7 +776,7 @@ impl StatusModule for TrayModule {
                 let scale = cce_ui::scale::scale_factor();
                 let tw = buf.layout_runs().next().map(|r| r.line_w).unwrap_or(0.0) / scale;
                 let tx = icon_x + (icon_size - tw) / 2.0;
-                let ty = icon_y + (icon_size - font_size * 1.4) / 2.0;
+                let ty = icon_y + centered_text_y(icon_size, font_size);
                 text_prims.push((
                     symbol.to_string(),
                     font_size,
@@ -855,6 +863,6 @@ impl StatusModule for LightSourceModule {
         let pos = get_light_source_pos_from_config();
         let text = format!("Light: {:.2} rad", pos);
         let label = Label::new_with_family(font_system, &text, font_size, normal_color, font_family);
-        crate::draw_label(text_prims, label, x + padding, (bar_h - font_size * 1.4) / 2.0);
+        crate::draw_label(text_prims, label, x + padding, centered_text_y(bar_h, font_size));
     }
 }
