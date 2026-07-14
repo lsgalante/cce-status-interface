@@ -2,7 +2,7 @@
 //! a `cce-cloud` process fed JSON pages on stdin.
 
 use crate::{parse_ccectl_windows, CustomEvent};
-use crate::config::{get_cce_cloud_cmd, get_ccectl_cmd};
+use crate::config::get_ccectl_cmd;
 
 #[zbus::proxy(
     interface = "com.canonical.dbusmenu",
@@ -105,18 +105,6 @@ pub(crate) fn get_currently_focused_window() -> Option<String> {
         .map(|(id, _, _, _)| id)
 }
 
-/// Send SIGTERM to `pid` directly instead of shelling out to `kill`,
-/// logging when the signal cannot be delivered.
-pub(crate) fn send_sigterm(pid: u32) {
-    let ret = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
-    if ret != 0 {
-        log::warn!(
-            "[cloud] SIGTERM to pid {} failed: {}",
-            pid,
-            std::io::Error::last_os_error()
-        );
-    }
-}
 
 pub(crate) async fn show_cce_cloud_menu(
     conn: &zbus::Connection,
@@ -304,39 +292,20 @@ pub(crate) async fn show_cce_cloud_menu(
         });
         let layout_str = layout_json.to_string();
 
-        let mut cmd_args = vec![
-            "--json".to_string(),
-            "-x".to_string(),
-            x_pos.to_string(),
-            "-y".to_string(),
-            y_pos.to_string(),
-            "--parent-app-id".to_string(),
-            parent_app_id,
-        ];
+        let mut popup = cce_ui::process::CloudPopup::at(x_pos, y_pos)
+            .parent_app_id(parent_app_id);
         if align_right {
-            cmd_args.push("--align-right".to_string());
+            popup = popup.align_right();
         }
+        // run_json blocks this thread, like the wait_with_output it replaces —
+        // fine, show_cce_cloud_menu runs on its own single-purpose runtime.
+        let output = popup.run_json(&layout_str, |pid| {
+            last_spawned_pid = pid;
+            let _ = thread_sender.send(CustomEvent::CloudSpawned { pid, source: source.clone() });
+        })?;
 
-        let mut child = std::process::Command::new(get_cce_cloud_cmd())
-            .args(&cmd_args)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::inherit())
-            .spawn()?;
-
-        let pid = child.id();
-        last_spawned_pid = pid;
-        let _ = thread_sender.send(CustomEvent::CloudSpawned { pid, source: source.clone() });
-
-        if let Some(mut stdin) = child.stdin.take() {
-            use std::io::Write;
-            stdin.write_all(layout_str.as_bytes())?;
-        }
-
-        let output = child.wait_with_output()?;
-        if output.status.success() {
-            let stdout_str = String::from_utf8_lossy(&output.stdout);
-            if let Ok(parsed_json) = serde_json::from_str::<serde_json::Value>(stdout_str.trim()) {
+        if let Some(stdout_str) = output {
+            if let Ok(parsed_json) = serde_json::from_str::<serde_json::Value>(&stdout_str) {
                 if let Some(btn_id) = parsed_json.get("button").and_then(|v| v.as_str()) {
                     if btn_id.starts_with("item_") {
                         if let Ok(item_id) = btn_id["item_".len()..].parse::<i32>() {
@@ -398,74 +367,35 @@ pub(crate) fn spawn_window_picker(
             input_str.push('\n');
         }
 
-        let cmd_args = vec![
-            "--dmenu".to_string(),
-            "-p".to_string(),
-            "Windows:".to_string(),
-            "-x".to_string(),
-            x_pos.to_string(),
-            "-y".to_string(),
-            y_pos.to_string(),
-        ];
-
-        let mut child = match std::process::Command::new(get_cce_cloud_cmd())
-            .args(&cmd_args)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::inherit())
-            .spawn()
-        {
-            Ok(c) => c,
-            Err(e) => {
-                log::warn!("[switcher] Failed to spawn cce-cloud: {:?}", e);
-                let _ = thread_sender.send(CustomEvent::CloudClosed { pid: 0, source: source.clone() });
-                return;
-            }
-        };
-
-        let pid = child.id();
-        let mut stdin = child.stdin.take().unwrap();
-        let mut stdout = child.stdout.take().unwrap();
-
-        // Write the item list, then drop stdin so cce-cloud sees EOF.
-        use std::io::Write;
-        let _ = stdin.write_all(input_str.as_bytes());
-        let _ = stdin.flush();
-        drop(stdin);
-
-        // Spawn stdout reader
-        let (stdout_tx, stdout_rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let mut out_str = String::new();
-            use std::io::Read;
-            let _ = stdout.read_to_string(&mut out_str);
-            let _ = stdout_tx.send(out_str);
+        let popup = cce_ui::process::CloudPopup::at(x_pos, y_pos);
+        let mut spawned_pid = 0;
+        let result = popup.run_dmenu("Windows:", &input_str, |pid| {
+            spawned_pid = pid;
+            let _ = thread_sender.send(CustomEvent::CloudSpawned { pid, source: source.clone() });
         });
 
-        let _ = thread_sender.send(CustomEvent::CloudSpawned { pid, source: source.clone() });
-
-        let _ = child.wait();
-        let stdout_str = stdout_rx.recv().unwrap_or_default();
-
-        let selected = stdout_str.trim().to_string();
-        if !selected.is_empty() {
-            // Find the matched window
-            for (id, app_id, title, _) in windows {
-                let display = if title.is_empty() {
-                    app_id.clone()
-                } else {
-                    format!("{} ({})", title, app_id)
-                };
-                if display == selected {
-                    log::debug!("[switcher] Selecting window title: {}, app_id: {}, id: {}", title, app_id, id);
-                    let _ = std::process::Command::new(get_ccectl_cmd())
-                        .args(["focus-window", &id])
-                        .spawn();
-                    break;
+        match result {
+            Ok(Some(selected)) => {
+                // Find the matched window
+                for (id, app_id, title, _) in windows {
+                    let display = if title.is_empty() {
+                        app_id.clone()
+                    } else {
+                        format!("{} ({})", title, app_id)
+                    };
+                    if display == selected {
+                        log::debug!("[switcher] Selecting window title: {}, app_id: {}, id: {}", title, app_id, id);
+                        let _ = std::process::Command::new(get_ccectl_cmd())
+                            .args(["focus-window", &id])
+                            .spawn();
+                        break;
+                    }
                 }
             }
+            Ok(None) => {}
+            Err(e) => log::warn!("[switcher] Failed to spawn cce-cloud: {:?}", e),
         }
 
-        let _ = thread_sender.send(CustomEvent::CloudClosed { pid, source: source.clone() });
+        let _ = thread_sender.send(CustomEvent::CloudClosed { pid: spawned_pid, source: source.clone() });
     });
 }

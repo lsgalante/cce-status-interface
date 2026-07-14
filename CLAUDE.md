@@ -93,10 +93,12 @@ both). Keyboard alt-tab switching is delegated to the compositor
 (`ccectl window-switcher`) — don't reimplement it here.
 
 **Popups are `cce-cloud` processes**, not surfaces of this app: the window picker, tray
-context menus, and the layout-mode menu each spawn `cce-cloud`, pipe it a JSON page
-description on stdin, and track it via the `CloudSpawned`/`CloudClosed` events
-(`active_cloud_pid`/`active_cloud_source`). Clicking again toggles the popup off by
-killing the pid; closing restores focus with `ccectl focus-window`. Follow this pattern
+context menus, and the layout-mode menu each run a `cce_ui::process::CloudPopup`
+(`run_json`/`run_dmenu`) on a worker thread, and the single-popup toggle state lives in
+`cce_ui::process::CloudPopupTracker` (`StatusApp.cloud_popups`) — the thread reports
+back via the `CloudSpawned`/`CloudClosed` events, which feed
+`tracker.on_spawned`/`on_closed`. Clicking a trigger again toggles its popup off
+(`tracker.click`); closing restores focus with `ccectl focus-window`. Follow this pattern
 for any new popup.
 
 ## Config

@@ -1,5 +1,5 @@
 //! Config access: cached KDL config lookup, color/font/dimension readers,
-//! and resolution of the cce/ccectl/cce-cloud binaries.
+//! and resolution of the ccectl binary.
 //!
 //! Every key has an explicit JSON-pointer location (the canonical nesting in
 //! config.kdl). Reads try the pointer first and fall back to the legacy fuzzy
@@ -223,16 +223,6 @@ pub(crate) fn read_status_box_background_color_from_config() -> Option<[f32; 4]>
 
 pub(crate) fn read_status_box_corner_radius_from_config() -> f32 {
     cfg_f32("/style/status/box_corner_radius", "status_box_corner_radius").unwrap_or(4.0)
-}
-
-pub(crate) fn get_cce_cloud_cmd() -> String {
-    if let Ok(home) = std::env::var("HOME") {
-        let path = format!("{}/.local/bin/cce-cloud", home);
-        if std::path::Path::new(&path).exists() {
-            return path;
-        }
-    }
-    "cce-cloud".to_string()
 }
 
 pub(crate) fn get_ccectl_cmd() -> String {

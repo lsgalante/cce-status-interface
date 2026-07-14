@@ -204,8 +204,7 @@ struct StatusApp {
     tray_item_bounds: Vec<TrayIconBounds>,
     viewport_bounds: Vec<ViewportBounds>,
     layout_bounds: Option<LayoutBounds>,
-    active_cloud_pid: Option<u32>,
-    active_cloud_source: Option<String>,
+    cloud_popups: cce_ui::process::CloudPopupTracker,
     previously_focused_window: Option<String>,
 
     font_system: FontSystem,
@@ -731,24 +730,9 @@ impl StatusApp {
         // click-to-pick list of the current windows.
         let switcher_source = "window".to_string();
 
-        // If a picker is already open (or pending) for this source, toggle it off.
-        let running = self
-            .active_cloud_pid
-            .map_or(false, |pid| std::path::Path::new(&format!("/proc/{}", pid)).exists());
-        if self.active_cloud_source.as_ref() == Some(&switcher_source) {
-            if running {
-                if let Some(pid) = self.active_cloud_pid {
-                    log::debug!("[window-picker] Toggling off existing cce-cloud PID {}", pid);
-                    send_sigterm(pid);
-                }
-                self.active_cloud_pid = None;
-            }
-            self.active_cloud_source = None;
+        if self.cloud_popups.click(&switcher_source) == cce_ui::process::CloudPopupClick::ToggledOff {
             return;
         }
-
-        // Set active cloud source
-        self.active_cloud_source = Some(switcher_source.clone());
 
         // Get placement coords: align just below Window module if we can find it
         let mut target_x = 0.0;
@@ -1053,8 +1037,7 @@ impl cce_ui::engine::Application for StatusApp {
             tray_item_bounds: Vec::new(),
             viewport_bounds: Vec::new(),
             layout_bounds: None,
-            active_cloud_pid: None,
-            active_cloud_source: None,
+            cloud_popups: cce_ui::process::CloudPopupTracker::new(),
             previously_focused_window: None,
             font_system,
             status_bar: cce_ui::widget::StatusBar::new(),
@@ -1133,19 +1116,11 @@ impl cce_ui::engine::Application for StatusApp {
                 self.tray_items.remove(&id);
             }
             CustomEvent::CloudSpawned { pid, source } => {
-                if self.active_cloud_source.as_ref() == Some(&source) {
-                    log::debug!("[cloud-event] CloudSpawned: pid {} for source {} matches expected, tracking", pid, source);
-                    self.active_cloud_pid = Some(pid);
-                } else {
-                    log::debug!("[cloud-event] CloudSpawned: pid {} for source {} is obsolete/canceled, killing", pid, source);
-                    send_sigterm(pid);
-                }
+                self.cloud_popups.on_spawned(pid, &source);
             }
             CustomEvent::CloudClosed { pid, source } => {
-                if self.active_cloud_pid == Some(pid) || (pid == 0 && self.active_cloud_source.as_ref() == Some(&source)) {
+                if self.cloud_popups.on_closed(pid, &source) {
                     log::debug!("[cloud-event] CloudClosed: pid {} for source {} closed, clearing tracking", pid, source);
-                    self.active_cloud_pid = None;
-                    self.active_cloud_source = None;
                     if source == "window" {
                         self.previously_focused_window = None;
                     } else if source == "layout" || source.starts_with("context_menu:") || source.starts_with("tray:") {
@@ -1349,41 +1324,9 @@ impl cce_ui::engine::Application for StatusApp {
                 let id = bound.id.clone();
                 let tray_source = format!("tray:{}", id);
 
-                // Check if any cce-cloud instance is already running
-                let mut running_cloud_pid = None;
-                if let Some(pid) = self.active_cloud_pid {
-                    if std::path::Path::new(&format!("/proc/{}", pid)).exists() {
-                        if let Ok(comm) = std::fs::read_to_string(format!("/proc/{}/comm", pid)) {
-                            if comm.trim() == "cce-cloud" {
-                                running_cloud_pid = Some(pid);
-                            }
-                        }
-                    }
+                if self.cloud_popups.click(&tray_source) == cce_ui::process::CloudPopupClick::ToggledOff {
+                    return None;
                 }
-
-                if let Some(pid) = running_cloud_pid {
-                    // There is an active dialog open.
-                    // Kill it regardless of which one it is.
-                    log::debug!("[tray-click] cce-cloud (PID {}) is running, killing it", pid);
-                    send_sigterm(pid);
-                    self.active_cloud_pid = None;
-
-                    // If it was clicked for the SAME tray icon, this is a toggle-off.
-                    if self.active_cloud_source.as_ref() == Some(&tray_source) {
-                        self.active_cloud_source = None;
-                        return None;
-                    }
-                } else {
-                    // No active dialog is running, but check if there is a pending one for the same source
-                    if self.active_cloud_source.as_ref() == Some(&tray_source) {
-                        // User clicked same icon again while it was pending. Cancel it!
-                        self.active_cloud_source = None;
-                        return None;
-                    }
-                }
-
-                // Now set the active cloud source to this one
-                self.active_cloud_source = Some(tray_source.clone());
                 if self.previously_focused_window.is_none() {
                     self.previously_focused_window = get_currently_focused_window();
                 }
@@ -1489,36 +1432,9 @@ impl cce_ui::engine::Application for StatusApp {
                     log::debug!("[module-right-click] Right-clicked module: {}", mb.name);
                     let context_source = format!("context_menu:{}", mb.name);
 
-                    // Check if any cce-cloud instance is already running
-                    let mut running_cloud_pid = None;
-                    if let Some(pid) = self.active_cloud_pid {
-                        if std::path::Path::new(&format!("/proc/{}", pid)).exists() {
-                            if let Ok(comm) = std::fs::read_to_string(format!("/proc/{}/comm", pid)) {
-                                if comm.trim() == "cce-cloud" {
-                                    running_cloud_pid = Some(pid);
-                                }
-                            }
-                        }
+                    if self.cloud_popups.click(&context_source) == cce_ui::process::CloudPopupClick::ToggledOff {
+                        return None;
                     }
-
-                    if let Some(pid) = running_cloud_pid {
-                        log::debug!("[module-right-click] cce-cloud (PID {}) is running, killing it", pid);
-                        send_sigterm(pid);
-                        self.active_cloud_pid = None;
-
-                        // If it was clicked for the same context menu, this is a toggle-off
-                        if self.active_cloud_source.as_ref() == Some(&context_source) {
-                            self.active_cloud_source = None;
-                            return None;
-                        }
-                    } else {
-                        if self.active_cloud_source.as_ref() == Some(&context_source) {
-                            self.active_cloud_source = None;
-                            return None;
-                        }
-                    }
-
-                    self.active_cloud_source = Some(context_source.clone());
 
                     if self.previously_focused_window.is_none() {
                         self.previously_focused_window = get_currently_focused_window();
@@ -1553,54 +1469,29 @@ impl cce_ui::engine::Application for StatusApp {
                     };
 
                     let parent_app_id = self.get_app_id();
-
-                    if let Ok(mut child) = std::process::Command::new(get_cce_cloud_cmd())
-                        .args([
-                            "--json",
-                            "-x",
-                            &x_pos.to_string(),
-                            "-y",
-                            &y_pos.to_string(),
-                            "--parent-app-id",
-                            &parent_app_id,
-                        ])
-                        .stdin(std::process::Stdio::piped())
-                        .stdout(std::process::Stdio::piped())
-                        .stderr(std::process::Stdio::piped())
-                        .spawn()
-                    {
-                        let pid = child.id();
-                        self.active_cloud_pid = Some(pid);
-                        log::debug!("[module-right-click] Spawned cce-cloud with PID {}", pid);
-
-                        let thread_sender = self.sender.clone();
-                        let context_source_clone = context_source.clone();
-                        std::thread::spawn(move || {
-                            if let Some(mut stdin) = child.stdin.take() {
-                                use std::io::Write;
-                                let _ = stdin.write_all(context_json.as_bytes());
-                            }
-                            if let Ok(output) = child.wait_with_output() {
-                                let err_str = String::from_utf8_lossy(&output.stderr);
-                                if !err_str.is_empty() {
-                                    log::debug!("[cce-cloud context stderr] {}", err_str);
-                                }
-                                if output.status.success() {
-                                    let stdout_str = String::from_utf8_lossy(&output.stdout);
-                                    if let Ok(parsed_json) = serde_json::from_str::<serde_json::Value>(stdout_str.trim()) {
-                                        if let Some(btn_id) = parsed_json.get("button").and_then(|v| v.as_str()) {
-                                            if btn_id == "toggle_hide" {
-                                                let _ = thread_sender.send(CustomEvent::ToggleHideModules);
-                                            } else if btn_id == "toggle_adjust" {
-                                                let _ = thread_sender.send(CustomEvent::ToggleAdjustPositionMode);
-                                            }
-                                        }
+                    let thread_sender = self.sender.clone();
+                    std::thread::spawn(move || {
+                        let popup = cce_ui::process::CloudPopup::at(x_pos, y_pos)
+                            .parent_app_id(parent_app_id);
+                        let mut spawned_pid = 0;
+                        let result = popup.run_json(&context_json, |pid| {
+                            spawned_pid = pid;
+                            log::debug!("[module-right-click] Spawned cce-cloud with PID {}", pid);
+                            let _ = thread_sender.send(CustomEvent::CloudSpawned { pid, source: context_source.clone() });
+                        });
+                        if let Ok(Some(out_str)) = &result {
+                            if let Ok(parsed_json) = serde_json::from_str::<serde_json::Value>(out_str) {
+                                if let Some(btn_id) = parsed_json.get("button").and_then(|v| v.as_str()) {
+                                    if btn_id == "toggle_hide" {
+                                        let _ = thread_sender.send(CustomEvent::ToggleHideModules);
+                                    } else if btn_id == "toggle_adjust" {
+                                        let _ = thread_sender.send(CustomEvent::ToggleAdjustPositionMode);
                                     }
                                 }
                             }
-                            let _ = thread_sender.send(CustomEvent::CloudClosed { pid, source: context_source_clone });
-                        });
-                    }
+                        }
+                        let _ = thread_sender.send(CustomEvent::CloudClosed { pid: spawned_pid, source: context_source });
+                    });
 
                     return None;
                 }
@@ -1622,40 +1513,9 @@ impl cce_ui::engine::Application for StatusApp {
                     log::debug!("[layout-click] Layout mode clicked!");
                     let layout_source = "layout".to_string();
 
-                    // Check if any cce-cloud instance is already running
-                    let mut running_cloud_pid = None;
-                    if let Some(pid) = self.active_cloud_pid {
-                        if std::path::Path::new(&format!("/proc/{}", pid)).exists() {
-                            if let Ok(comm) = std::fs::read_to_string(format!("/proc/{}/comm", pid)) {
-                                if comm.trim() == "cce-cloud" {
-                                    running_cloud_pid = Some(pid);
-                                }
-                            }
-                        }
+                    if self.cloud_popups.click(&layout_source) == cce_ui::process::CloudPopupClick::ToggledOff {
+                        return None;
                     }
-
-                    if let Some(pid) = running_cloud_pid {
-                        // There is an active dialog open.
-                        // Kill it regardless of which one it is.
-                        log::debug!("[layout-click] cce-cloud (PID {}) is running, killing it", pid);
-                        send_sigterm(pid);
-                        self.active_cloud_pid = None;
-
-                        // If it was clicked for the layout menu, this is a toggle-off.
-                        if self.active_cloud_source.as_ref() == Some(&layout_source) {
-                            self.active_cloud_source = None;
-                            return None;
-                        }
-                    } else {
-                        // No active dialog is running, but check if there is a pending one for the same source
-                        if self.active_cloud_source.as_ref() == Some(&layout_source) {
-                            self.active_cloud_source = None;
-                            return None;
-                        }
-                    }
-
-                    // Now set the active cloud source to this one
-                    self.active_cloud_source = Some(layout_source);
 
                     if self.previously_focused_window.is_none() {
                         self.previously_focused_window = get_currently_focused_window();
@@ -1664,7 +1524,6 @@ impl cce_ui::engine::Application for StatusApp {
                     let x_pos = self.layout_bounds.as_ref().map(|b| b.x as i32).unwrap_or(0);
                     let y_pos = self.layout_bounds.as_ref().map(|b| b.h as i32).unwrap_or_else(|| read_status_height_from_config() as i32);
                     
-                    // Spawn the child on the main thread so we can capture its PID
                     let layout_json = serde_json::json!({
                         "width": 240,
                         "height": 320,
@@ -1679,72 +1538,47 @@ impl cce_ui::engine::Application for StatusApp {
                         ]
                     }).to_string();
 
-                    if let Ok(mut child) = std::process::Command::new(get_cce_cloud_cmd())
-                        .args([
-                            "--json",
-                            "-x",
-                            &x_pos.to_string(),
-                            "-y",
-                            &y_pos.to_string(),
-                        ])
-                        .stdin(std::process::Stdio::piped())
-                        .stdout(std::process::Stdio::piped())
-                        .stderr(std::process::Stdio::piped())
-                        .spawn()
-                    {
-                        let pid = child.id();
-                        self.active_cloud_pid = Some(pid);
-                        log::debug!("[layout-click] Spawned cce-cloud with PID {}", pid);
-                        
-                        let active_viewport = get_active_viewport_from_camera(&self.viewport);
-                        let thread_sender = self.sender.clone();
-                        std::thread::spawn(move || {
-                            log::debug!("[layout-click] Active tag is {}", active_viewport);
-                            if let Some(mut stdin) = child.stdin.take() {
-                                use std::io::Write;
-                                let _ = stdin.write_all(layout_json.as_bytes());
-                            }
-                            if let Ok(output) = child.wait_with_output() {
-                                let err_str = String::from_utf8_lossy(&output.stderr);
-                                if !err_str.is_empty() {
-                                    log::debug!("[cce-cloud stderr] {}", err_str);
-                                }
-                                if output.status.success() {
-                                    let out_str = String::from_utf8_lossy(&output.stdout);
-                                    #[derive(serde::Deserialize)]
-                                    struct LayoutMenuOutput {
-                                        button: String,
-                                        checkboxes: std::collections::HashMap<String, bool>,
-                                    }
-                                    if let Ok(val) = serde_json::from_str::<LayoutMenuOutput>(out_str.trim()) {
-                                        let selected_mode = val.button.to_lowercase();
-                                        let apply_all = val.checkboxes.get("apply_all").copied().unwrap_or(false);
-                                        if apply_all {
-                                            log::debug!("[layout-click] Selected mode: {}, applying to all windows sharing mode", selected_mode);
-                                            let _ = std::process::Command::new(get_ccectl_cmd())
-                                                .args(["apply-mode-sharing", &selected_mode])
-                                                .spawn();
-                                        } else {
-                                            log::debug!("[layout-click] Selected mode: {}, setting for tag {}", selected_mode, active_viewport);
-                                            let _ = std::process::Command::new(get_ccectl_cmd())
-                                                .args(["viewport-layout", &active_viewport.to_string(), &selected_mode])
-                                                .spawn();
-                                        }
-                                    } else {
-                                        // Fallback
-                                        let selected = out_str.trim().to_string();
-                                        if !selected.is_empty() {
-                                            let selected_lower = selected.to_lowercase();
-                                            let _ = std::process::Command::new(get_ccectl_cmd())
-                                                .args(["viewport-layout", &active_viewport.to_string(), &selected_lower])
-                                                .spawn();
-                                        }
-                                    }
-                                }
-                            }
-                            let _ = thread_sender.send(CustomEvent::CloudClosed { pid, source: "layout".to_string() });
+                    let active_viewport = get_active_viewport_from_camera(&self.viewport);
+                    let thread_sender = self.sender.clone();
+                    std::thread::spawn(move || {
+                        log::debug!("[layout-click] Active tag is {}", active_viewport);
+                        let popup = cce_ui::process::CloudPopup::at(x_pos, y_pos);
+                        let mut spawned_pid = 0;
+                        let result = popup.run_json(&layout_json, |pid| {
+                            spawned_pid = pid;
+                            log::debug!("[layout-click] Spawned cce-cloud with PID {}", pid);
+                            let _ = thread_sender.send(CustomEvent::CloudSpawned { pid, source: layout_source.clone() });
                         });
-                    }
+                        if let Ok(Some(out_str)) = &result {
+                            #[derive(serde::Deserialize)]
+                            struct LayoutMenuOutput {
+                                button: String,
+                                checkboxes: std::collections::HashMap<String, bool>,
+                            }
+                            if let Ok(val) = serde_json::from_str::<LayoutMenuOutput>(out_str) {
+                                let selected_mode = val.button.to_lowercase();
+                                let apply_all = val.checkboxes.get("apply_all").copied().unwrap_or(false);
+                                if apply_all {
+                                    log::debug!("[layout-click] Selected mode: {}, applying to all windows sharing mode", selected_mode);
+                                    let _ = std::process::Command::new(get_ccectl_cmd())
+                                        .args(["apply-mode-sharing", &selected_mode])
+                                        .spawn();
+                                } else {
+                                    log::debug!("[layout-click] Selected mode: {}, setting for tag {}", selected_mode, active_viewport);
+                                    let _ = std::process::Command::new(get_ccectl_cmd())
+                                        .args(["viewport-layout", &active_viewport.to_string(), &selected_mode])
+                                        .spawn();
+                                }
+                            } else {
+                                // Fallback
+                                let selected_lower = out_str.to_lowercase();
+                                let _ = std::process::Command::new(get_ccectl_cmd())
+                                    .args(["viewport-layout", &active_viewport.to_string(), &selected_lower])
+                                    .spawn();
+                            }
+                        }
+                        let _ = thread_sender.send(CustomEvent::CloudClosed { pid: spawned_pid, source: layout_source });
+                    });
                 } else {
                     let mut clicked_window = false;
                     for mb in &self.module_bounds {
