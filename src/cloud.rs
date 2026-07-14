@@ -91,45 +91,31 @@ pub(crate) fn parse_menu_item(
 }
 
 pub(crate) fn get_currently_focused_window() -> Option<String> {
-    let output = std::process::Command::new(get_ccectl_cmd())
-        .arg("windows")
-        .output();
-    if let Ok(out) = output {
-        let stdout_str = String::from_utf8_lossy(&out.stdout);
-        for line in stdout_str.lines() {
-            let focused = if let Some(idx) = line.find("focused=") {
-                let rest = &line[idx + 8..];
-                let end = rest.find(' ').unwrap_or(rest.len());
-                rest[..end].trim() == "true"
-            } else {
-                false
-            };
+    let out = std::process::Command::new(get_ccectl_cmd())
+        .args(["windows", "--json"])
+        .output()
+        .ok()?;
+    let stdout_str = String::from_utf8_lossy(&out.stdout);
+    stdout_str
+        .lines()
+        .filter_map(crate::parse_ccectl_window_any_line)
+        .find(|(_, app_id, _, focused)| {
+            *focused && app_id != "cce-status" && app_id != "cce-cloud"
+        })
+        .map(|(id, _, _, _)| id)
+}
 
-            if focused {
-                let app_id = if let Some(idx) = line.find("app_id=") {
-                    let rest = &line[idx + 7..];
-                    let end = rest.find(' ').unwrap_or(rest.len());
-                    rest[..end].to_string()
-                } else {
-                    continue;
-                };
-                if app_id == "cce-status" || app_id == "cce-cloud" {
-                    continue;
-                }
-                
-                // Return the unique window ID if present, otherwise fall back to app_id
-                let id = if let Some(idx) = line.find("window id=") {
-                    let rest = &line[idx + 10..];
-                    let end = rest.find(' ').unwrap_or(rest.len());
-                    rest[..end].to_string()
-                } else {
-                    app_id
-                };
-                return Some(id);
-            }
-        }
+/// Send SIGTERM to `pid` directly instead of shelling out to `kill`,
+/// logging when the signal cannot be delivered.
+pub(crate) fn send_sigterm(pid: u32) {
+    let ret = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+    if ret != 0 {
+        log::warn!(
+            "[cloud] SIGTERM to pid {} failed: {}",
+            pid,
+            std::io::Error::last_os_error()
+        );
     }
-    None
 }
 
 pub(crate) async fn show_cce_cloud_menu(
@@ -382,9 +368,10 @@ pub(crate) fn spawn_window_picker(
     source: String,
 ) {
     std::thread::spawn(move || {
-        // Run "ccectl windows" to fetch the windows list
+        // Fetch the windows list; an older compositor ignores --json and
+        // answers in the text format, which parse_ccectl_windows detects.
         let output = std::process::Command::new(get_ccectl_cmd())
-            .arg("windows")
+            .args(["windows", "--json"])
             .output();
 
         let windows = if let Ok(out) = output {

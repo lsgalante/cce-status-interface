@@ -235,16 +235,6 @@ pub(crate) fn get_cce_cloud_cmd() -> String {
     "cce-cloud".to_string()
 }
 
-pub(crate) fn get_cce_cmd() -> String {
-    if let Ok(home) = std::env::var("HOME") {
-        let path = format!("{}/.local/bin/cce", home);
-        if std::path::Path::new(&path).exists() {
-            return path;
-        }
-    }
-    "cce".to_string()
-}
-
 pub(crate) fn get_ccectl_cmd() -> String {
     if let Ok(home) = std::env::var("HOME") {
         let path = format!("{}/.local/bin/ccectl", home);

@@ -739,7 +739,7 @@ impl StatusApp {
             if running {
                 if let Some(pid) = self.active_cloud_pid {
                     log::debug!("[window-picker] Toggling off existing cce-cloud PID {}", pid);
-                    let _ = std::process::Command::new("kill").arg(pid.to_string()).status();
+                    send_sigterm(pid);
                 }
                 self.active_cloud_pid = None;
             }
@@ -872,6 +872,22 @@ fn parse_selected_module_from_args() -> Option<(String, Side)> {
     None
 }
 
+/// Ask the compositor for the current adjust-position-mode state
+/// (`ccectl adjust-position-mode query` → `ok true|false`). `None` when the
+/// query fails or the reply is unrecognized. Note: a pre-query compositor
+/// treats the `query` argument as a toggle — the two repos ship together.
+pub(crate) fn query_adjust_position_mode() -> Option<bool> {
+    let out = std::process::Command::new(get_ccectl_cmd())
+        .args(["adjust-position-mode", "query"])
+        .output()
+        .ok()?;
+    match String::from_utf8_lossy(&out.stdout).trim() {
+        "ok true" => Some(true),
+        "ok false" => Some(false),
+        _ => None,
+    }
+}
+
 /// One window from `ccectl windows` output: (id, app_id, title, focused).
 pub(crate) type CcectlWindow = (String, String, String, bool);
 
@@ -912,12 +928,34 @@ pub(crate) fn parse_ccectl_window_line(line: &str) -> Option<CcectlWindow> {
     Some((id, app_id, title, focused))
 }
 
-/// Parse `ccectl windows` output, dropping this app's own surfaces and cce-cloud
-/// popups (they should never appear in the window picker).
+/// Parse one line of `ccectl windows --json` output.
+pub(crate) fn parse_ccectl_window_json_line(line: &str) -> Option<CcectlWindow> {
+    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+    let id = v.get("id")?.as_u64()?.to_string();
+    let app_id = v.get("app_id")?.as_str()?.to_string();
+    let title = v.get("title").and_then(|t| t.as_str()).unwrap_or("").to_string();
+    let focused = v.get("focused").and_then(|f| f.as_bool()).unwrap_or(false);
+    Some((id, app_id, title, focused))
+}
+
+/// Parse one `ccectl windows` line in either format — JSON (`--json`) when the
+/// compositor supports it, otherwise the legacy text format (an older
+/// compositor ignores the `--json` flag and answers in text; titles containing
+/// `"` are then truncated at the quote).
+pub(crate) fn parse_ccectl_window_any_line(line: &str) -> Option<CcectlWindow> {
+    if line.trim_start().starts_with('{') {
+        parse_ccectl_window_json_line(line)
+    } else {
+        parse_ccectl_window_line(line)
+    }
+}
+
+/// Parse `ccectl windows [--json]` output, dropping this app's own surfaces and
+/// cce-cloud popups (they should never appear in the window picker).
 pub(crate) fn parse_ccectl_windows(output: &str) -> Vec<CcectlWindow> {
     output
         .lines()
-        .filter_map(parse_ccectl_window_line)
+        .filter_map(parse_ccectl_window_any_line)
         .filter(|(_, app_id, _, _)| {
             app_id != "cce-status" && app_id != "cce-status-interface" && app_id != "cce-cloud"
         })
@@ -1100,7 +1138,7 @@ impl cce_ui::engine::Application for StatusApp {
                     self.active_cloud_pid = Some(pid);
                 } else {
                     log::debug!("[cloud-event] CloudSpawned: pid {} for source {} is obsolete/canceled, killing", pid, source);
-                    let _ = std::process::Command::new("kill").arg(pid.to_string()).status();
+                    send_sigterm(pid);
                 }
             }
             CustomEvent::CloudClosed { pid, source } => {
@@ -1131,18 +1169,26 @@ impl cce_ui::engine::Application for StatusApp {
             CustomEvent::ToggleHideModules => {
                 self.status_hide_mode = !self.status_hide_mode;
                 let cmd = if self.status_hide_mode { "true" } else { "false" };
-                let _ = std::process::Command::new(get_cce_cmd())
-                    .args(["control", "status-hide-mode", cmd])
-                    .status();
+                if let Err(e) = std::process::Command::new(get_ccectl_cmd())
+                    .args(["status-hide-mode", cmd])
+                    .status()
+                {
+                    log::warn!("[hide-mode] ccectl status-hide-mode failed: {:?}", e);
+                }
                 *needs_rebuild = true;
             }
             CustomEvent::ToggleAdjustPositionMode => {
-                self.adjust_position_mode = std::path::Path::new("/tmp/cce-status-interface-adjust-mode").exists();
-                self.adjust_position_mode = !self.adjust_position_mode;
+                // The compositor is the source of truth: sync to its state,
+                // then send the flipped value.
+                self.adjust_position_mode =
+                    !query_adjust_position_mode().unwrap_or(self.adjust_position_mode);
                 let cmd = if self.adjust_position_mode { "true" } else { "false" };
-                let _ = std::process::Command::new(get_cce_cmd())
-                    .args(["control", "adjust-position-mode", cmd])
-                    .status();
+                if let Err(e) = std::process::Command::new(get_ccectl_cmd())
+                    .args(["adjust-position-mode", cmd])
+                    .status()
+                {
+                    log::warn!("[adjust-mode] ccectl adjust-position-mode failed: {:?}", e);
+                }
                 *needs_rebuild = true;
             }
         }
@@ -1319,7 +1365,7 @@ impl cce_ui::engine::Application for StatusApp {
                     // There is an active dialog open.
                     // Kill it regardless of which one it is.
                     log::debug!("[tray-click] cce-cloud (PID {}) is running, killing it", pid);
-                    let _ = std::process::Command::new("kill").arg(pid.to_string()).status();
+                    send_sigterm(pid);
                     self.active_cloud_pid = None;
 
                     // If it was clicked for the SAME tray icon, this is a toggle-off.
@@ -1428,7 +1474,8 @@ impl cce_ui::engine::Application for StatusApp {
             }
 
             if button == MouseButton::Right {
-                self.adjust_position_mode = std::path::Path::new("/tmp/cce-status-interface-adjust-mode").exists();
+                self.adjust_position_mode =
+                    query_adjust_position_mode().unwrap_or(self.adjust_position_mode);
                 // Find which module was right-clicked
                 let mut clicked_module = None;
                 for mb in &self.module_bounds {
@@ -1456,7 +1503,7 @@ impl cce_ui::engine::Application for StatusApp {
 
                     if let Some(pid) = running_cloud_pid {
                         log::debug!("[module-right-click] cce-cloud (PID {}) is running, killing it", pid);
-                        let _ = std::process::Command::new("kill").arg(pid.to_string()).status();
+                        send_sigterm(pid);
                         self.active_cloud_pid = None;
 
                         // If it was clicked for the same context menu, this is a toggle-off
@@ -1591,7 +1638,7 @@ impl cce_ui::engine::Application for StatusApp {
                         // There is an active dialog open.
                         // Kill it regardless of which one it is.
                         log::debug!("[layout-click] cce-cloud (PID {}) is running, killing it", pid);
-                        let _ = std::process::Command::new("kill").arg(pid.to_string()).status();
+                        send_sigterm(pid);
                         self.active_cloud_pid = None;
 
                         // If it was clicked for the layout menu, this is a toggle-off.
@@ -2065,12 +2112,51 @@ mod tests {
 
     #[test]
     fn ccectl_windows_title_truncates_at_inner_quote() {
-        // Known wire-format limitation: titles are not escaped, so an inner
-        // quote truncates the title. Documented here, to be fixed by the
-        // --json output in PROPOSAL.md phase 3.
+        // Known limitation of the legacy text format kept as the fallback for
+        // pre---json compositors: titles are not escaped, so an inner quote
+        // truncates the title. The JSON path below handles this correctly.
         let out = parse_ccectl_windows("window id=3 app_id=x title=\"say \"hi\"\" focused=false");
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].2, "say ");
+    }
+
+    // --- parse_ccectl_windows, JSON format (`windows --json`) ---
+
+    #[test]
+    fn ccectl_windows_json_full_line() {
+        let out = parse_ccectl_windows(
+            r#"{"id":3,"app_id":"firefox","title":"hello","mode":"grid","x":0,"y":0,"w":800,"h":600,"vx":0.0,"vy":0.0,"minimized":false,"has_parent":false,"focused":true,"ssd":false}"#,
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0], ("3".to_string(), "firefox".to_string(), "hello".to_string(), true));
+    }
+
+    #[test]
+    fn ccectl_windows_json_title_with_quotes_and_spaces() {
+        // The reason --json exists: titles survive quoting untouched.
+        let out = parse_ccectl_windows(
+            r#"{"id":3,"app_id":"x","title":"say \"hi\" title=fake","focused":false}"#,
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].2, "say \"hi\" title=fake");
+    }
+
+    #[test]
+    fn ccectl_windows_json_filters_own_surfaces() {
+        let out = parse_ccectl_windows(
+            "{\"id\":1,\"app_id\":\"cce-status\",\"title\":\"\",\"focused\":false}\n\
+             {\"id\":2,\"app_id\":\"cce-cloud\",\"title\":\"\",\"focused\":false}\n\
+             {\"id\":3,\"app_id\":\"firefox\",\"title\":\"\",\"focused\":false}",
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].1, "firefox");
+    }
+
+    #[test]
+    fn ccectl_windows_json_missing_required_fields_skips_line() {
+        assert!(parse_ccectl_windows(r#"{"app_id":"x","title":"no id"}"#).is_empty());
+        assert!(parse_ccectl_windows(r#"{"id":3,"title":"no app_id"}"#).is_empty());
+        assert!(parse_ccectl_windows("{not json").is_empty());
     }
 }
 

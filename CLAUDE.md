@@ -84,10 +84,13 @@ listen to tray D-Bus, etc.:
   `/tmp/cce-status-interface-switcher-{WAYLAND_DISPLAY}.sock`; a line on it fires
   `SwitcherTriggered`.
 
-Outbound actions shell out to `ccectl` (`view <viewport>`, `windows`, `focus-window`,
-`viewport-layout`, `window-switcher`) and `cce control ...`; both binaries are resolved
-from `~/.local/bin` first (`get_ccectl_cmd`/`get_cce_cmd`). Keyboard alt-tab switching
-is delegated to the compositor (`ccectl window-switcher`) — don't reimplement it here.
+Outbound actions shell out to `ccectl` (`view <viewport>`, `windows --json`,
+`focus-window`, `viewport-layout`, `window-switcher`, `status-hide-mode`,
+`adjust-position-mode`), resolved from `~/.local/bin` first (`get_ccectl_cmd`).
+`ccectl windows --json` returns one JSON object per line; the text format is kept only
+as a parse fallback for older compositors (`parse_ccectl_window_any_line` handles
+both). Keyboard alt-tab switching is delegated to the compositor
+(`ccectl window-switcher`) — don't reimplement it here.
 
 **Popups are `cce-cloud` processes**, not surfaces of this app: the window picker, tray
 context menus, and the layout-mode menu each spawn `cce-cloud`, pipe it a JSON page
@@ -122,4 +125,7 @@ mtime in `tick()`, so there is no reload event to wire up.
   the layout indicator opens the layout-mode menu; tray icons left-click activate /
   right-click open their DBusMenu.
 - `ToggleHideModules` / `ToggleAdjustPositionMode` mirror their state to the compositor
-  via `cce control status-hide-mode|adjust-position-mode true|false`.
+  via `ccectl status-hide-mode|adjust-position-mode true|false`; the adjust-mode state
+  is read back with `ccectl adjust-position-mode query` (the compositor is the single
+  source of truth — the old `/tmp/cce-status-interface-adjust-mode` sentinel file is
+  no longer consulted).
