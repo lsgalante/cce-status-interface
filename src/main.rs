@@ -808,7 +808,7 @@ fn get_active_viewport_from_camera(viewport_json: &str) -> u32 {
 
 fn get_module_side(name: &str) -> Side {
     let content = std::fs::read_to_string(cce_ui::config::get_config_path()).unwrap_or_default();
-    let val = parse_json(&content);
+    let val = cce_ui::config::parse_kdl_to_json(&content);
     module_side_from_json(&val, name)
 }
 
@@ -1888,37 +1888,11 @@ fn main() {
 mod tests {
     use super::*;
 
-
-    #[test]
-    fn test_status_config() {
-        let content = r##"
-style {
-    status normal_color=(color)"#ccccd8" background_color=(color)"#151520e6" background_blur=(f64)0.8 font="Berkeley Mono 14"
-}
-"##;
-        let val = parse_json(content);
-        println!("Parsed KDL to JSON: {:#?}", val);
-
-        let bg_color_val = json_find_key(&val, "status_background_color");
-        println!("bg_color_val = {:?}", bg_color_val);
-        assert!(bg_color_val.is_some());
-        assert_eq!(bg_color_val.unwrap().as_str().unwrap(), "#151520e6");
-
-        let blur_val = json_find_key(&val, "status_background_blur");
-        println!("blur_val = {:?}", blur_val);
-        assert!(blur_val.is_some());
-        assert_eq!(blur_val.unwrap().as_f64().unwrap(), 0.8);
-
-        let font_val = json_find_key(&val, "status_font");
-        println!("font_val = {:?}", font_val);
-        assert!(font_val.is_some());
-        assert_eq!(font_val.unwrap().as_str().unwrap(), "Berkeley Mono 14");
-    }
-
     // ------------------------------------------------------------------
     // Characterization tests (phase 0): these pin down current behavior
     // before the refactors in PROPOSAL.md. Where the behavior is odd, the
-    // test documents it rather than fixing it.
+    // test documents it rather than fixing it. The config-lookup and color
+    // tests moved to config.rs with the phase-2 rewrite.
     // ------------------------------------------------------------------
 
     fn assert_rgba_close(actual: [f32; 4], expected: [f32; 4]) {
@@ -1992,50 +1966,6 @@ style {
     #[test]
     fn viewport_text_empty_input_is_empty() {
         assert!(parse_viewport_text("").is_empty());
-    }
-
-    // --- json_find_key ---
-
-    #[test]
-    fn find_key_exact_match_at_top_level() {
-        let val = serde_json::json!({"bar_height": 30.0});
-        assert_eq!(json_find_key(&val, "bar_height").and_then(|v| v.as_f64()), Some(30.0));
-    }
-
-    #[test]
-    fn find_key_splits_snake_case_across_nesting() {
-        // "status_background_color" matches status { background_color }.
-        let val = serde_json::json!({"style": {"status": {"background_color": "#101010"}}});
-        assert_eq!(
-            json_find_key(&val, "status_background_color").and_then(|v| v.as_str()),
-            Some("#101010")
-        );
-    }
-
-    #[test]
-    fn find_key_exact_match_wins_over_split() {
-        // An exact "status_font" key beats descending into status { font }.
-        let val = serde_json::json!({
-            "status_font": "Exact Font",
-            "status": {"font": "Split Font"}
-        });
-        assert_eq!(
-            json_find_key(&val, "status_font").and_then(|v| v.as_str()),
-            Some("Exact Font")
-        );
-    }
-
-    #[test]
-    fn find_key_recurses_into_unrelated_parents() {
-        // The key is found even under a parent the key name never mentions.
-        let val = serde_json::json!({"unrelated": {"deeply": {"bar_height": 42.0}}});
-        assert_eq!(json_find_key(&val, "bar_height").and_then(|v| v.as_f64()), Some(42.0));
-    }
-
-    #[test]
-    fn find_key_miss_is_none() {
-        let val = serde_json::json!({"style": {"status": {}}});
-        assert!(json_find_key(&val, "nonexistent_key").is_none());
     }
 
     // --- module_side_from_json ---
@@ -2142,31 +2072,6 @@ style {
         let out = parse_ccectl_windows("window id=3 app_id=x title=\"say \"hi\"\" focused=false");
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].2, "say ");
-    }
-
-    // --- color parsing gamma (spec for PROPOSAL.md phase 2) ---
-
-    #[test]
-    fn color_from_key_is_gamma_corrected_but_srgb_variant_is_not() {
-        // parse_color_from_key / parse_rgba_color_from_key apply ^2.2 to RGB
-        // (alpha stays raw); parse_srgb_color_from_key returns raw sRGB.
-        // #808080 = 128/255 ≈ 0.50196 per channel; 0.50196^2.2 ≈ 0.21952.
-        let content = r##"
-style {
-    status normal_color=(color)"#808080" background_color=(color)"#80808080"
-}
-"##;
-        let raw = 128.0f32 / 255.0;
-        let linearized = raw.powf(2.2);
-
-        let srgb = parse_srgb_color_from_key(content, "status_normal_color").unwrap();
-        assert_rgba_close(srgb, [raw, raw, raw, 1.0]);
-
-        let gamma = parse_color_from_key(content, "status_background_color").unwrap();
-        assert_rgba_close(gamma, [linearized, linearized, linearized, raw]);
-
-        let gamma_rgba = parse_rgba_color_from_key(content, "status_background_color").unwrap();
-        assert_rgba_close(gamma_rgba, [linearized, linearized, linearized, raw]);
     }
 }
 
