@@ -430,7 +430,7 @@ pub(crate) fn spawn_window_picker(
         {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("[switcher] Failed to spawn cce-cloud: {:?}", e);
+                log::warn!("[switcher] Failed to spawn cce-cloud: {:?}", e);
                 let _ = thread_sender.send(CustomEvent::CloudClosed { pid: 0, source: source.clone() });
                 return;
             }
@@ -470,7 +470,7 @@ pub(crate) fn spawn_window_picker(
                     format!("{} ({})", title, app_id)
                 };
                 if display == selected {
-                    eprintln!("[switcher] Selecting window title: {}, app_id: {}, id: {}", title, app_id, id);
+                    log::debug!("[switcher] Selecting window title: {}, app_id: {}, id: {}", title, app_id, id);
                     let _ = std::process::Command::new(get_ccectl_cmd())
                         .args(["focus-window", &id])
                         .spawn();

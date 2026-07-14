@@ -440,7 +440,7 @@ struct StatusInterface;
 #[zbus::interface(name = "org.clear.StatusInterface")]
 impl StatusInterface {
     async fn notify_attention(&self, app_id: String, title: String) {
-        eprintln!("[status-interface] Received NotifyAttention: app_id={}, title={}", app_id, title);
+        log::debug!("[status-interface] Received NotifyAttention: app_id={}, title={}", app_id, title);
         let title_escaped = title.replace('\'', "'\\''");
         let app_id_escaped = app_id.replace('\'', "'\\''");
         let cmd = format!(
@@ -478,13 +478,13 @@ pub(crate) async fn spawn_status_tray(sender: calloop::channel::Sender<CustomEve
             {
                 Ok(c) => c,
                 Err(e) => {
-                    eprintln!("Failed to build D-Bus connection: {:?}", e);
+                    log::warn!("Failed to build D-Bus connection: {:?}", e);
                     return;
                 }
             }
         }
         Err(e) => {
-            eprintln!("Failed to initialize D-Bus session: {:?}", e);
+            log::warn!("Failed to initialize D-Bus session: {:?}", e);
             return;
         }
     };
@@ -495,14 +495,14 @@ pub(crate) async fn spawn_status_tray(sender: calloop::channel::Sender<CustomEve
     let dbus_proxy = match zbus::fdo::DBusProxy::new(&conn).await {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("Failed to create DBusProxy: {:?}", e);
+            log::warn!("Failed to create DBusProxy: {:?}", e);
             return;
         }
     };
     let mut owner_changes = match dbus_proxy.receive_name_owner_changed().await {
         Ok(oc) => oc,
         Err(e) => {
-            eprintln!("Failed to receive name owner changed: {:?}", e);
+            log::warn!("Failed to receive name owner changed: {:?}", e);
             return;
         }
     };

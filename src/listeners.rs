@@ -26,13 +26,13 @@ pub(crate) async fn spawn_status_listener(sub: &'static str, sender: calloop::ch
             }
         };
         if let Ok(mut stream) = UnixStream::connect(&socket_path).await {
-            eprintln!("[status-listener] connected to {} for sub '{}'", socket_path, sub);
+            log::info!("[status-listener] connected to {} for sub '{}'", socket_path, sub);
             if stream.write_all(format!("{}\n", sub).as_bytes()).await.is_ok() {
                 let mut reader = BufReader::new(stream);
                 let mut line = String::new();
                 while reader.read_line(&mut line).await.unwrap_or(0) > 0 {
                     let val = line.trim().to_string();
-                    eprintln!("[status-listener] received '{}' update: '{}'", sub, val);
+                    log::debug!("[status-listener] received '{}' update: '{}'", sub, val);
                     if !val.is_empty() {
                         let ev = match sub {
                             "viewport" => CustomEvent::ViewportUpdated(val.clone()),
@@ -59,7 +59,7 @@ pub(crate) async fn spawn_switcher_listener(sender: calloop::channel::Sender<Cus
     let _ = std::fs::remove_file(&socket_path);
 
     if let Ok(listener) = UnixListener::bind(&socket_path) {
-        eprintln!("[switcher-listener] Listening on {}", socket_path);
+        log::info!("[switcher-listener] Listening on {}", socket_path);
         loop {
             if let Ok((stream, _)) = listener.accept().await {
                 let mut reader = tokio::io::BufReader::new(stream);
@@ -70,6 +70,6 @@ pub(crate) async fn spawn_switcher_listener(sender: calloop::channel::Sender<Cus
             }
         }
     } else {
-        eprintln!("[switcher-listener] Failed to bind to {}", socket_path);
+        log::warn!("[switcher-listener] Failed to bind to {}", socket_path);
     }
 }

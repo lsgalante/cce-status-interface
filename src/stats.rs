@@ -92,12 +92,12 @@ pub(crate) async fn read_volume() -> Option<(String, bool)> {
     {
         Ok(o) => o,
         Err(e) => {
-            eprintln!("[read_volume] failed to spawn pactl: {:?}", e);
+            log::warn!("[read_volume] failed to spawn pactl: {:?}", e);
             return None;
         }
     };
     if !vol_output.status.success() {
-        eprintln!("[read_volume] pactl get-sink-volume exited with error: {:?}", String::from_utf8_lossy(&vol_output.stderr));
+        log::warn!("[read_volume] pactl get-sink-volume exited with error: {:?}", String::from_utf8_lossy(&vol_output.stderr));
         return None;
     }
     let vol_str = String::from_utf8_lossy(&vol_output.stdout);
@@ -109,12 +109,12 @@ pub(crate) async fn read_volume() -> Option<(String, bool)> {
     {
         Ok(o) => o,
         Err(e) => {
-            eprintln!("[read_volume] failed to spawn pactl mute: {:?}", e);
+            log::warn!("[read_volume] failed to spawn pactl mute: {:?}", e);
             return None;
         }
     };
     if !mute_output.status.success() {
-        eprintln!("[read_volume] pactl get-sink-mute exited with error: {:?}", String::from_utf8_lossy(&mute_output.stderr));
+        log::warn!("[read_volume] pactl get-sink-mute exited with error: {:?}", String::from_utf8_lossy(&mute_output.stderr));
         return None;
     }
     let mute_str = String::from_utf8_lossy(&mute_output.stdout);
@@ -162,10 +162,10 @@ pub(crate) fn get_initial_stats() -> SystemStats {
 }
 
 pub(crate) async fn spawn_system_stats(sender: calloop::channel::Sender<CustomEvent>) {
-    eprintln!("[spawn_system_stats] Starting system stats loop!");
+    log::info!("[spawn_system_stats] Starting system stats loop!");
     let mut last_cpu = read_cpu_ticks().unwrap_or((0, 0));
     loop {
-        eprintln!("[spawn_system_stats] loop iteration start");
+        log::debug!("[spawn_system_stats] loop iteration start");
         let clock = chrono::Local::now().format("%A, %B %d, %Y %I:%M %p").to_string();
         let memory = read_memory_usage().unwrap_or_else(|| "Mem N/A".to_string());
         
@@ -202,7 +202,7 @@ pub(crate) async fn spawn_system_stats(sender: calloop::channel::Sender<CustomEv
             volume_muted,
             brightness,
         };
-        eprintln!("[spawn_system_stats] stats: {:?}", stats);
+        log::debug!("[spawn_system_stats] stats: {:?}", stats);
         let _ = sender.send(CustomEvent::SystemStatsUpdated(stats));
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
