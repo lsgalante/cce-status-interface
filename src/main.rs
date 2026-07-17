@@ -84,6 +84,30 @@ pub struct SystemStats {
     pub brightness: String,
 }
 
+/// The subset of [`SystemStats`] a given module actually paints, as a comparable
+/// signature. The stats poller pushes a full `SystemStatsUpdated` every second
+/// regardless of change; deduping on this signature lets a module skip the redraw
+/// (and the compositor's whole-backdrop blur re-bake it triggers) when its own value
+/// is unchanged — e.g. the clock shows HH:MM and only changes once a minute.
+/// `None` means the module ignores stats entirely (window/tray/light_source), so a
+/// stats push never redraws it. Unknown / combined-bar modules compare everything.
+fn stats_signature(module: Option<&str>, s: &SystemStats) -> Option<String> {
+    match module {
+        Some("clock") => Some(s.clock.clone()),
+        Some("cpu") => Some(s.cpu.clone()),
+        Some("memory") => Some(s.memory.clone()),
+        Some("battery") => Some(format!("{}|{}|{}", s.battery, s.battery_capacity, s.battery_charging)),
+        Some("volume") => Some(format!("{}|{}", s.volume, s.volume_muted)),
+        Some("brightness") => Some(s.brightness.clone()),
+        Some("window") | Some("tray") | Some("light_source") => None,
+        _ => Some(format!(
+            "{}|{}|{}|{}|{}|{}|{}|{}|{}",
+            s.clock, s.memory, s.cpu, s.battery, s.battery_capacity,
+            s.battery_charging, s.volume, s.volume_muted, s.brightness
+        )),
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) enum CustomEvent {
     ViewportUpdated(String),
@@ -1008,18 +1032,35 @@ impl cce_ui::engine::Application for StatusApp {
     }
 
     fn update(&mut self, msg: Self::Message, needs_rebuild: &mut bool, _exit: &mut bool) {
+        // Default to redrawing; the high-frequency push events below clear this when
+        // their value is unchanged, so a once-a-second stats poll (or a repeated
+        // viewport/title push) no longer forces a redraw — and the compositor's
+        // whole-backdrop blur re-bake — every time.
+        let mut changed = true;
         match msg {
             CustomEvent::ViewportUpdated(t) => {
+                changed = self.viewport != t;
                 self.viewport = t;
             }
             CustomEvent::LayoutUpdated(l) => {
+                changed = self.layout != l;
                 self.layout = l;
             }
             CustomEvent::TitleUpdated(t) => {
+                changed = self.title != t;
                 self.title = t;
             }
             CustomEvent::SystemStatsUpdated(s) => {
                 log::debug!("[module-{}] stats updated, current width={}", self.selected_module_name.as_deref().unwrap_or("none"), self.width);
+                let module = self.selected_module_name.as_deref();
+                match stats_signature(module, &s) {
+                    // Module ignores stats (window/tray/light_source): never redraw here.
+                    None => changed = false,
+                    Some(new_sig) => {
+                        let old_sig = self.stats.as_ref().and_then(|o| stats_signature(module, o));
+                        changed = old_sig.as_deref() != Some(new_sig.as_str());
+                    }
+                }
                 self.stats = Some(s);
             }
             CustomEvent::TrayUpdated(item) => {
@@ -1080,8 +1121,10 @@ impl cce_ui::engine::Application for StatusApp {
                 *needs_rebuild = true;
             }
         }
-        self.needs_rebuild = true;
-        *needs_rebuild = true;
+        if changed {
+            self.needs_rebuild = true;
+            *needs_rebuild = true;
+        }
     }
 
     fn tick(&mut self, _dt: f32, needs_rebuild: &mut bool) {
