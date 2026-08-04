@@ -62,6 +62,25 @@ pub trait StatusModule {
     );
 }
 
+/// A stat module's width from the WIDER of its live text and a
+/// widest-plausible template ("Cpu 99.9%"), plus padding. Sizing to the live
+/// text alone made the surface resize whenever the value crossed a digit
+/// boundary ("Cpu 9.9%" ↔ "Cpu 10.2%"), which re-arranged the whole status
+/// strip and — through the compositor's configure echo — ping-ponged the
+/// module and its neighbors at frame rate (the tray/cpu jitter).
+fn stable_text_width(
+    font_system: &mut FontSystem,
+    text: &str,
+    template: &str,
+    font_size: f32,
+    font_family: &str,
+    padding: f32,
+) -> f32 {
+    let live = Label::new_with_family(font_system, text, font_size, [0.0, 0.0, 0.0, 1.0], font_family).w;
+    let tmpl = Label::new_with_family(font_system, template, font_size, [0.0, 0.0, 0.0, 1.0], font_family).w;
+    live.max(tmpl) + 2.0 * padding
+}
+
 pub struct WindowModule;
 
 impl StatusModule for WindowModule {
@@ -295,8 +314,7 @@ impl StatusModule for BatteryModule {
         } else {
             "Bat 100%"
         };
-        let label = Label::new_with_family(font_system, text, font_size, [0.0, 0.0, 0.0, 1.0], font_family);
-        label.w + 2.0 * padding
+        stable_text_width(font_system, text, "Bat 100%", font_size, font_family, padding)
     }
 
     fn render(
@@ -361,8 +379,7 @@ impl StatusModule for VolumeModule {
         } else {
             "Vol 100%"
         };
-        let label = Label::new_with_family(font_system, text, font_size, [0.0, 0.0, 0.0, 1.0], font_family);
-        label.w + 2.0 * padding
+        stable_text_width(font_system, text, "Vol 100%", font_size, font_family, padding)
     }
 
     fn render(
@@ -440,8 +457,7 @@ impl StatusModule for BrightnessModule {
         } else {
             "Bri 100%"
         };
-        let label = Label::new_with_family(font_system, text, font_size, [0.0, 0.0, 0.0, 1.0], font_family);
-        label.w + 2.0 * padding
+        stable_text_width(font_system, text, "Bri 100%", font_size, font_family, padding)
     }
 
     fn render(
@@ -501,8 +517,15 @@ impl StatusModule for MemoryModule {
         } else {
             "Mem 0.0/0.0G"
         };
-        let label = Label::new_with_family(font_system, text, font_size, [0.0, 0.0, 0.0, 1.0], font_family);
-        label.w + 2.0 * padding
+        // "Mem 8.2/62.4G" → "Mem 62.4/62.4G": used pinned to the total, the
+        // widest this machine's readout gets.
+        let template = text
+            .rsplit('/')
+            .next()
+            .and_then(|total| total.strip_suffix('G'))
+            .map(|total| format!("Mem {total}/{total}G"))
+            .unwrap_or_else(|| text.to_string());
+        stable_text_width(font_system, text, &template, font_size, font_family, padding)
     }
 
     fn render(
@@ -560,8 +583,7 @@ impl StatusModule for CpuModule {
         } else {
             "Cpu 0.0%"
         };
-        let label = Label::new_with_family(font_system, text, font_size, [0.0, 0.0, 0.0, 1.0], font_family);
-        label.w + 2.0 * padding
+        stable_text_width(font_system, text, "Cpu 99.9%", font_size, font_family, padding)
     }
 
     fn render(
