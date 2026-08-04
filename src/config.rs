@@ -225,6 +225,32 @@ pub(crate) fn read_status_box_corner_radius_from_config() -> f32 {
     cfg_f32("/style/status/box_corner_radius", "status_box_corner_radius").unwrap_or(4.0)
 }
 
+/// Bevel treatment for the module boxes.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) enum StatusBoxBevel {
+    /// A lit plate lip — the box rises out of the bar.
+    Raised,
+    /// A carved recess rim — the box sinks into the bar.
+    Inset,
+}
+
+/// `style { status box_bevel="raised"|"inset" }`; absent, `"none"`, or any
+/// other value keeps the flat boxes.
+pub(crate) fn read_status_box_bevel_from_config() -> Option<StatusBoxBevel> {
+    match cfg_string("/style/status/box_bevel", "status_box_bevel")?.to_ascii_lowercase().as_str() {
+        "raised" => Some(StatusBoxBevel::Raised),
+        "inset" => Some(StatusBoxBevel::Inset),
+        _ => None,
+    }
+}
+
+/// `style { status box_bevel_depth=(f64)N }` — the roll width of the bevel lip
+/// in logical px. The DE-wide `bevel_width` (~9px) is window-scale; module
+/// boxes in a ~24px bar want a much tighter lip.
+pub(crate) fn read_status_box_bevel_depth_from_config() -> f32 {
+    cfg_f32("/style/status/box_bevel_depth", "status_box_bevel_depth").unwrap_or(3.0)
+}
+
 pub(crate) fn get_ccectl_cmd() -> String {
     if let Ok(home) = std::env::var("HOME") {
         let path = format!("{}/.local/bin/ccectl", home);
@@ -276,6 +302,25 @@ style {
         assert_eq!(
             val.pointer("/style/status/font").and_then(|v| v.as_str()),
             Some("Berkeley Mono 14")
+        );
+    }
+
+    #[test]
+    fn test_box_bevel_config() {
+        let val = parse_kdl(
+            r##"
+style {
+    status box_bevel="raised" box_bevel_depth=(f64)2.5
+}
+"##,
+        );
+        assert_eq!(
+            val.pointer("/style/status/box_bevel").and_then(|v| v.as_str()),
+            Some("raised")
+        );
+        assert_eq!(
+            val.pointer("/style/status/box_bevel_depth").and_then(|v| v.as_f64()),
+            Some(2.5)
         );
     }
 

@@ -244,6 +244,8 @@ struct StatusApp {
     height: u32,
     needs_rebuild: bool,
     current_bg_color: [f32; 4],
+    box_bevel: Option<StatusBoxBevel>,
+    box_bevel_depth: f32,
     input_regions: Vec<(i32, i32, i32, i32)>,
     module_bounds: Vec<ModuleBounds>,
     left_modules: Vec<Box<dyn StatusModule>>,
@@ -328,6 +330,8 @@ impl StatusApp {
 
         let box_bg_color = read_status_box_background_color_from_config();
         let status_box_radius = read_status_box_corner_radius_from_config();
+        self.box_bevel = read_status_box_bevel_from_config();
+        self.box_bevel_depth = read_status_box_bevel_depth_from_config();
 
         self.status_bar.set_rect(0.0, 0.0, self.width as f32, self.height as f32);
         if self.selected_module_name.is_some() {
@@ -993,6 +997,8 @@ impl cce_ui::engine::Application for StatusApp {
             height: read_status_height_from_config() as u32,
             needs_rebuild: true,
             current_bg_color: color::STATUS_BG,
+            box_bevel: None,
+            box_bevel_depth: 3.0,
             input_regions: Vec::new(),
             module_bounds: Vec::new(),
             left_modules,
@@ -1157,10 +1163,34 @@ impl cce_ui::engine::Application for StatusApp {
 
         for rb in &self.rounded_boxes {
             let rect = Rect { x: rb.x, y: rb.y, width: rb.w, height: rb.h };
-            if rb.radius > 0.1 {
-                pc.rounded_rect(rect, rb.radius, rb.corners, rb.color);
-            } else {
-                pc.quad(rect, rb.color);
+            // Same positional corner→radius mapping the RoundedRect prim uses.
+            let radii = (
+                if rb.corners.0 { rb.radius } else { 0.0 },
+                if rb.corners.1 { rb.radius } else { 0.0 },
+                if rb.corners.2 { rb.radius } else { 0.0 },
+                if rb.corners.3 { rb.radius } else { 0.0 },
+            );
+            match self.box_bevel {
+                Some(StatusBoxBevel::Raised) => {
+                    // A lit plate: fill + rolled lip in one prim.
+                    pc.bevel(rect, radii, rb.color, self.box_bevel_depth);
+                }
+                Some(StatusBoxBevel::Inset) => {
+                    // Recess shades only the rim, so keep the flat fill under it.
+                    if rb.radius > 0.1 {
+                        pc.rounded_rect(rect, rb.radius, rb.corners, rb.color);
+                    } else {
+                        pc.quad(rect, rb.color);
+                    }
+                    pc.recess(rect, radii, self.box_bevel_depth);
+                }
+                None => {
+                    if rb.radius > 0.1 {
+                        pc.rounded_rect(rect, rb.radius, rb.corners, rb.color);
+                    } else {
+                        pc.quad(rect, rb.color);
+                    }
+                }
             }
         }
 
