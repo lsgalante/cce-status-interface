@@ -116,8 +116,8 @@ pub(crate) enum CustomEvent {
     SystemStatsUpdated(SystemStats),
     TrayUpdated(TrayItem),
     TrayRemoved(String),
-    CloudSpawned { pid: u32, source: String },
-    CloudClosed { pid: u32, source: String },
+    /// A bar-built in-surface menu (window picker), fetched off-thread.
+    MenuReady { title: String, pages: Vec<MenuPage>, min_w: f32 },
     SwitcherTriggered,
     /// A tray icon's DBusMenu, fetched and flattened for the in-surface menu.
     TrayMenuFetched { destination: String, menu_path: String, pages: Vec<MenuPage> },
@@ -138,6 +138,10 @@ struct ModuleContextMenu {
     /// to; None for the bar's own module menu.
     tray_target: Option<(String, String)>,
     min_w: f32,
+    /// The layout menu's "apply to all sharing mode" toggle.
+    apply_all: bool,
+    /// Viewport captured when the layout menu opened (SetMode target).
+    active_viewport: i32,
     hovered: Option<usize>,
     /// Menu box in surface-local logical coords, set by `rebuild_layout`.
     rect: (f32, f32, f32, f32),
@@ -296,8 +300,6 @@ struct StatusApp {
     tray_item_bounds: Vec<TrayIconBounds>,
     viewport_bounds: Vec<ViewportBounds>,
     layout_bounds: Option<LayoutBounds>,
-    cloud_popups: cce_ui::process::CloudPopupTracker,
-    previously_focused_window: Option<String>,
 
     font_system: FontSystem,
     status_bar: cce_ui::widget::Adapted<cce_ui::widget::StatusBar>,
@@ -691,7 +693,17 @@ impl StatusApp {
                 // applies) with rows, separators and a hover highlight on top.
                 if let Some(menu) = &mut self.context_menu {
                     let module_w = self.width as f32;
-                    let menu_w = module_w.max(menu.min_w);
+                    // Wide enough for the longest row label — fixed minimums
+                    // truncated window titles in the picker.
+                    let tx_probe = ModuleContextMenu::PAD + 8.0;
+                    let mut label_w: f32 = 0.0;
+                    for page_row in menu.rows().to_vec() {
+                        if !page_row.separator {
+                            let l = cce_ui::widget::StyledLabel::new_with_family(&mut self.font_system, &page_row.label, font_size, [0.0, 0.0, 0.0, 1.0], &font_family);
+                            label_w = label_w.max(l.w);
+                        }
+                    }
+                    let menu_w = module_w.max(menu.min_w).max(label_w + 2.0 * tx_probe);
                     let menu_h = menu.height();
                     menu.rect = (0.0, bar_h, menu_w, menu_h);
                     self.width = self.width.max(menu_w.round() as u32);
@@ -842,30 +854,46 @@ impl StatusApp {
             return;
         }
 
-        // Otherwise this is a click on the status-bar "window" module: show a
-        // click-to-pick list of the current windows.
-        let switcher_source = "window".to_string();
-
-        if self.cloud_popups.click(&switcher_source) == cce_ui::process::CloudPopupClick::ToggledOff {
-            return;
-        }
-
-        // Get placement coords: align just below Window module if we can find it
-        let mut target_x = 0.0;
-        for mb in &self.module_bounds {
-            if mb.name == "window" {
-                target_x = mb.x;
-                break;
+        // Otherwise this is a click on the status-bar "window" module: open
+        // the click-to-pick window list as an IN-SURFACE menu (the window
+        // module's own surface expands below the strip).
+        let thread_sender = self.sender.clone();
+        std::thread::spawn(move || {
+            let output = std::process::Command::new(get_ccectl_cmd())
+                .args(["windows", "--json"])
+                .output();
+            let windows = if let Ok(out) = output {
+                parse_ccectl_windows(&String::from_utf8_lossy(&out.stdout))
+            } else {
+                Vec::new()
+            };
+            if windows.is_empty() {
+                return;
             }
-        }
-
-        let bar_height = read_status_height_from_config() as i32;
-
-        // Position it under Window module
-        let x_pos = target_x as i32;
-        let y_pos = bar_height;
-
-        cloud::spawn_window_picker(x_pos, y_pos, self.sender.clone(), switcher_source);
+            let rows = windows
+                .into_iter()
+                // The bar's own segments are noise in a window picker.
+                .filter(|(_, app_id, _, _)| !app_id.starts_with("cce-status"))
+                .map(|(id, app_id, title, _)| {
+                    let display = if title.is_empty() {
+                        app_id.clone()
+                    } else {
+                        format!("{} ({})", title, app_id)
+                    };
+                    MenuRow {
+                        label: display,
+                        enabled: true,
+                        separator: false,
+                        action: MenuRowAction::Ccectl(vec!["focus-window".to_string(), id]),
+                    }
+                })
+                .collect();
+            let _ = thread_sender.send(CustomEvent::MenuReady {
+                title: "Windows".to_string(),
+                pages: vec![MenuPage { title: "Windows".to_string(), rows }],
+                min_w: 260.0,
+            });
+        });
     }
 }
 
@@ -1140,8 +1168,6 @@ impl cce_ui::engine::Application for StatusApp {
             tray_item_bounds: Vec::new(),
             viewport_bounds: Vec::new(),
             layout_bounds: None,
-            cloud_popups: cce_ui::process::CloudPopupTracker::new(),
-            previously_focused_window: None,
             font_system,
             status_bar: cce_ui::widget::StatusBar::new(),
             rects: Vec::new(),
@@ -1232,26 +1258,22 @@ impl cce_ui::engine::Application for StatusApp {
             CustomEvent::TrayRemoved(id) => {
                 self.tray_items.remove(&id);
             }
-            CustomEvent::CloudSpawned { pid, source } => {
-                self.cloud_popups.on_spawned(pid, &source);
-            }
-            CustomEvent::CloudClosed { pid, source } => {
-                if self.cloud_popups.on_closed(pid, &source) {
-                    log::debug!("[cloud-event] CloudClosed: pid {} for source {} closed, clearing tracking", pid, source);
-                    if source == "window" {
-                        self.previously_focused_window = None;
-                    } else if source == "layout" {
-                        if let Some(ref focus_query) = self.previously_focused_window {
-                            log::debug!("[cloud-event] Restoring focus to: {}", focus_query);
-                            let focus_query_clone = focus_query.clone();
-                            std::thread::spawn(move || {
-                                let _ = std::process::Command::new(get_ccectl_cmd())
-                                    .args(["focus-window", &focus_query_clone])
-                                    .status();
-                            });
-                        }
-                        self.previously_focused_window = None;
-                    }
+            CustomEvent::MenuReady { title, pages, min_w } => {
+                if !pages.is_empty() && !self.is_vertical() {
+                    let _ = title;
+                    self.context_menu = Some(ModuleContextMenu {
+                        pages,
+                        page: 0,
+                        tray_target: None,
+                        min_w,
+                        apply_all: false,
+                        active_viewport: 0,
+                        hovered: None,
+                        rect: (0.0, 0.0, 0.0, 0.0),
+                        row_bounds: Vec::new(),
+                    });
+                } else {
+                    changed = false;
                 }
             }
             CustomEvent::TrayMenuFetched { destination, menu_path, pages } => {
@@ -1261,6 +1283,8 @@ impl cce_ui::engine::Application for StatusApp {
                         page: 0,
                         tray_target: Some((destination, menu_path)),
                         min_w: 260.0,
+                        apply_all: false,
+                        active_viewport: 0,
                         hovered: None,
                         rect: (0.0, 0.0, 0.0, 0.0),
                         row_bounds: Vec::new(),
@@ -1465,6 +1489,40 @@ impl cce_ui::engine::Application for StatusApp {
                             menu.page = p;
                             menu.hovered = None;
                         }
+                        Some(MenuRowAction::Ccectl(args)) => {
+                            std::thread::spawn(move || {
+                                let _ = std::process::Command::new(get_ccectl_cmd())
+                                    .args(&args)
+                                    .spawn();
+                            });
+                            self.context_menu = None;
+                        }
+                        Some(MenuRowAction::SetMode(mode)) => {
+                            let args = if menu.apply_all {
+                                vec!["apply-mode-sharing".to_string(), mode]
+                            } else {
+                                vec![
+                                    "viewport-layout".to_string(),
+                                    menu.active_viewport.to_string(),
+                                    mode,
+                                ]
+                            };
+                            std::thread::spawn(move || {
+                                let _ = std::process::Command::new(get_ccectl_cmd())
+                                    .args(&args)
+                                    .spawn();
+                            });
+                            self.context_menu = None;
+                        }
+                        Some(MenuRowAction::ToggleApplyAll) => {
+                            menu.apply_all = !menu.apply_all;
+                            let mark = if menu.apply_all { "[x]" } else { "[ ]" };
+                            if let Some(page) = menu.pages.get_mut(menu.page) {
+                                if let Some(row) = page.rows.get_mut(i) {
+                                    row.label = format!("{} Apply to all sharing mode", mark);
+                                }
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -1613,6 +1671,8 @@ impl cce_ui::engine::Application for StatusApp {
                         page: 0,
                         tray_target: None,
                         min_w: 190.0,
+                        apply_all: false,
+                        active_viewport: 0,
                         hovered: None,
                         rect: (0.0, 0.0, 0.0, 0.0),
                         row_bounds: Vec::new(),
@@ -1636,75 +1696,39 @@ impl cce_ui::engine::Application for StatusApp {
                 }
 
                 if clicked_layout {
-                    log::debug!("[layout-click] Layout mode clicked!");
-                    let layout_source = "layout".to_string();
-
-                    if self.cloud_popups.click(&layout_source) == cce_ui::process::CloudPopupClick::ToggledOff {
-                        return None;
-                    }
-
-                    if self.previously_focused_window.is_none() {
-                        self.previously_focused_window = get_currently_focused_window();
-                    }
-
-                    let x_pos = self.layout_bounds.as_ref().map(|b| b.x as i32).unwrap_or(0);
-                    let y_pos = self.layout_bounds.as_ref().map(|b| b.h as i32).unwrap_or_else(|| read_status_height_from_config() as i32);
-                    
-                    let layout_json = serde_json::json!({
-                        "width": 240,
-                        "height": 320,
-                        "widgets": [
-                            { "type": "label", "text": "Window Mode" },
-                            { "id": "apply_all", "type": "checkbox", "text": "Apply to all sharing mode", "checked": false },
-                            { "id": "cascade", "type": "button", "text": "Cascade" },
-                            { "id": "grid", "type": "button", "text": "Grid" },
-                            { "id": "fullscreen", "type": "button", "text": "Fullscreen" },
-                            { "id": "floating", "type": "button", "text": "Floating" },
-                            { "id": "popup", "type": "button", "text": "Popup" }
-                        ]
-                    }).to_string();
-
-                    let active_viewport = get_active_viewport_from_camera(&self.viewport);
-                    let thread_sender = self.sender.clone();
-                    std::thread::spawn(move || {
-                        log::debug!("[layout-click] Active tag is {}", active_viewport);
-                        let popup = cce_ui::process::CloudPopup::at(x_pos, y_pos);
-                        let mut spawned_pid = 0;
-                        let result = popup.run_json(&layout_json, |pid| {
-                            spawned_pid = pid;
-                            log::debug!("[layout-click] Spawned cce-cloud with PID {}", pid);
-                            let _ = thread_sender.send(CustomEvent::CloudSpawned { pid, source: layout_source.clone() });
-                        });
-                        if let Ok(Some(out_str)) = &result {
-                            #[derive(serde::Deserialize)]
-                            struct LayoutMenuOutput {
-                                button: String,
-                                checkboxes: std::collections::HashMap<String, bool>,
-                            }
-                            if let Ok(val) = serde_json::from_str::<LayoutMenuOutput>(out_str) {
-                                let selected_mode = val.button.to_lowercase();
-                                let apply_all = val.checkboxes.get("apply_all").copied().unwrap_or(false);
-                                if apply_all {
-                                    log::debug!("[layout-click] Selected mode: {}, applying to all windows sharing mode", selected_mode);
-                                    let _ = std::process::Command::new(get_ccectl_cmd())
-                                        .args(["apply-mode-sharing", &selected_mode])
-                                        .spawn();
-                                } else {
-                                    log::debug!("[layout-click] Selected mode: {}, setting for tag {}", selected_mode, active_viewport);
-                                    let _ = std::process::Command::new(get_ccectl_cmd())
-                                        .args(["viewport-layout", &active_viewport.to_string(), &selected_mode])
-                                        .spawn();
-                                }
-                            } else {
-                                // Fallback
-                                let selected_lower = out_str.to_lowercase();
-                                let _ = std::process::Command::new(get_ccectl_cmd())
-                                    .args(["viewport-layout", &active_viewport.to_string(), &selected_lower])
-                                    .spawn();
-                            }
-                        }
-                        let _ = thread_sender.send(CustomEvent::CloudClosed { pid: spawned_pid, source: layout_source });
+                    log::debug!("[layout-click] opening in-surface layout menu");
+                    let mode_row = |label: &str| MenuRow {
+                        label: label.to_string(),
+                        enabled: true,
+                        separator: false,
+                        action: MenuRowAction::SetMode(label.to_lowercase()),
+                    };
+                    let rows = vec![
+                        MenuRow {
+                            label: "[ ] Apply to all sharing mode".to_string(),
+                            enabled: true,
+                            separator: false,
+                            action: MenuRowAction::ToggleApplyAll,
+                        },
+                        mode_row("Cascade"),
+                        mode_row("Grid"),
+                        mode_row("Fullscreen"),
+                        mode_row("Floating"),
+                        mode_row("Popup"),
+                    ];
+                    self.context_menu = Some(ModuleContextMenu {
+                        pages: vec![MenuPage { title: "Window Mode".to_string(), rows }],
+                        page: 0,
+                        tray_target: None,
+                        min_w: 240.0,
+                        apply_all: false,
+                        active_viewport: get_active_viewport_from_camera(&self.viewport) as i32,
+                        hovered: None,
+                        rect: (0.0, 0.0, 0.0, 0.0),
+                        row_bounds: Vec::new(),
                     });
+                    self.needs_rebuild = true;
+                    *needs_rebuild = true;
                 } else {
                     let mut clicked_window = false;
                     for mb in &self.module_bounds {

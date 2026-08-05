@@ -1,10 +1,9 @@
-//! Menu machinery: the in-surface tray/module menu model (fetched DBusMenu
-//! layouts flattened into pages of plain-data rows that ride a CustomEvent
-//! into the module's update loop), plus the remaining cce-cloud popup (the
-//! window picker).
+//! Menu machinery: the in-surface menu model — fetched DBusMenu layouts and
+//! bar-built menus alike are flattened into pages of plain-data rows that
+//! ride a CustomEvent into the module's update loop, where the module's own
+//! surface expands to show them.
 
-use crate::{parse_ccectl_windows, CustomEvent};
-use crate::config::get_ccectl_cmd;
+use crate::CustomEvent;
 
 #[zbus::proxy(
     interface = "com.canonical.dbusmenu",
@@ -112,6 +111,13 @@ pub(crate) enum MenuRowAction {
     Back(usize),
     /// Dispatch a bar-internal event (the module context menu's rows).
     Dispatch(CustomEvent),
+    /// Run ccectl with these args, detached (window picker rows).
+    Ccectl(Vec<String>),
+    /// Apply a window mode (the layout menu): honors the menu's live
+    /// apply-to-all toggle and captured viewport at click time.
+    SetMode(String),
+    /// Flip the layout menu's apply-to-all toggle in place (stays open).
+    ToggleApplyAll,
     /// Non-interactive (separators).
     Inert,
 }
@@ -244,93 +250,5 @@ pub(crate) fn send_tray_menu_event(destination: String, menu_path: String, id: i
                 log::warn!("[tray-menu] clicked event failed: {:?}", e);
             }
         });
-    });
-}
-
-pub(crate) fn get_currently_focused_window() -> Option<String> {
-    let out = std::process::Command::new(get_ccectl_cmd())
-        .args(["windows", "--json"])
-        .output()
-        .ok()?;
-    let stdout_str = String::from_utf8_lossy(&out.stdout);
-    stdout_str
-        .lines()
-        .filter_map(crate::parse_ccectl_window_any_line)
-        .find(|(_, app_id, _, focused)| {
-            *focused && app_id != "cce-status" && app_id != "cce-cloud"
-        })
-        .map(|(id, _, _, _)| id)
-}
-
-
-/// Spawn the click-to-pick window list as a cce-cloud dmenu process, report
-/// lifecycle via CloudSpawned/CloudClosed, and focus the picked window.
-pub(crate) fn spawn_window_picker(
-    x_pos: i32,
-    y_pos: i32,
-    thread_sender: calloop::channel::Sender<CustomEvent>,
-    source: String,
-) {
-    std::thread::spawn(move || {
-        // Fetch the windows list; an older compositor ignores --json and
-        // answers in the text format, which parse_ccectl_windows detects.
-        let output = std::process::Command::new(get_ccectl_cmd())
-            .args(["windows", "--json"])
-            .output();
-
-        let windows = if let Ok(out) = output {
-            parse_ccectl_windows(&String::from_utf8_lossy(&out.stdout))
-        } else {
-            Vec::new()
-        };
-
-        if windows.is_empty() {
-            // If there are no windows, don't open a switcher and clear state
-            let _ = thread_sender.send(CustomEvent::CloudClosed { pid: 0, source: source.clone() });
-            return;
-        }
-
-        // Format items for dmenu, keeping the stable order returned by ccectl
-        let mut input_str = String::new();
-        for (_, app_id, title, _) in &windows {
-            let display = if title.is_empty() {
-                app_id.clone()
-            } else {
-                format!("{} ({})", title, app_id)
-            };
-            input_str.push_str(&display);
-            input_str.push('\n');
-        }
-
-        let popup = cce_ui::process::CloudPopup::at(x_pos, y_pos);
-        let mut spawned_pid = 0;
-        let result = popup.run_dmenu("Windows:", &input_str, |pid| {
-            spawned_pid = pid;
-            let _ = thread_sender.send(CustomEvent::CloudSpawned { pid, source: source.clone() });
-        });
-
-        match result {
-            Ok(Some(selected)) => {
-                // Find the matched window
-                for (id, app_id, title, _) in windows {
-                    let display = if title.is_empty() {
-                        app_id.clone()
-                    } else {
-                        format!("{} ({})", title, app_id)
-                    };
-                    if display == selected {
-                        log::debug!("[switcher] Selecting window title: {}, app_id: {}, id: {}", title, app_id, id);
-                        let _ = std::process::Command::new(get_ccectl_cmd())
-                            .args(["focus-window", &id])
-                            .spawn();
-                        break;
-                    }
-                }
-            }
-            Ok(None) => {}
-            Err(e) => log::warn!("[switcher] Failed to spawn cce-cloud: {:?}", e),
-        }
-
-        let _ = thread_sender.send(CustomEvent::CloudClosed { pid: spawned_pid, source: source.clone() });
     });
 }

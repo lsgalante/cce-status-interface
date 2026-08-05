@@ -102,12 +102,16 @@ DBusMenu "clicked" via `send_tray_menu_event`). The compositor treats a status
 segment thicker than the bar as expanded: frozen slot, no size enforcement,
 raised above overlapped windows; the bar must reset its own height on close.
 
-**The remaining popups are `cce-cloud` processes**: the window picker and the
-layout-mode menu run a `cce_ui::process::CloudPopup` (`run_json`/`run_dmenu`)
-on a worker thread, with the single-popup toggle state in
-`cce_ui::process::CloudPopupTracker` (`StatusApp.cloud_popups`) — the thread
-reports back via `CloudSpawned`/`CloudClosed`, clicking a trigger again toggles
-off, and closing restores focus with `ccectl focus-window`.
+**No cce-cloud popups remain in this app**: the window picker (window-module
+title click → `MenuReady` rows of `Ccectl(["focus-window", id])`) and the
+layout-mode menu (layout-indicator click → `SetMode` rows + the in-place
+`ToggleApplyAll` checkbox row) are in-surface menus too. Menu width sizes to
+the longest row label. KNOWN WART: while a menu is open, strip-band clicks
+(y < bar height) landing over a NEIGHBORING segment's box route to the
+neighbor instead of the raised expanded surface, so they don't close the
+menu — close via the menu, its padding, or the module's own strip. The
+compositor hit-test (`Scene::at`, wlr_scene_node_at) is scene-based, so why
+the raise loses there is unresolved.
 
 ## Config
 
