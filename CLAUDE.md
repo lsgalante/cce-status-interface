@@ -121,7 +121,9 @@ embedded in the shared font string, which remains the fallback) and
 `module { font }` (module text family; an embedded size ranks below
 module { font_size } in the size chain) and `module { background_color }` (the
 module box fill, rgba; linearized like every quad color, and the
-background_blur tint scaling still applies on top). Everything is read through
+background_blur tint scaling still applies on top) and `module { text_color }`
+(module text, raw-sRGB like every text color, falls back to the shared
+`status_normal_color`). Everything is read through
 `cce_ui::config::cached_config()`; KDL is converted to JSON
 (`cce_ui::config::parse_kdl_to_json`) and looked up with the local `json_find_key`,
 which splits snake_case keys across nesting — `status_background_color` matches

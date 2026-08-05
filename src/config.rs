@@ -113,7 +113,10 @@ fn cfg_quad_color(pointer: &str, legacy_key: &str) -> Option<[f32; 4]> {
 }
 
 pub(crate) fn read_normal_color_from_config() -> Option<[f32; 4]> {
-    cfg_text_color("/style/status/normal_color", "status_normal_color")
+    // App-native `module { text_color }` first (a TEXT color — raw sRGB, per
+    // the color-space split in CLAUDE.md), then the shared status key.
+    cfg_text_color("/module/text_color", "module_text_color")
+        .or_else(|| cfg_text_color("/style/status/normal_color", "status_normal_color"))
 }
 
 pub(crate) fn read_disabled_color_from_config() -> Option<[f32; 4]> {
