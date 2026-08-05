@@ -115,7 +115,9 @@ multi-module surface — applied on `ccectl reload`) and `module { height }` (th
 bar height; read by BOTH sides — bar surfaces live via the mtime poll, the
 compositor's segment height + reserved strip on `ccectl reload` — falls back to
 the shared `layout { bar_height }`) and `module { padding }` (text inset inside
-each module box, bar-side only, falls back to the shared `status_padding`). Everything is read through
+each module box, bar-side only, falls back to the shared `status_padding`) and
+`module { font_size }` (module text size, bar-side only; beats even the size
+embedded in the shared font string, which remains the fallback). Everything is read through
 `cce_ui::config::cached_config()`; KDL is converted to JSON
 (`cce_ui::config::parse_kdl_to_json`) and looked up with the local `json_find_key`,
 which splits snake_case keys across nesting — `status_background_color` matches

@@ -301,7 +301,12 @@ impl StatusApp {
         let bar_thickness = read_status_height_from_config() as u32;
         cce_ui::BAR_THICKNESS.store(bar_thickness, std::sync::atomic::Ordering::Relaxed);
 
-        let font_family = read_status_font_from_config();
+        // Family WITHOUT the embedded size: the toolkit's text pipeline lets
+        // a size inside the font string ("Chivo Mono 14") override the
+        // explicit font-size parameter, which would dead-end
+        // `module { font_size }`. Size is resolved separately below.
+        let (font_family, _) =
+            cce_ui::layout::parse_font_string(&read_status_font_from_config());
         let font_size = read_status_font_size_from_config();
         let show_separators = false;
         let padding = read_status_padding_from_config();

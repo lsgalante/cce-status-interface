@@ -144,6 +144,12 @@ pub(crate) fn read_status_height_from_config() -> f32 {
 }
 
 pub(crate) fn read_status_font_size_from_config() -> f32 {
+    // App-native `module { font_size }` wins over everything — including the
+    // size embedded in the shared font string ("Chivo Mono 14"), which stays
+    // the fallback along with the shared status_font_size key.
+    if let Some(size) = cfg_f32("/module/font_size", "module_font_size") {
+        return size;
+    }
     if let Some(font_str) = cfg_string("/style/status/font", "status_font") {
         let (_, parsed_size) = cce_ui::layout::parse_font_string(&font_str);
         if let Some(size) = parsed_size {
