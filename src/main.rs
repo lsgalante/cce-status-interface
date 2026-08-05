@@ -445,7 +445,10 @@ impl StatusApp {
                 }
                 is_first_left = false;
 
-                if !module.has_custom_background(&self.title) {
+                // With the in-surface menu open the module box is replaced by
+                // the unified expanded box drawn in the menu branch below —
+                // the module box GROWS into the menu, it doesn't sit atop it.
+                if !module.has_custom_background(&self.title) && self.context_menu.is_none() {
                     if let Some(color) = box_bg_color {
                         self.rounded_boxes.push(RoundedBox {
                             x: left_x,
@@ -526,7 +529,9 @@ impl StatusApp {
                 });
                 self.input_regions.push((right_x.round() as i32, 0, w.round() as i32, bar_h.round() as i32));
 
-                if !module.has_custom_background(&self.title) {
+                // See the left loop: an open in-surface menu swaps the module
+                // box for the unified expanded box.
+                if !module.has_custom_background(&self.title) && self.context_menu.is_none() {
                     if let Some(color) = box_bg_color {
                         self.rounded_boxes.push(RoundedBox {
                             x: right_x,
@@ -692,7 +697,10 @@ impl StatusApp {
                 // The panel reuses the module box pipeline (so box_bevel
                 // applies) with rows, separators and a hover highlight on top.
                 if let Some(menu) = &mut self.context_menu {
-                    let module_w = self.width as f32;
+                    // The unified box keeps the module box's own margin so the
+                    // strip band reads as the module box, grown.
+                    let plate_x = margin_padding;
+                    let module_box_w = self.width as f32 - 2.0 * plate_x;
                     // Wide enough for the longest row label — fixed minimums
                     // truncated window titles in the picker.
                     let tx_probe = ModuleContextMenu::PAD + 8.0;
@@ -703,20 +711,25 @@ impl StatusApp {
                             label_w = label_w.max(l.w);
                         }
                     }
-                    let menu_w = module_w.max(menu.min_w).max(label_w + 2.0 * tx_probe);
+                    let menu_w = module_box_w.max(menu.min_w).max(label_w + 2.0 * tx_probe);
                     let menu_h = menu.height();
-                    menu.rect = (0.0, bar_h, menu_w, menu_h);
-                    self.width = self.width.max(menu_w.round() as u32);
+                    menu.rect = (plate_x, bar_h, menu_w, menu_h);
+                    self.width = self.width.max((menu_w + 2.0 * plate_x).round() as u32);
                     self.height = (bar_h + menu_h).round() as u32;
 
-                    self.rounded_boxes.push(RoundedBox {
-                        x: 0.0,
-                        y: bar_h,
+                    // ONE continuous box in the module's own fill, spanning
+                    // the strip band and the menu — the module box literally
+                    // grows into the menu. Inserted at the front so the
+                    // module's strip content (tray icons, viewport tabs)
+                    // renders on top of its band.
+                    self.rounded_boxes.insert(0, RoundedBox {
+                        x: plate_x,
+                        y: 0.0,
                         w: menu_w,
-                        h: menu_h,
+                        h: bar_h + menu_h,
                         radius: status_box_radius.max(4.0),
-                        color: [0.055, 0.055, 0.075, 0.97],
-                        corners: (false, false, true, true),
+                        color: box_bg_color.unwrap_or([0.055, 0.055, 0.075, 0.97]),
+                        corners: (true, true, true, true),
                     });
 
                     let text_u8 = [
@@ -729,7 +742,7 @@ impl StatusApp {
                         (normal_color[1] * 150.0) as u8,
                         (normal_color[2] * 150.0) as u8,
                     ];
-                    let tx = ModuleContextMenu::PAD + 8.0;
+                    let tx = plate_x + ModuleContextMenu::PAD + 8.0;
                     self.text_prims.push((
                         menu.title().to_string(),
                         font_size,
@@ -757,14 +770,14 @@ impl StatusApp {
                             self.rects.push(RectWidget {
                                 x: tx,
                                 y: iy + h / 2.0,
-                                w: menu_w - 2.0 * tx,
+                                w: menu_w - 2.0 * (ModuleContextMenu::PAD + 8.0),
                                 h: 1.0,
                                 color: [0.35, 0.35, 0.42, 0.8],
                             });
                         } else {
                             if hovered == Some(i) && row.enabled {
                                 self.rects.push(RectWidget {
-                                    x: 2.0,
+                                    x: plate_x + 2.0,
                                     y: iy,
                                     w: menu_w - 4.0,
                                     h: h,
