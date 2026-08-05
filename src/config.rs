@@ -222,7 +222,13 @@ pub(crate) fn read_status_box_background_color_from_config() -> Option<[f32; 4]>
 }
 
 pub(crate) fn read_status_box_corner_radius_from_config() -> f32 {
-    cfg_f32("/style/status/box_corner_radius", "status_box_corner_radius").unwrap_or(4.0)
+    // The app's own config wins (~/.config/cce/cce-status-interface/config.kdl,
+    // merged over the shared config by cce-ui): `module { corner_radius }` is
+    // the app-native spelling for the overall module box radius. The shared
+    // config's status key remains the DE-wide fallback.
+    cfg_f32("/module/corner_radius", "module_corner_radius")
+        .or_else(|| cfg_f32("/style/status/box_corner_radius", "status_box_corner_radius"))
+        .unwrap_or(4.0)
 }
 
 /// Bevel treatment for the module boxes.

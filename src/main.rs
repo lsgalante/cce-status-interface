@@ -1004,7 +1004,7 @@ impl cce_ui::engine::Application for StatusApp {
             left_modules,
             right_modules,
             sender,
-            last_config_modified: std::fs::metadata(cce_ui::config::get_config_path()).ok().and_then(|m| m.modified().ok()),
+            last_config_modified: cce_ui::config::config_files_modified(),
             selected_module_name: selected_module.as_ref().map(|(n, _)| n.clone()),
             selected_module_side: selected_module.as_ref().map(|(_, s)| s.clone()),
             status_hide_mode: false,
@@ -1134,14 +1134,13 @@ impl cce_ui::engine::Application for StatusApp {
     }
 
     fn tick(&mut self, _dt: f32, needs_rebuild: &mut bool) {
-        if let Ok(metadata) = std::fs::metadata(cce_ui::config::get_config_path()) {
-            if let Ok(modified) = metadata.modified() {
-                if Some(modified) != self.last_config_modified {
-                    self.last_config_modified = Some(modified);
-                    *needs_rebuild = true;
-                    self.needs_rebuild = true;
-                }
-            }
+        // Watches the shared config AND the app's own override file (the
+        // newest mtime of the pair) — same key cce-ui's config cache uses.
+        let modified = cce_ui::config::config_files_modified();
+        if modified.is_some() && modified != self.last_config_modified {
+            self.last_config_modified = modified;
+            *needs_rebuild = true;
+            self.needs_rebuild = true;
         }
     }
 
