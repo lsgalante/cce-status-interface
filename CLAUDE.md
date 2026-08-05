@@ -111,7 +111,10 @@ merge by executable name; both files' mtimes drive the live-reload poll via
 `module { corner_radius }` (overall module box radius, falls back to the shared
 `status_box_corner_radius`) and `module { spacing }` (the gap between segments;
 the COMPOSITOR reads this one for its arrange pass — bar-side it only affects a
-multi-module surface — applied on `ccectl reload`). Everything is read through
+multi-module surface — applied on `ccectl reload`) and `module { height }` (the
+bar height; read by BOTH sides — bar surfaces live via the mtime poll, the
+compositor's segment height + reserved strip on `ccectl reload` — falls back to
+the shared `layout { bar_height }`). Everything is read through
 `cce_ui::config::cached_config()`; KDL is converted to JSON
 (`cce_ui::config::parse_kdl_to_json`) and looked up with the local `json_find_key`,
 which splits snake_case keys across nesting — `status_background_color` matches

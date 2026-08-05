@@ -135,7 +135,12 @@ pub(crate) fn read_status_font_from_config() -> String {
 }
 
 pub(crate) fn read_status_height_from_config() -> f32 {
-    cfg_f32("/layout/bar_height", "bar_height").unwrap_or(28.0)
+    // App-native `module { height }` first — the compositor reads the same
+    // key for the arrange pass's segment height and reserved strip, so the
+    // two sides always agree — then the shared layout { bar_height }.
+    cfg_f32("/module/height", "module_height")
+        .or_else(|| cfg_f32("/layout/bar_height", "bar_height"))
+        .unwrap_or(28.0)
 }
 
 pub(crate) fn read_status_font_size_from_config() -> f32 {
