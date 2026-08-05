@@ -109,7 +109,9 @@ Config comes from the shared `~/.config/cce/config.kdl` with the app's own
 merge by executable name; both files' mtimes drive the live-reload poll via
 `config_files_modified`). App-native keys live in the app file — currently
 `module { corner_radius }` (overall module box radius, falls back to the shared
-`status_box_corner_radius`). Everything is read through
+`status_box_corner_radius`) and `module { spacing }` (the gap between segments;
+the COMPOSITOR reads this one for its arrange pass — bar-side it only affects a
+multi-module surface — applied on `ccectl reload`). Everything is read through
 `cce_ui::config::cached_config()`; KDL is converted to JSON
 (`cce_ui::config::parse_kdl_to_json`) and looked up with the local `json_find_key`,
 which splits snake_case keys across nesting — `status_background_color` matches
