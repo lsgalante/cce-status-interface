@@ -123,6 +123,48 @@ pub(crate) enum CustomEvent {
     ToggleAdjustPositionMode,
 }
 
+/// The in-surface right-click menu: instead of spawning a popup process, the
+/// module's own surface EXPANDS below the bar strip to contain the menu. The
+/// compositor treats a status segment thicker than the bar as expanded — it
+/// keeps the segment's frozen slot, stops enforcing its size, and raises it
+/// above the windows the menu overlaps.
+struct ModuleContextMenu {
+    module: String,
+    /// (label, action sent through `update` when clicked)
+    items: Vec<(String, CustomEvent)>,
+    hovered: Option<usize>,
+    /// Menu box in surface-local logical coords, set by `rebuild_layout`.
+    rect: (f32, f32, f32, f32),
+}
+
+impl ModuleContextMenu {
+    const PAD: f32 = 6.0;
+    const HEADER_H: f32 = 26.0;
+    const ITEM_H: f32 = 28.0;
+    const MIN_W: f32 = 190.0;
+
+    fn height(&self) -> f32 {
+        2.0 * Self::PAD + Self::HEADER_H + self.items.len() as f32 * Self::ITEM_H
+    }
+
+    fn contains(&self, x: f32, y: f32) -> bool {
+        let (mx, my, mw, mh) = self.rect;
+        x >= mx && x <= mx + mw && y >= my && y <= my + mh
+    }
+
+    fn item_at(&self, x: f32, y: f32) -> Option<usize> {
+        if !self.contains(x, y) {
+            return None;
+        }
+        let rel = y - (self.rect.1 + Self::PAD + Self::HEADER_H);
+        if rel < 0.0 {
+            return None;
+        }
+        let idx = (rel / Self::ITEM_H) as usize;
+        (idx < self.items.len()).then_some(idx)
+    }
+}
+
 pub(crate) fn make_text_buffer(fs: &mut FontSystem, text: &str, size: f32, font_family: &str) -> Buffer {
     let scale = cce_ui::scale::scale_factor();
     let mut font_size = size;
@@ -245,6 +287,7 @@ struct StatusApp {
     current_bg_color: [f32; 4],
     box_bevel: Option<StatusBoxBevel>,
     box_bevel_depth: f32,
+    context_menu: Option<ModuleContextMenu>,
     input_regions: Vec<(i32, i32, i32, i32)>,
     module_bounds: Vec<ModuleBounds>,
     left_modules: Vec<Box<dyn StatusModule>>,
@@ -278,6 +321,12 @@ impl StatusApp {
     }
 
     fn is_vertical(&self) -> bool {
+        // An open in-surface menu makes the surface taller than wide; that
+        // must not read as a vertical bar (menus only open on horizontal
+        // segments).
+        if self.context_menu.is_some() {
+            return false;
+        }
         let bar_thickness = read_status_height_from_config() as u32;
         if self.width == bar_thickness && self.height != bar_thickness {
             true
@@ -599,6 +648,80 @@ impl StatusApp {
                 log::debug!("[module-{}] rebuild_layout horizontal: width calculated as {} (was {})", self.selected_module_name.as_deref().unwrap_or("none"), self.width, old_w);
                 self.input_regions.clear();
                 self.input_regions.push((0, 0, self.width as i32, bar_h.round() as i32));
+
+                // In-surface context menu: grow the surface below the bar
+                // strip and draw the menu into the retained buffers. The
+                // panel reuses the module box pipeline (so box_bevel applies)
+                // with text rows and a hover highlight on top.
+                if let Some(menu) = &mut self.context_menu {
+                    let module_w = self.width as f32;
+                    let menu_w = module_w.max(ModuleContextMenu::MIN_W);
+                    let menu_h = menu.height();
+                    menu.rect = (0.0, bar_h, menu_w, menu_h);
+                    self.width = self.width.max(menu_w.round() as u32);
+                    self.height = (bar_h + menu_h).round() as u32;
+
+                    self.rounded_boxes.push(RoundedBox {
+                        x: 0.0,
+                        y: bar_h,
+                        w: menu_w,
+                        h: menu_h,
+                        radius: status_box_radius.max(4.0),
+                        color: [0.055, 0.055, 0.075, 0.97],
+                        corners: (false, false, true, true),
+                    });
+
+                    let text_u8 = [
+                        (normal_color[0] * 255.0) as u8,
+                        (normal_color[1] * 255.0) as u8,
+                        (normal_color[2] * 255.0) as u8,
+                    ];
+                    let dim_u8 = [
+                        (normal_color[0] * 170.0) as u8,
+                        (normal_color[1] * 170.0) as u8,
+                        (normal_color[2] * 170.0) as u8,
+                    ];
+                    let tx = ModuleContextMenu::PAD + 8.0;
+                    self.text_prims.push((
+                        menu.module.clone(),
+                        font_size,
+                        tx,
+                        bar_h + ModuleContextMenu::PAD
+                            + (ModuleContextMenu::HEADER_H - font_size) / 2.0,
+                        dim_u8,
+                        Some(font_family.clone()),
+                        None,
+                        None,
+                    ));
+                    for (i, (label, _)) in menu.items.iter().enumerate() {
+                        let iy = bar_h
+                            + ModuleContextMenu::PAD
+                            + ModuleContextMenu::HEADER_H
+                            + i as f32 * ModuleContextMenu::ITEM_H;
+                        if menu.hovered == Some(i) {
+                            self.rects.push(RectWidget {
+                                x: 2.0,
+                                y: iy,
+                                w: menu_w - 4.0,
+                                h: ModuleContextMenu::ITEM_H,
+                                color: [0.23, 0.35, 0.50, 0.55],
+                            });
+                        }
+                        self.text_prims.push((
+                            label.clone(),
+                            font_size,
+                            tx,
+                            iy + (ModuleContextMenu::ITEM_H - font_size) / 2.0,
+                            text_u8,
+                            Some(font_family.clone()),
+                            None,
+                            None,
+                        ));
+                    }
+
+                    self.input_regions.clear();
+                    self.input_regions.push((0, 0, self.width as i32, self.height as i32));
+                }
             }
         }
 
@@ -976,6 +1099,7 @@ impl cce_ui::engine::Application for StatusApp {
             current_bg_color: color::STATUS_BG,
             box_bevel: None,
             box_bevel_depth: 3.0,
+            context_menu: None,
             input_regions: Vec::new(),
             module_bounds: Vec::new(),
             left_modules,
@@ -1060,7 +1184,7 @@ impl cce_ui::engine::Application for StatusApp {
                     log::debug!("[cloud-event] CloudClosed: pid {} for source {} closed, clearing tracking", pid, source);
                     if source == "window" {
                         self.previously_focused_window = None;
-                    } else if source == "layout" || source.starts_with("context_menu:") || source.starts_with("tray:") {
+                    } else if source == "layout" || source.starts_with("tray:") {
                         if let Some(ref focus_query) = self.previously_focused_window {
                             log::debug!("[cloud-event] Restoring focus to: {}", focus_query);
                             let focus_query_clone = focus_query.clone();
@@ -1205,6 +1329,14 @@ impl cce_ui::engine::Application for StatusApp {
     }
 
     fn handle_pointer_move(&mut self, pos: cce_ui::engine::LogicalPosition, needs_rebuild: &mut bool) {
+        if let Some(menu) = &mut self.context_menu {
+            let hovered = menu.item_at(pos.x, pos.y);
+            if hovered != menu.hovered {
+                menu.hovered = hovered;
+                *needs_rebuild = true;
+                self.needs_rebuild = true;
+            }
+        }
         let (lx, ly) = (pos.x, pos.y);
         self.cursor_pos = (lx as f64, ly as f64);
 
@@ -1223,12 +1355,30 @@ impl cce_ui::engine::Application for StatusApp {
         }
     }
 
-    fn handle_mouse_input(&mut self, button: MouseButton, state: ElementState, pos: cce_ui::engine::LogicalPosition, _needs_rebuild: &mut bool) -> Option<Self::Message> {
+    fn handle_mouse_input(&mut self, button: MouseButton, state: ElementState, pos: cce_ui::engine::LogicalPosition, needs_rebuild: &mut bool) -> Option<Self::Message> {
         let (lx, ly) = (pos.x, pos.y);
         let is_vertical = self.is_vertical();
         let coord = if is_vertical { ly } else { lx };
         let cx = lx as f64;
         let cy = ly as f64;
+
+        // An open in-surface menu owns every button event: item clicks
+        // dispatch their action and close; any other press (bar strip,
+        // menu padding, right-click) just closes.
+        if let Some(menu) = &self.context_menu {
+            if state != ElementState::Pressed {
+                return None;
+            }
+            let action = if button == MouseButton::Left {
+                menu.item_at(lx, ly).map(|i| menu.items[i].1.clone())
+            } else {
+                None
+            };
+            self.context_menu = None;
+            self.needs_rebuild = true;
+            *needs_rebuild = true;
+            return action;
+        }
 
         if state == ElementState::Pressed {
             // Check if tray icon was clicked
@@ -1350,70 +1500,32 @@ impl cce_ui::engine::Application for StatusApp {
                 }
 
                 if let Some(mb) = clicked_module {
-                    log::debug!("[module-right-click] Right-clicked module: {}", mb.name);
-                    let context_source = format!("context_menu:{}", mb.name);
-
-                    if self.cloud_popups.click(&context_source) == cce_ui::process::CloudPopupClick::ToggledOff {
+                    if is_vertical {
+                        // v1: the in-surface menu only lays out on horizontal
+                        // segments.
                         return None;
                     }
-
-                    if self.previously_focused_window.is_none() {
-                        self.previously_focused_window = get_currently_focused_window();
-                    }
-
-                    let x_pos = mb.x as i32;
-                    let y_pos = read_status_height_from_config() as i32;
-                    let context_json = if self.adjust_position_mode {
-                        serde_json::json!({
-                            "width": 180,
-                            "height": 80,
-                            "widgets": [
-                                { "type": "label", "text": mb.name },
-                                { "type": "button", "text": "Done", "id": "toggle_adjust" }
-                            ]
-                        }).to_string()
+                    log::debug!("[module-right-click] opening in-surface menu for: {}", mb.name);
+                    let items = if self.adjust_position_mode {
+                        vec![("Done".to_string(), CustomEvent::ToggleAdjustPositionMode)]
                     } else {
-                        let menu_text = if self.status_hide_mode {
-                            "Show Modules"
-                        } else {
-                            "Hide Modules"
-                        };
-                        serde_json::json!({
-                            "width": 180,
-                            "height": 110,
-                            "widgets": [
-                                { "type": "label", "text": mb.name },
-                                { "type": "button", "text": menu_text, "id": "toggle_hide" },
-                                { "type": "button", "text": "Adjust Positions", "id": "toggle_adjust" }
-                            ]
-                        }).to_string()
+                        vec![
+                            (
+                                if self.status_hide_mode { "Show Modules" } else { "Hide Modules" }
+                                    .to_string(),
+                                CustomEvent::ToggleHideModules,
+                            ),
+                            ("Adjust Positions".to_string(), CustomEvent::ToggleAdjustPositionMode),
+                        ]
                     };
-
-                    let parent_app_id = self.get_app_id();
-                    let thread_sender = self.sender.clone();
-                    std::thread::spawn(move || {
-                        let popup = cce_ui::process::CloudPopup::at(x_pos, y_pos)
-                            .parent_app_id(parent_app_id);
-                        let mut spawned_pid = 0;
-                        let result = popup.run_json(&context_json, |pid| {
-                            spawned_pid = pid;
-                            log::debug!("[module-right-click] Spawned cce-cloud with PID {}", pid);
-                            let _ = thread_sender.send(CustomEvent::CloudSpawned { pid, source: context_source.clone() });
-                        });
-                        if let Ok(Some(out_str)) = &result {
-                            if let Ok(parsed_json) = serde_json::from_str::<serde_json::Value>(out_str) {
-                                if let Some(btn_id) = parsed_json.get("button").and_then(|v| v.as_str()) {
-                                    if btn_id == "toggle_hide" {
-                                        let _ = thread_sender.send(CustomEvent::ToggleHideModules);
-                                    } else if btn_id == "toggle_adjust" {
-                                        let _ = thread_sender.send(CustomEvent::ToggleAdjustPositionMode);
-                                    }
-                                }
-                            }
-                        }
-                        let _ = thread_sender.send(CustomEvent::CloudClosed { pid: spawned_pid, source: context_source });
+                    self.context_menu = Some(ModuleContextMenu {
+                        module: mb.name.clone(),
+                        items,
+                        hovered: None,
+                        rect: (0.0, 0.0, 0.0, 0.0),
                     });
-
+                    self.needs_rebuild = true;
+                    *needs_rebuild = true;
                     return None;
                 }
             }
