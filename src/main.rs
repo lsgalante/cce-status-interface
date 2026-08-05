@@ -119,6 +119,8 @@ pub(crate) enum CustomEvent {
     CloudSpawned { pid: u32, source: String },
     CloudClosed { pid: u32, source: String },
     SwitcherTriggered,
+    /// A tray icon's DBusMenu, fetched and flattened for the in-surface menu.
+    TrayMenuFetched { destination: String, menu_path: String, pages: Vec<MenuPage> },
     ToggleHideModules,
     ToggleAdjustPositionMode,
 }
@@ -127,24 +129,44 @@ pub(crate) enum CustomEvent {
 /// module's own surface EXPANDS below the bar strip to contain the menu. The
 /// compositor treats a status segment thicker than the bar as expanded — it
 /// keeps the segment's frozen slot, stops enforcing its size, and raises it
-/// above the windows the menu overlaps.
+/// above the windows the menu overlaps. Pages support DBusMenu submenus:
+/// tray icon menus navigate in place (`Submenu`/`Back` rows).
 struct ModuleContextMenu {
-    module: String,
-    /// (label, action sent through `update` when clicked)
-    items: Vec<(String, CustomEvent)>,
+    pages: Vec<MenuPage>,
+    page: usize,
+    /// (destination, menu_path) — the DBusMenu owner `Item` rows dispatch
+    /// to; None for the bar's own module menu.
+    tray_target: Option<(String, String)>,
+    min_w: f32,
     hovered: Option<usize>,
     /// Menu box in surface-local logical coords, set by `rebuild_layout`.
     rect: (f32, f32, f32, f32),
+    /// Per-row (y offset from the menu top, height), parallel to the current
+    /// page's rows; rebuilt with the layout (rows have mixed heights).
+    row_bounds: Vec<(f32, f32)>,
 }
 
 impl ModuleContextMenu {
     const PAD: f32 = 6.0;
     const HEADER_H: f32 = 26.0;
     const ITEM_H: f32 = 28.0;
-    const MIN_W: f32 = 190.0;
+    const SEP_H: f32 = 9.0;
+
+    fn rows(&self) -> &[MenuRow] {
+        self.pages.get(self.page).map(|p| p.rows.as_slice()).unwrap_or(&[])
+    }
+
+    fn title(&self) -> &str {
+        self.pages.get(self.page).map(|p| p.title.as_str()).unwrap_or("")
+    }
 
     fn height(&self) -> f32 {
-        2.0 * Self::PAD + Self::HEADER_H + self.items.len() as f32 * Self::ITEM_H
+        let rows: f32 = self
+            .rows()
+            .iter()
+            .map(|r| if r.separator { Self::SEP_H } else { Self::ITEM_H })
+            .sum();
+        2.0 * Self::PAD + Self::HEADER_H + rows
     }
 
     fn contains(&self, x: f32, y: f32) -> bool {
@@ -152,16 +174,21 @@ impl ModuleContextMenu {
         x >= mx && x <= mx + mw && y >= my && y <= my + mh
     }
 
+    /// The interactive row under the pointer (separators, disabled and inert
+    /// rows never match).
     fn item_at(&self, x: f32, y: f32) -> Option<usize> {
         if !self.contains(x, y) {
             return None;
         }
-        let rel = y - (self.rect.1 + Self::PAD + Self::HEADER_H);
-        if rel < 0.0 {
-            return None;
-        }
-        let idx = (rel / Self::ITEM_H) as usize;
-        (idx < self.items.len()).then_some(idx)
+        let rel = y - self.rect.1;
+        self.row_bounds
+            .iter()
+            .position(|&(off, h)| rel >= off && rel < off + h)
+            .filter(|&i| {
+                self.rows().get(i).is_some_and(|r| {
+                    !r.separator && r.enabled && !matches!(r.action, MenuRowAction::Inert)
+                })
+            })
     }
 }
 
@@ -543,8 +570,9 @@ impl StatusApp {
             }
         }
 
-        // 5c. Tooltip Rendering (if hovered)
-        if let Some(ref hovered_id) = self.hovered_tray_item {
+        // 5c. Tooltip Rendering (if hovered) — suppressed while the
+        // in-surface menu is open (the tooltip would overlap the menu header).
+        if let Some(ref hovered_id) = self.hovered_tray_item.clone().filter(|_| self.context_menu.is_none()) {
             if let Some(bound) = self.tray_item_bounds.iter().find(|b| &b.id == hovered_id) {
                 let clean_tooltip = |title: Option<&str>, dbus_id: Option<&str>, fallback_id: &str| -> String {
                     if let Some(t) = title {
@@ -658,12 +686,12 @@ impl StatusApp {
                 }
 
                 // In-surface context menu: grow the surface below the bar
-                // strip and draw the menu into the retained buffers. The
-                // panel reuses the module box pipeline (so box_bevel applies)
-                // with text rows and a hover highlight on top.
+                // strip and draw the current page into the retained buffers.
+                // The panel reuses the module box pipeline (so box_bevel
+                // applies) with rows, separators and a hover highlight on top.
                 if let Some(menu) = &mut self.context_menu {
                     let module_w = self.width as f32;
-                    let menu_w = module_w.max(ModuleContextMenu::MIN_W);
+                    let menu_w = module_w.max(menu.min_w);
                     let menu_h = menu.height();
                     menu.rect = (0.0, bar_h, menu_w, menu_h);
                     self.width = self.width.max(menu_w.round() as u32);
@@ -685,13 +713,13 @@ impl StatusApp {
                         (normal_color[2] * 255.0) as u8,
                     ];
                     let dim_u8 = [
-                        (normal_color[0] * 170.0) as u8,
-                        (normal_color[1] * 170.0) as u8,
-                        (normal_color[2] * 170.0) as u8,
+                        (normal_color[0] * 150.0) as u8,
+                        (normal_color[1] * 150.0) as u8,
+                        (normal_color[2] * 150.0) as u8,
                     ];
                     let tx = ModuleContextMenu::PAD + 8.0;
                     self.text_prims.push((
-                        menu.module.clone(),
+                        menu.title().to_string(),
                         font_size,
                         tx,
                         bar_h + ModuleContextMenu::PAD
@@ -701,31 +729,51 @@ impl StatusApp {
                         None,
                         None,
                     ));
-                    for (i, (label, _)) in menu.items.iter().enumerate() {
-                        let iy = bar_h
-                            + ModuleContextMenu::PAD
-                            + ModuleContextMenu::HEADER_H
-                            + i as f32 * ModuleContextMenu::ITEM_H;
-                        if menu.hovered == Some(i) {
+
+                    let rows = menu.rows().to_vec();
+                    let hovered = menu.hovered;
+                    let mut bounds = Vec::with_capacity(rows.len());
+                    let mut off = ModuleContextMenu::PAD + ModuleContextMenu::HEADER_H;
+                    for (i, row) in rows.iter().enumerate() {
+                        let h = if row.separator {
+                            ModuleContextMenu::SEP_H
+                        } else {
+                            ModuleContextMenu::ITEM_H
+                        };
+                        let iy = bar_h + off;
+                        if row.separator {
                             self.rects.push(RectWidget {
-                                x: 2.0,
-                                y: iy,
-                                w: menu_w - 4.0,
-                                h: ModuleContextMenu::ITEM_H,
-                                color: [0.23, 0.35, 0.50, 0.55],
+                                x: tx,
+                                y: iy + h / 2.0,
+                                w: menu_w - 2.0 * tx,
+                                h: 1.0,
+                                color: [0.35, 0.35, 0.42, 0.8],
                             });
+                        } else {
+                            if hovered == Some(i) && row.enabled {
+                                self.rects.push(RectWidget {
+                                    x: 2.0,
+                                    y: iy,
+                                    w: menu_w - 4.0,
+                                    h: h,
+                                    color: [0.23, 0.35, 0.50, 0.55],
+                                });
+                            }
+                            self.text_prims.push((
+                                row.label.clone(),
+                                font_size,
+                                tx,
+                                iy + (h - font_size) / 2.0,
+                                if row.enabled { text_u8 } else { dim_u8 },
+                                Some(font_family.clone()),
+                                None,
+                                None,
+                            ));
                         }
-                        self.text_prims.push((
-                            label.clone(),
-                            font_size,
-                            tx,
-                            iy + (ModuleContextMenu::ITEM_H - font_size) / 2.0,
-                            text_u8,
-                            Some(font_family.clone()),
-                            None,
-                            None,
-                        ));
+                        bounds.push((off, h));
+                        off += h;
                     }
+                    menu.row_bounds = bounds;
 
                     self.input_regions.clear();
                     self.input_regions.push((0, 0, self.width as i32, self.height as i32));
@@ -1192,7 +1240,7 @@ impl cce_ui::engine::Application for StatusApp {
                     log::debug!("[cloud-event] CloudClosed: pid {} for source {} closed, clearing tracking", pid, source);
                     if source == "window" {
                         self.previously_focused_window = None;
-                    } else if source == "layout" || source.starts_with("tray:") {
+                    } else if source == "layout" {
                         if let Some(ref focus_query) = self.previously_focused_window {
                             log::debug!("[cloud-event] Restoring focus to: {}", focus_query);
                             let focus_query_clone = focus_query.clone();
@@ -1204,6 +1252,21 @@ impl cce_ui::engine::Application for StatusApp {
                         }
                         self.previously_focused_window = None;
                     }
+                }
+            }
+            CustomEvent::TrayMenuFetched { destination, menu_path, pages } => {
+                if !pages.is_empty() && !self.is_vertical() {
+                    self.context_menu = Some(ModuleContextMenu {
+                        pages,
+                        page: 0,
+                        tray_target: Some((destination, menu_path)),
+                        min_w: 260.0,
+                        hovered: None,
+                        rect: (0.0, 0.0, 0.0, 0.0),
+                        row_bounds: Vec::new(),
+                    });
+                } else {
+                    changed = false;
                 }
             }
             CustomEvent::SwitcherTriggered => {
@@ -1370,22 +1433,48 @@ impl cce_ui::engine::Application for StatusApp {
         let cx = lx as f64;
         let cy = ly as f64;
 
-        // An open in-surface menu owns every button event: item clicks
-        // dispatch their action and close; any other press (bar strip,
-        // menu padding, right-click) just closes.
-        if let Some(menu) = &self.context_menu {
+        // An open in-surface menu owns every button event: row clicks run
+        // their action (dispatch / DBusMenu event / page navigation); any
+        // other press (bar strip, menu padding, right-click) closes.
+        if self.context_menu.is_some() {
             if state != ElementState::Pressed {
                 return None;
             }
-            let action = if button == MouseButton::Left {
-                menu.item_at(lx, ly).map(|i| menu.items[i].1.clone())
+            let hit = if button == MouseButton::Left {
+                self.context_menu.as_ref().and_then(|m| m.item_at(lx, ly))
             } else {
                 None
             };
-            self.context_menu = None;
+            let mut result = None;
+            match hit {
+                Some(i) => {
+                    let menu = self.context_menu.as_mut().unwrap();
+                    let action = menu.rows().get(i).map(|r| r.action.clone());
+                    match action {
+                        Some(MenuRowAction::Dispatch(ev)) => {
+                            self.context_menu = None;
+                            result = Some(ev);
+                        }
+                        Some(MenuRowAction::Item(id)) => {
+                            if let Some((dest, path)) = menu.tray_target.clone() {
+                                send_tray_menu_event(dest, path, id);
+                            }
+                            self.context_menu = None;
+                        }
+                        Some(MenuRowAction::Submenu(p)) | Some(MenuRowAction::Back(p)) => {
+                            menu.page = p;
+                            menu.hovered = None;
+                        }
+                        _ => {}
+                    }
+                }
+                None => {
+                    self.context_menu = None;
+                }
+            }
             self.needs_rebuild = true;
             *needs_rebuild = true;
-            return action;
+            return result;
         }
 
         if state == ElementState::Pressed {
@@ -1401,15 +1490,6 @@ impl cce_ui::engine::Application for StatusApp {
 
             if let Some(bound) = clicked_tray {
                 let id = bound.id.clone();
-                let tray_source = format!("tray:{}", id);
-
-                if self.cloud_popups.click(&tray_source) == cce_ui::process::CloudPopupClick::ToggledOff {
-                    return None;
-                }
-                if self.previously_focused_window.is_none() {
-                    self.previously_focused_window = get_currently_focused_window();
-                }
-
                 let btn_code = match button {
                     MouseButton::Left => 272,
                     MouseButton::Right => 273,
@@ -1417,20 +1497,13 @@ impl cce_ui::engine::Application for StatusApp {
                 };
                 let cx_i = cx as i32;
                 let cy_i = cy as i32;
-                let screen_width = self.width as i32;
-                let bar_height = read_status_height_from_config() as i32;
-                let bound_x = bound.x;
-                let bound_w = bound.w;
-                let parent_app_id = self.get_app_id();
                 let thread_sender = self.sender.clone();
-                let tray_source_clone = tray_source.clone();
                 std::thread::spawn(move || {
                     let rt = tokio::runtime::Builder::new_current_thread()
                         .enable_all()
                         .build()
                         .unwrap();
                     rt.block_on(async move {
-                        let mut menu_shown = false;
                         if let Some((destination, path_part)) = id.split_once('/') {
                             let path = format!("/{}", path_part);
                             match zbus::Connection::session().await {
@@ -1450,45 +1523,49 @@ impl cce_ui::engine::Application for StatusApp {
                                             let should_show_menu = (btn_code == 273 && menu_path.is_some())
                                                 || (btn_code == 272 && is_menu && menu_path.is_some());
 
-                                            let x_pos = screen_width - (bound_x + bound_w) as i32;
-                                            let y_pos = bar_height;
-                                            log::debug!("[tray-click] Clicked tray item at bound_x={}, bound_w={}, screen_width={}, calculated x_pos={}, y_pos={}", bound_x, bound_w, screen_width, x_pos, y_pos);
-
+                                            // In-surface menu: fetch the DBusMenu layout and hand
+                                            // it to the module's update loop — the tray segment's
+                                            // own surface expands to show it (no popup process).
                                             if should_show_menu {
-                                                 if let Some(menu_p) = menu_path {
-                                                     menu_shown = true;
-                                                     if let Err(e) = show_cce_cloud_menu(&conn, destination, menu_p.as_str(), x_pos, y_pos, true, thread_sender.clone(), tray_source_clone.clone(), parent_app_id.clone()).await {
-                                                         log::warn!("[tray-click] show_cce_cloud_menu failed: {:?}", e);
-                                                     }
-                                                 }
-                                             } else if btn_code == 272 {
-                                                 if let Err(e) = proxy.activate(cx_i, cy_i).await {
-                                                     log::warn!("[tray-click] Activate failed: {:?}", e);
-                                                     if let Some(menu_p) = menu_path {
-                                                         menu_shown = true;
-                                                         if let Err(e) = show_cce_cloud_menu(&conn, destination, menu_p.as_str(), x_pos, y_pos, true, thread_sender.clone(), tray_source_clone.clone(), parent_app_id.clone()).await {
-                                                             log::warn!("[tray-click] Fallback show_cce_cloud_menu failed: {:?}", e);
-                                                         }
-                                                     }
-                                                 }
-                                             } else if btn_code == 273 {
-                                                 let _ = proxy.context_menu(cx_i, cy_i).await;
-                                             }
+                                                if let Some(menu_p) = menu_path {
+                                                    match fetch_tray_menu_pages(&conn, destination, menu_p.as_str()).await {
+                                                        Ok(pages) if !pages.is_empty() => {
+                                                            let _ = thread_sender.send(CustomEvent::TrayMenuFetched {
+                                                                destination: destination.to_string(),
+                                                                menu_path: menu_p.as_str().to_string(),
+                                                                pages,
+                                                            });
+                                                        }
+                                                        Ok(_) => log::debug!("[tray-menu] empty menu for {}", destination),
+                                                        Err(e) => log::warn!("[tray-menu] fetch failed: {:?}", e),
+                                                    }
+                                                }
+                                            } else if btn_code == 272 {
+                                                if let Err(e) = proxy.activate(cx_i, cy_i).await {
+                                                    log::warn!("[tray-click] Activate failed: {:?}", e);
+                                                    if let Some(menu_p) = menu_path {
+                                                        if let Ok(pages) = fetch_tray_menu_pages(&conn, destination, menu_p.as_str()).await {
+                                                            if !pages.is_empty() {
+                                                                let _ = thread_sender.send(CustomEvent::TrayMenuFetched {
+                                                                    destination: destination.to_string(),
+                                                                    menu_path: menu_p.as_str().to_string(),
+                                                                    pages,
+                                                                });
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            } else if btn_code == 273 {
+                                                let _ = proxy.context_menu(cx_i, cy_i).await;
+                                            }
                                         }
-                                        Err(e) => {
-                                            log::warn!("[tray-click] Failed to build proxy: {:?}", e);
-                                        }
+                                        Err(e) => log::warn!("[tray-click] Failed to build proxy: {:?}", e),
                                     }
                                 }
-                                Err(e) => {
-                                    log::warn!("[tray-click] Failed to connect to session bus: {:?}", e);
-                                }
+                                Err(e) => log::warn!("[tray-click] Failed to connect to session bus: {:?}", e),
                             }
                         } else {
                             log::warn!("[tray-click] Failed to split id: {}", id);
-                        }
-                        if !menu_shown {
-                            let _ = thread_sender.send(CustomEvent::CloudClosed { pid: 0, source: tray_source_clone });
                         }
                     });
                 });
@@ -1514,23 +1591,31 @@ impl cce_ui::engine::Application for StatusApp {
                         return None;
                     }
                     log::debug!("[module-right-click] opening in-surface menu for: {}", mb.name);
-                    let items = if self.adjust_position_mode {
-                        vec![("Done".to_string(), CustomEvent::ToggleAdjustPositionMode)]
+                    let dispatch_row = |label: &str, ev: CustomEvent| MenuRow {
+                        label: label.to_string(),
+                        enabled: true,
+                        separator: false,
+                        action: MenuRowAction::Dispatch(ev),
+                    };
+                    let rows = if self.adjust_position_mode {
+                        vec![dispatch_row("Done", CustomEvent::ToggleAdjustPositionMode)]
                     } else {
                         vec![
-                            (
-                                if self.status_hide_mode { "Show Modules" } else { "Hide Modules" }
-                                    .to_string(),
+                            dispatch_row(
+                                if self.status_hide_mode { "Show Modules" } else { "Hide Modules" },
                                 CustomEvent::ToggleHideModules,
                             ),
-                            ("Adjust Positions".to_string(), CustomEvent::ToggleAdjustPositionMode),
+                            dispatch_row("Adjust Positions", CustomEvent::ToggleAdjustPositionMode),
                         ]
                     };
                     self.context_menu = Some(ModuleContextMenu {
-                        module: mb.name.clone(),
-                        items,
+                        pages: vec![MenuPage { title: mb.name.clone(), rows }],
+                        page: 0,
+                        tray_target: None,
+                        min_w: 190.0,
                         hovered: None,
                         rect: (0.0, 0.0, 0.0, 0.0),
+                        row_bounds: Vec::new(),
                     });
                     self.needs_rebuild = true;
                     *needs_rebuild = true;

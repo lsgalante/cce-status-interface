@@ -93,14 +93,21 @@ as a parse fallback for older compositors (`parse_ccectl_window_any_line` handle
 both). Keyboard alt-tab switching is delegated to the compositor
 (`ccectl window-switcher`) — don't reimplement it here.
 
-**Popups are `cce-cloud` processes**, not surfaces of this app: the window picker, tray
-context menus, and the layout-mode menu each run a `cce_ui::process::CloudPopup`
-(`run_json`/`run_dmenu`) on a worker thread, and the single-popup toggle state lives in
-`cce_ui::process::CloudPopupTracker` (`StatusApp.cloud_popups`) — the thread reports
-back via the `CloudSpawned`/`CloudClosed` events, which feed
-`tracker.on_spawned`/`on_closed`. Clicking a trigger again toggles its popup off
-(`tracker.click`); closing restores focus with `ccectl focus-window`. Follow this pattern
-for any new popup.
+**Right-click menus are IN-SURFACE** (`ModuleContextMenu`): the module's own
+surface expands below the bar strip to contain the menu — module context menus
+and tray icon DBusMenus alike (fetched/flattened by `cloud.rs::
+fetch_tray_menu_pages` into `MenuPage`/`MenuRow` pages riding a
+`CustomEvent::TrayMenuFetched`; submenus paginate in place; row clicks send the
+DBusMenu "clicked" via `send_tray_menu_event`). The compositor treats a status
+segment thicker than the bar as expanded: frozen slot, no size enforcement,
+raised above overlapped windows; the bar must reset its own height on close.
+
+**The remaining popups are `cce-cloud` processes**: the window picker and the
+layout-mode menu run a `cce_ui::process::CloudPopup` (`run_json`/`run_dmenu`)
+on a worker thread, with the single-popup toggle state in
+`cce_ui::process::CloudPopupTracker` (`StatusApp.cloud_popups`) — the thread
+reports back via `CloudSpawned`/`CloudClosed`, clicking a trigger again toggles
+off, and closing restores focus with `ccectl focus-window`.
 
 ## Config
 

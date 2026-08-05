@@ -1,5 +1,7 @@
-//! cce-cloud popups: the window picker and D-Bus menus rendered by spawning
-//! a `cce-cloud` process fed JSON pages on stdin.
+//! Menu machinery: the in-surface tray/module menu model (fetched DBusMenu
+//! layouts flattened into pages of plain-data rows that ride a CustomEvent
+//! into the module's update loop), plus the remaining cce-cloud popup (the
+//! window picker).
 
 use crate::{parse_ccectl_windows, CustomEvent};
 use crate::config::get_ccectl_cmd;
@@ -90,6 +92,161 @@ pub(crate) fn parse_menu_item(
     })
 }
 
+/// One row of an in-surface menu — plain data so a fetched DBusMenu can ride
+/// a `CustomEvent` into the module process's update loop.
+#[derive(Debug, Clone)]
+pub(crate) struct MenuRow {
+    pub label: String,
+    pub enabled: bool,
+    pub separator: bool,
+    pub action: MenuRowAction,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum MenuRowAction {
+    /// DBusMenu item: send "clicked" to the menu's owner on click.
+    Item(i32),
+    /// Navigate to a submenu page (in-surface pagination).
+    Submenu(usize),
+    /// Navigate back to the parent page.
+    Back(usize),
+    /// Dispatch a bar-internal event (the module context menu's rows).
+    Dispatch(CustomEvent),
+    /// Non-interactive (separators).
+    Inert,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct MenuPage {
+    pub title: String,
+    pub rows: Vec<MenuRow>,
+}
+
+/// Fetch a tray icon's DBusMenu and flatten it into in-surface pages: page 0
+/// is the root; each enabled submenu becomes its own page (capped at 16)
+/// reached by a `Submenu` row and left by the "< Back" row. Separators and
+/// disabled items are kept as rows for visual fidelity; toggle states become
+/// `[x]`/`[ ]` label prefixes, exactly like the popup renderer they replace.
+pub(crate) async fn fetch_tray_menu_pages(
+    conn: &zbus::Connection,
+    destination: &str,
+    menu_path: &str,
+) -> Result<Vec<MenuPage>, Box<dyn std::error::Error + Send + Sync>> {
+    let menu_proxy = DBusMenuProxy::builder(conn)
+        .destination(destination)?
+        .path(menu_path)?
+        .build()
+        .await?;
+
+    let _ = menu_proxy.about_to_show(0).await;
+    let (_, layout) = menu_proxy.get_layout(0, 5, vec![]).await?;
+    let root = match parse_menu_item(layout.0, layout.1, layout.2) {
+        Some(item) => item,
+        None => return Ok(Vec::new()),
+    };
+
+    fn build(
+        item: &MenuItem,
+        page: usize,
+        parent: Option<usize>,
+        pages: &mut Vec<MenuPage>,
+    ) {
+        let mut rows = Vec::new();
+        if let Some(parent_page) = parent {
+            rows.push(MenuRow {
+                label: "< Back".to_string(),
+                enabled: true,
+                separator: false,
+                action: MenuRowAction::Back(parent_page),
+            });
+        }
+        // Reserve this page's slot before recursing so child pages number
+        // depth-first after it.
+        pages[page].title = if item.label.is_empty() && page == 0 {
+            "Tray Menu".to_string()
+        } else {
+            item.label.clone()
+        };
+        for child in &item.children {
+            if child.is_separator {
+                rows.push(MenuRow {
+                    label: String::new(),
+                    enabled: false,
+                    separator: true,
+                    action: MenuRowAction::Inert,
+                });
+                continue;
+            }
+            let mut label = if child.toggle_state == 1 {
+                format!("[x] {}", child.label)
+            } else if child.toggle_state == 0 {
+                format!("[ ] {}", child.label)
+            } else {
+                child.label.clone()
+            };
+            if !child.children.is_empty() && child.enabled && pages.len() < 16 {
+                label = format!("{} >", label);
+                let child_page = pages.len();
+                pages.push(MenuPage { title: String::new(), rows: Vec::new() });
+                rows.push(MenuRow {
+                    label,
+                    enabled: true,
+                    separator: false,
+                    action: MenuRowAction::Submenu(child_page),
+                });
+                build(child, child_page, Some(page), pages);
+            } else {
+                rows.push(MenuRow {
+                    label,
+                    enabled: child.enabled,
+                    separator: false,
+                    action: MenuRowAction::Item(child.id),
+                });
+            }
+        }
+        pages[page].rows = rows;
+    }
+
+    let mut pages = vec![MenuPage { title: String::new(), rows: Vec::new() }];
+    build(&root, 0, None, &mut pages);
+    if pages[0].rows.is_empty() {
+        return Ok(Vec::new());
+    }
+    Ok(pages)
+}
+
+/// Fire a DBusMenu "clicked" event for an in-surface menu row, detached —
+/// the click handler must not block on D-Bus.
+pub(crate) fn send_tray_menu_event(destination: String, menu_path: String, id: i32) {
+    std::thread::spawn(move || {
+        let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+            Ok(rt) => rt,
+            Err(_) => return,
+        };
+        rt.block_on(async move {
+            let res: Result<(), Box<dyn std::error::Error + Send + Sync>> = async {
+                let conn = zbus::Connection::session().await?;
+                let proxy = DBusMenuProxy::builder(&conn)
+                    .destination(destination.as_str())?
+                    .path(menu_path.as_str())?
+                    .build()
+                    .await?;
+                let timestamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as u32;
+                let val = zbus::zvariant::Value::from("");
+                proxy.event(id, "clicked", &val, timestamp).await?;
+                Ok(())
+            }
+            .await;
+            if let Err(e) = res {
+                log::warn!("[tray-menu] clicked event failed: {:?}", e);
+            }
+        });
+    });
+}
+
 pub(crate) fn get_currently_focused_window() -> Option<String> {
     let out = std::process::Command::new(get_ccectl_cmd())
         .args(["windows", "--json"])
@@ -103,228 +260,6 @@ pub(crate) fn get_currently_focused_window() -> Option<String> {
             *focused && app_id != "cce-status" && app_id != "cce-cloud"
         })
         .map(|(id, _, _, _)| id)
-}
-
-
-pub(crate) async fn show_cce_cloud_menu(
-    conn: &zbus::Connection,
-    destination: &str,
-    menu_path: &str,
-    x_pos: i32,
-    y_pos: i32,
-    align_right: bool,
-    thread_sender: calloop::channel::Sender<CustomEvent>,
-    source: String,
-    parent_app_id: String,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut last_spawned_pid = 0;
-
-    let res = async {
-        let menu_proxy = DBusMenuProxy::builder(conn)
-            .destination(destination)?
-            .path(menu_path)?
-            .build()
-            .await?;
-
-        let _ = menu_proxy.about_to_show(0).await;
-        let (_, layout) = menu_proxy.get_layout(0, 5, vec![]).await?;
-
-        let root_item = match parse_menu_item(layout.0, layout.1, layout.2) {
-            Some(item) => item,
-            None => return Ok(()),
-        };
-
-        // Assign page indices to submenus.
-        let mut page_indices = std::collections::HashMap::new();
-        page_indices.insert(root_item.id, 0);
-        let mut parent_pages = std::collections::HashMap::new();
-        let mut next_page = 1;
-
-        fn assign_pages(
-            item: &MenuItem,
-            current_page: usize,
-            page_indices: &mut std::collections::HashMap<i32, usize>,
-            parent_pages: &mut std::collections::HashMap<usize, usize>,
-            next_page: &mut usize,
-        ) {
-            for child in &item.children {
-                if child.is_separator || !child.enabled {
-                    continue;
-                }
-                if !child.children.is_empty() && *next_page < 16 {
-                    let child_page = *next_page;
-                    page_indices.insert(child.id, child_page);
-                    parent_pages.insert(child_page, current_page);
-                    *next_page += 1;
-                    assign_pages(child, child_page, page_indices, parent_pages, next_page);
-                }
-            }
-        }
-
-        assign_pages(&root_item, 0, &mut page_indices, &mut parent_pages, &mut next_page);
-
-        #[derive(Debug, Clone)]
-        struct LocalWidget {
-            widget_type: String,
-            text: String,
-            id: Option<String>,
-            target_page: Option<usize>,
-        }
-
-        #[derive(Debug, Clone)]
-        struct LocalPage {
-            title: String,
-            widgets: Vec<LocalWidget>,
-        }
-
-        let mut pages = vec![LocalPage {
-            title: "".to_string(),
-            widgets: Vec::new(),
-        }; next_page];
-
-        fn build_pages(
-            item: &MenuItem,
-            current_page: usize,
-            page_indices: &std::collections::HashMap<i32, usize>,
-            parent_pages: &std::collections::HashMap<usize, usize>,
-            pages: &mut [LocalPage],
-        ) {
-            let mut widgets = Vec::new();
-
-            if current_page > 0 {
-                if let Some(&parent_page) = parent_pages.get(&current_page) {
-                    widgets.push(LocalWidget {
-                        widget_type: "button".to_string(),
-                        text: "< Back".to_string(),
-                        id: Some(format!("back_to_{}", parent_page)),
-                        target_page: Some(parent_page),
-                    });
-                }
-            }
-
-            for child in &item.children {
-                if child.is_separator || !child.enabled {
-                    continue;
-                }
-
-                let mut display_label = if child.toggle_state == 1 {
-                    format!("[x] {}", child.label)
-                } else if child.toggle_state == 0 {
-                    format!("[ ] {}", child.label)
-                } else {
-                    child.label.clone()
-                };
-
-                if !child.children.is_empty() {
-                    if let Some(&target_page) = page_indices.get(&child.id) {
-                        display_label = format!("{} >", display_label);
-
-                        widgets.push(LocalWidget {
-                            widget_type: "button".to_string(),
-                            text: display_label,
-                            id: Some(format!("submenu_{}", child.id)),
-                            target_page: Some(target_page),
-                        });
-
-                        build_pages(child, target_page, page_indices, parent_pages, pages);
-                    } else {
-                        widgets.push(LocalWidget {
-                            widget_type: "button".to_string(),
-                            text: display_label,
-                            id: Some(format!("item_{}", child.id)),
-                            target_page: None,
-                        });
-                    }
-                } else {
-                    widgets.push(LocalWidget {
-                        widget_type: "button".to_string(),
-                        text: display_label,
-                        id: Some(format!("item_{}", child.id)),
-                        target_page: None,
-                    });
-                }
-            }
-
-            let title = if item.label.is_empty() {
-                if current_page == 0 {
-                    "Tray Menu".to_string()
-                } else {
-                    "".to_string()
-                }
-            } else {
-                item.label.clone()
-            };
-
-            pages[current_page] = LocalPage {
-                title,
-                widgets,
-            };
-        }
-
-        build_pages(&root_item, 0, &page_indices, &parent_pages, &mut pages);
-
-        // Serialize to JSON value
-        let mut pages_json = Vec::new();
-        for page in pages {
-            let mut widgets_json = Vec::new();
-            for w in page.widgets {
-                let mut w_val = serde_json::json!({
-                    "type": w.widget_type,
-                    "text": w.text,
-                });
-                if let Some(id) = w.id {
-                    w_val["id"] = serde_json::Value::String(id);
-                }
-                if let Some(tp) = w.target_page {
-                    w_val["target_page"] = serde_json::Value::Number(tp.into());
-                }
-                widgets_json.push(w_val);
-            }
-            pages_json.push(serde_json::json!({
-                "title": page.title,
-                "widgets": widgets_json,
-            }));
-        }
-
-        let layout_json = serde_json::json!({
-            "width": 260,
-            "pages": pages_json,
-        });
-        let layout_str = layout_json.to_string();
-
-        let mut popup = cce_ui::process::CloudPopup::at(x_pos, y_pos)
-            .parent_app_id(parent_app_id);
-        if align_right {
-            popup = popup.align_right();
-        }
-        // run_json blocks this thread, like the wait_with_output it replaces —
-        // fine, show_cce_cloud_menu runs on its own single-purpose runtime.
-        let output = popup.run_json(&layout_str, |pid| {
-            last_spawned_pid = pid;
-            let _ = thread_sender.send(CustomEvent::CloudSpawned { pid, source: source.clone() });
-        })?;
-
-        if let Some(stdout_str) = output {
-            if let Ok(parsed_json) = serde_json::from_str::<serde_json::Value>(&stdout_str) {
-                if let Some(btn_id) = parsed_json.get("button").and_then(|v| v.as_str()) {
-                    if btn_id.starts_with("item_") {
-                        if let Ok(item_id) = btn_id["item_".len()..].parse::<i32>() {
-                            let timestamp = std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .unwrap_or_default()
-                                .as_secs() as u32;
-                            let val = zbus::zvariant::Value::from("");
-                            let _ = menu_proxy.event(item_id, "clicked", &val, timestamp).await;
-                        }
-                    }
-                }
-            }
-        }
-        Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
-    }.await;
-
-    let _ = thread_sender.send(CustomEvent::CloudClosed { pid: last_spawned_pid, source });
-    res
 }
 
 
