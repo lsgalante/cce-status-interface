@@ -317,6 +317,13 @@ struct StatusApp {
     box_bevel: Option<StatusBoxBevel>,
     box_bevel_depth: f32,
     context_menu: Option<ModuleContextMenu>,
+    /// Expansion progress of the in-surface menu, 0 (strip) → 1 (fully
+    /// open). Advanced/reversed in `tick`; `rebuild_layout` eases it into
+    /// the box size, and `desired_size` grows the surface with it.
+    menu_anim: f32,
+    /// True while the menu is animating shut; `context_menu` is dropped
+    /// only when the contraction lands back at the strip.
+    menu_closing: bool,
     input_regions: Vec<(i32, i32, i32, i32)>,
     module_bounds: Vec<ModuleBounds>,
     left_modules: Vec<Box<dyn StatusModule>>,
@@ -713,9 +720,20 @@ impl StatusApp {
                     }
                     let menu_w = module_box_w.max(menu.min_w).max(label_w + 2.0 * tx_probe);
                     let menu_h = menu.height();
-                    menu.rect = (plate_x, bar_h, menu_w, menu_h);
-                    self.width = self.width.max((menu_w + 2.0 * plate_x).round() as u32);
-                    self.height = (bar_h + menu_h).round() as u32;
+                    // Expansion animation: ease `menu_anim` (stepped in tick)
+                    // into the box, growing width and revealing height from
+                    // the collapsed module box. Rows keep their final
+                    // positions and slide into view as the surface bottom
+                    // edge (which clips them) travels down.
+                    let t = {
+                        let a = self.menu_anim.clamp(0.0, 1.0);
+                        1.0 - (1.0 - a) * (1.0 - a) * (1.0 - a)
+                    };
+                    let anim_w = module_box_w + (menu_w - module_box_w) * t;
+                    let reveal_h = menu_h * t;
+                    menu.rect = (plate_x, bar_h, anim_w, reveal_h);
+                    self.width = self.width.max((anim_w + 2.0 * plate_x).round() as u32);
+                    self.height = (bar_h + reveal_h).round() as u32;
 
                     // ONE continuous box in the module's own fill, spanning
                     // the strip band and the menu — the module box literally
@@ -725,8 +743,8 @@ impl StatusApp {
                     self.rounded_boxes.insert(0, RoundedBox {
                         x: plate_x,
                         y: 0.0,
-                        w: menu_w,
-                        h: bar_h + menu_h,
+                        w: anim_w,
+                        h: bar_h + reveal_h,
                         radius: status_box_radius.max(4.0),
                         color: box_bg_color.unwrap_or([0.055, 0.055, 0.075, 0.97]),
                         corners: (true, true, true, true),
@@ -770,7 +788,7 @@ impl StatusApp {
                             self.rects.push(RectWidget {
                                 x: tx,
                                 y: iy + h / 2.0,
-                                w: menu_w - 2.0 * (ModuleContextMenu::PAD + 8.0),
+                                w: anim_w - 2.0 * (ModuleContextMenu::PAD + 8.0),
                                 h: 1.0,
                                 color: [0.35, 0.35, 0.42, 0.8],
                             });
@@ -779,7 +797,7 @@ impl StatusApp {
                                 self.rects.push(RectWidget {
                                     x: plate_x + 2.0,
                                     y: iy,
-                                    w: menu_w - 4.0,
+                                    w: anim_w - 4.0,
                                     h: h,
                                     color: [0.23, 0.35, 0.50, 0.55],
                                 });
@@ -1195,6 +1213,8 @@ impl cce_ui::engine::Application for StatusApp {
             box_bevel: None,
             box_bevel_depth: 3.0,
             context_menu: None,
+            menu_anim: 0.0,
+            menu_closing: false,
             input_regions: Vec::new(),
             module_bounds: Vec::new(),
             left_modules,
@@ -1274,6 +1294,10 @@ impl cce_ui::engine::Application for StatusApp {
             CustomEvent::MenuReady { title, pages, min_w } => {
                 if !pages.is_empty() && !self.is_vertical() {
                     let _ = title;
+                    if self.context_menu.is_none() {
+                        self.menu_anim = 0.0;
+                    }
+                    self.menu_closing = false;
                     self.context_menu = Some(ModuleContextMenu {
                         pages,
                         page: 0,
@@ -1291,6 +1315,10 @@ impl cce_ui::engine::Application for StatusApp {
             }
             CustomEvent::TrayMenuFetched { destination, menu_path, pages } => {
                 if !pages.is_empty() && !self.is_vertical() {
+                    if self.context_menu.is_none() {
+                        self.menu_anim = 0.0;
+                    }
+                    self.menu_closing = false;
                     self.context_menu = Some(ModuleContextMenu {
                         pages,
                         page: 0,
@@ -1342,7 +1370,28 @@ impl cce_ui::engine::Application for StatusApp {
         }
     }
 
-    fn tick(&mut self, _dt: f32, needs_rebuild: &mut bool) {
+    fn tick(&mut self, dt: f32, needs_rebuild: &mut bool) {
+        // In-surface menu expansion/contraction: the surface grows into the
+        // menu and shrinks back over MENU_ANIM_S, one resize+repaint per
+        // tick. The menu object is dropped only when the contraction lands.
+        if self.context_menu.is_some() {
+            const MENU_ANIM_S: f32 = 0.14;
+            if self.menu_closing {
+                self.menu_anim -= dt / MENU_ANIM_S;
+                if self.menu_anim <= 0.0 {
+                    self.menu_anim = 0.0;
+                    self.menu_closing = false;
+                    self.context_menu = None;
+                }
+                *needs_rebuild = true;
+                self.needs_rebuild = true;
+            } else if self.menu_anim < 1.0 {
+                self.menu_anim = (self.menu_anim + dt / MENU_ANIM_S).min(1.0);
+                *needs_rebuild = true;
+                self.needs_rebuild = true;
+            }
+        }
+
         // Watches the shared config AND the app's own override file (the
         // newest mtime of the pair) — same key cce-ui's config cache uses.
         let modified = cce_ui::config::config_files_modified();
@@ -1477,6 +1526,11 @@ impl cce_ui::engine::Application for StatusApp {
             if state != ElementState::Pressed {
                 return None;
             }
+            // A menu animating shut is already spoken for — its rows are
+            // sliding away, so presses neither re-trigger nor re-open.
+            if self.menu_closing {
+                return None;
+            }
             let hit = if button == MouseButton::Left {
                 self.context_menu.as_ref().and_then(|m| m.item_at(lx, ly))
             } else {
@@ -1489,14 +1543,14 @@ impl cce_ui::engine::Application for StatusApp {
                     let action = menu.rows().get(i).map(|r| r.action.clone());
                     match action {
                         Some(MenuRowAction::Dispatch(ev)) => {
-                            self.context_menu = None;
+                            self.menu_closing = true;
                             result = Some(ev);
                         }
                         Some(MenuRowAction::Item(id)) => {
                             if let Some((dest, path)) = menu.tray_target.clone() {
                                 send_tray_menu_event(dest, path, id);
                             }
-                            self.context_menu = None;
+                            self.menu_closing = true;
                         }
                         Some(MenuRowAction::Submenu(p)) | Some(MenuRowAction::Back(p)) => {
                             menu.page = p;
@@ -1508,7 +1562,7 @@ impl cce_ui::engine::Application for StatusApp {
                                     .args(&args)
                                     .spawn();
                             });
-                            self.context_menu = None;
+                            self.menu_closing = true;
                         }
                         Some(MenuRowAction::SetMode(mode)) => {
                             let args = if menu.apply_all {
@@ -1525,7 +1579,7 @@ impl cce_ui::engine::Application for StatusApp {
                                     .args(&args)
                                     .spawn();
                             });
-                            self.context_menu = None;
+                            self.menu_closing = true;
                         }
                         Some(MenuRowAction::ToggleApplyAll) => {
                             menu.apply_all = !menu.apply_all;
@@ -1540,7 +1594,7 @@ impl cce_ui::engine::Application for StatusApp {
                     }
                 }
                 None => {
-                    self.context_menu = None;
+                    self.menu_closing = true;
                 }
             }
             self.needs_rebuild = true;
@@ -1662,6 +1716,10 @@ impl cce_ui::engine::Application for StatusApp {
                         return None;
                     }
                     log::debug!("[module-right-click] opening in-surface menu for: {}", mb.name);
+                    if self.context_menu.is_none() {
+                        self.menu_anim = 0.0;
+                    }
+                    self.menu_closing = false;
                     let dispatch_row = |label: &str, ev: CustomEvent| MenuRow {
                         label: label.to_string(),
                         enabled: true,
@@ -1710,6 +1768,10 @@ impl cce_ui::engine::Application for StatusApp {
 
                 if clicked_layout {
                     log::debug!("[layout-click] opening in-surface layout menu");
+                    if self.context_menu.is_none() {
+                        self.menu_anim = 0.0;
+                    }
+                    self.menu_closing = false;
                     let mode_row = |label: &str| MenuRow {
                         label: label.to_string(),
                         enabled: true,

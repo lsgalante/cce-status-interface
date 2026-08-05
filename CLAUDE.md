@@ -94,8 +94,12 @@ both). Keyboard alt-tab switching is delegated to the compositor
 (`ccectl window-switcher`) — don't reimplement it here.
 
 **Right-click menus are IN-SURFACE** (`ModuleContextMenu`): the module's own
-surface expands below the bar strip to contain the menu — module context menus
-and tray icon DBusMenus alike (fetched/flattened by `cloud.rs::
+surface expands below the bar strip to contain the menu — the module box
+literally grows into the menu (one continuous rounded box; the expansion and
+contraction are ANIMATED over ~140ms, `menu_anim`/`menu_closing` stepped in
+`tick`, eased in `rebuild_layout`, surface resized per-frame via
+`desired_size`; the menu object drops only when the contraction lands) —
+module context menus and tray icon DBusMenus alike (fetched/flattened by `cloud.rs::
 fetch_tray_menu_pages` into `MenuPage`/`MenuRow` pages riding a
 `CustomEvent::TrayMenuFetched`; submenus paginate in place; row clicks send the
 DBusMenu "clicked" via `send_tray_menu_event`). The compositor treats a status
