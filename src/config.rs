@@ -155,7 +155,11 @@ pub(crate) fn read_status_font_size_from_config() -> f32 {
 }
 
 pub(crate) fn read_status_padding_from_config() -> f32 {
-    cfg_f32("/style/status/padding", "status_padding").unwrap_or(8.0)
+    // App-native `module { padding }` first (the text inset inside each
+    // module box — bar-side only), then the shared status key.
+    cfg_f32("/module/padding", "module_padding")
+        .or_else(|| cfg_f32("/style/status/padding", "status_padding"))
+        .unwrap_or(8.0)
 }
 
 pub(crate) fn read_status_module_spacing_from_config() -> f32 {
