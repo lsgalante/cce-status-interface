@@ -235,7 +235,11 @@ pub(crate) fn read_status_background_blur_from_config() -> f32 {
 }
 
 pub(crate) fn read_status_box_background_color_from_config() -> Option<[f32; 4]> {
-    let mut color = cfg_quad_color("/style/status/background_color", "status_background_color")
+    // App-native `module { background_color }` first (a quad color — the
+    // sRGB→linear conversion applies, per the color-space split in
+    // CLAUDE.md), then the shared status key, then the built-in default.
+    let mut color = cfg_quad_color("/module/background_color", "module_background_color")
+        .or_else(|| cfg_quad_color("/style/status/background_color", "status_background_color"))
         .unwrap_or_else(|| {
             let c = cce_ui::color::srgb_to_linear(0x15 as f32 / 255.0);
             let b = cce_ui::color::srgb_to_linear(0x20 as f32 / 255.0);
