@@ -191,9 +191,6 @@ pub(crate) fn read_status_module_spacing_from_config() -> f32 {
         .unwrap_or(8.0)
 }
 
-pub(crate) fn read_separator_color_from_config() -> Option<[f32; 4]> {
-    cfg_quad_color("/style/status/separator_color", "status_separator_color")
-}
 
 pub(crate) fn parse_font_for_alias(content: &str, alias: &str) -> Option<String> {
     let lines: Vec<&str> = content.lines().collect();

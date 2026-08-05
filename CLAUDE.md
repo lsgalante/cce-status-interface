@@ -54,7 +54,7 @@ The app implements `cce_ui::engine::Application` on the **`display_list()` paint
 
 1. `rebuild_layout()` runs the two-pass module layout — for each module first
    `StatusModule::width()`, then `StatusModule::render()` — filling retained buffers on
-   `StatusApp`: `rects`, `rounded_boxes`, `separators`, `text_prims`
+   `StatusApp`: `rects`, `rounded_boxes`, `text_prims`
    (the `TextPrim` tuple type; build them with `draw_label()` from a
    `cce_ui::widget::StyledLabel`), plus `input_regions`, `module_bounds`,
    `tray_item_bounds`, `viewport_bounds`.
@@ -129,7 +129,7 @@ background_blur tint scaling still applies on top) and `module { text_color }`
 which splits snake_case keys across nesting — `status_background_color` matches
 `style { status background_color=... }`. Keys used here: `bar_height`, `status_font`
 (also via fontconfig alias `status-interface`), `status_font_size`, `status_padding`,
-`status_module_spacing`, `status_normal_color`, `status_separator_color`,
+`status_module_spacing`, `status_normal_color`,
 `status_background_color`, `status_background_blur`, `status_box_corner_radius`,
 `background_color`/`low_color`/`desktop_gap_color` (bar bg fallback chain),
 `light_source_position`, and per-module-name position/side entries.

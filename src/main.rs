@@ -21,7 +21,7 @@ use glyphon::{
 };
 use cce_ui::color;
 use cce_ui::widget::{
-    Adapted, Separator, WidgetHost,
+    WidgetHost,
     MouseButton, ElementState, MouseScrollDelta, KeyEvent,
 };
 
@@ -236,7 +236,6 @@ struct StatusApp {
     rects: Vec<RectWidget>,
     overlay_rects: Vec<RectWidget>,
     rounded_boxes: Vec<RoundedBox>,
-    separators: Vec<Adapted<Separator>>,
     text_prims: Vec<TextPrim>,
 
     scale_factor: f64,
@@ -308,10 +307,8 @@ impl StatusApp {
         let (font_family, _) =
             cce_ui::layout::parse_font_string(&read_status_font_from_config());
         let font_size = read_status_font_size_from_config();
-        let show_separators = false;
         let padding = read_status_padding_from_config();
         let spacing = read_status_module_spacing_from_config();
-        let separator_color = read_separator_color_from_config().unwrap_or(color::STATUS_ACCENT);
         let normal_color = read_normal_color_from_config().unwrap_or(color::TEXT_FG);
         let sw_logical = if is_vertical { self.height as f32 } else { self.width as f32 };
         let bar_h = if is_vertical { self.width as f32 } else { read_status_height_from_config() };
@@ -324,7 +321,6 @@ impl StatusApp {
         self.rects.clear();
         self.overlay_rects.clear();
         self.rounded_boxes.clear();
-        self.separators.clear();
         self.text_prims.clear();
         self.input_regions.clear();
         self.module_bounds.clear();
@@ -367,15 +363,6 @@ impl StatusApp {
             );
             if w > 0.0 {
                 if !is_first_left {
-                    if show_separators {
-                        self.separators.push(Separator::new(
-                            left_x + spacing / 2.0,
-                            0.0,
-                            1.0,
-                            bar_h,
-                            separator_color,
-                        ));
-                    }
                     left_x += spacing;
                 }
                 is_first_left = false;
@@ -449,15 +436,6 @@ impl StatusApp {
             if w > 0.0 {
                 if !is_first_right {
                     right_x -= spacing;
-                    if show_separators {
-                        self.separators.push(Separator::new(
-                            right_x + spacing / 2.0,
-                            0.0,
-                            1.0,
-                            bar_h,
-                            separator_color,
-                        ));
-                    }
                 }
                 is_first_right = false;
 
@@ -635,11 +613,6 @@ impl StatusApp {
                 rb.y = old_x;
                 rb.w = old_h;
                 rb.h = old_w;
-            }
-            // Rotate separators (rect lives on the Adapted base since the Phase 5 migration)
-            for sep in &mut self.separators {
-                let (old_x, old_y, old_w, old_h) = sep.rect();
-                sep.set_rect(old_y, old_x, old_h, old_w);
             }
             // Rotate rects
             for r in &mut self.rects {
@@ -995,7 +968,6 @@ impl cce_ui::engine::Application for StatusApp {
             rects: Vec::new(),
             overlay_rects: Vec::new(),
             rounded_boxes: Vec::new(),
-            separators: Vec::new(),
             text_prims: Vec::new(),
             scale_factor: 1.0,
             width: if selected_module.is_some() { 120 } else { 1920 },
@@ -1150,8 +1122,8 @@ impl cce_ui::engine::Application for StatusApp {
     }
 
     fn display_list(&mut self, size: cce_ui::engine::LogicalSize, scale: f64) -> Option<cce_ui::scene::paint::DisplayList> {
-        // Phase 6ak single paint path: the rounded boxes, the status-bar bg / module rects /
-        // separators (the legacy view_rounded_quads then view() bodies, in the wrapper's
+        // Phase 6ak single paint path: the rounded boxes, the status-bar bg / module rects
+        // (the legacy view_rounded_quads then view() bodies, in the wrapper's
         // order), and the module text (prims, reshaped by the engine cache). overlay_quads
         // stays a separate on-top pass. The status bar's own text is never set in this app,
         // so it contributes only its background quad.
@@ -1202,10 +1174,6 @@ impl cce_ui::engine::Application for StatusApp {
         pc.quad(Rect { x: sb_x, y: sb_y, width: sb_w, height: sb_h }, self.status_bar.color());
         for r in &self.rects {
             pc.quad(Rect { x: r.x, y: r.y, width: r.w, height: r.h }, r.color);
-        }
-        for sep in &self.separators {
-            let (x, y, w, h) = sep.rect();
-            pc.quad(Rect { x, y, width: w, height: h }, sep.color());
         }
 
         for (text, tsize, x, y, color, font, bounds, layout) in &self.text_prims {
