@@ -106,12 +106,9 @@ raised above overlapped windows; the bar must reset its own height on close.
 title click → `MenuReady` rows of `Ccectl(["focus-window", id])`) and the
 layout-mode menu (layout-indicator click → `SetMode` rows + the in-place
 `ToggleApplyAll` checkbox row) are in-surface menus too. Menu width sizes to
-the longest row label. KNOWN WART: while a menu is open, strip-band clicks
-(y < bar height) landing over a NEIGHBORING segment's box route to the
-neighbor instead of the raised expanded surface, so they don't close the
-menu — close via the menu, its padding, or the module's own strip. The
-compositor hit-test (`Scene::at`, wlr_scene_node_at) is scene-based, so why
-the raise loses there is unresolved.
+the longest row label. Expanded segments stack in the compositor's popups
+layer (cce-fx@74a0f75) so click-away-close works across the whole surface,
+including the strip band over neighboring segments.
 
 ## Config
 
