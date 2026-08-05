@@ -154,7 +154,12 @@ pub(crate) fn read_status_padding_from_config() -> f32 {
 }
 
 pub(crate) fn read_status_module_spacing_from_config() -> f32 {
-    cfg_f32("/style/status/module_spacing", "status_module_spacing").unwrap_or(8.0)
+    // App-native `module { spacing }` first (the same value the compositor
+    // reads for the gap BETWEEN segments — this reader only matters for the
+    // intra-surface layout of a multi-module bar), then the shared key.
+    cfg_f32("/module/spacing", "module_spacing")
+        .or_else(|| cfg_f32("/style/status/module_spacing", "status_module_spacing"))
+        .unwrap_or(8.0)
 }
 
 pub(crate) fn read_separator_color_from_config() -> Option<[f32; 4]> {
