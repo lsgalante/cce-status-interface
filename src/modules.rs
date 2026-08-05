@@ -125,7 +125,15 @@ impl StatusModule for WindowModule {
                 total_w += layout_label.w;
             }
 
-            total_w + 2.0 * padding
+            // Title-mode width quantized UP to a coarse step: titles change
+            // constantly (dirty markers, browser tabs, terminal cwd), and
+            // sizing to the exact text resized this surface on every change —
+            // shoving the neighboring module sideways each time (the
+            // light_source flicker) and, at 372↔456px alternation rates,
+            // feeding the compositor's configure echo loop. Within a bucket a
+            // title change costs nothing.
+            const TITLE_WIDTH_STEP: f32 = 24.0;
+            ((total_w + 2.0 * padding) / TITLE_WIDTH_STEP).ceil() * TITLE_WIDTH_STEP
         } else {
             let viewport_parsed = parse_viewport_text(viewport);
             if viewport_parsed.is_empty() {
