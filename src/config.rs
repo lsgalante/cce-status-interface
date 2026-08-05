@@ -121,6 +121,11 @@ pub(crate) fn read_disabled_color_from_config() -> Option<[f32; 4]> {
 }
 
 pub(crate) fn read_status_font_from_config() -> String {
+    // App-native `module { font }` first (a family; an embedded size ranks
+    // below module { font_size } in the size chain), then the shared key.
+    if let Some(font_str) = cfg_string("/module/font", "module_font") {
+        return font_str;
+    }
     if let Some(font_str) = cfg_string("/style/status/font", "status_font") {
         return font_str;
     }
@@ -149,6 +154,12 @@ pub(crate) fn read_status_font_size_from_config() -> f32 {
     // the fallback along with the shared status_font_size key.
     if let Some(size) = cfg_f32("/module/font_size", "module_font_size") {
         return size;
+    }
+    if let Some(font_str) = cfg_string("/module/font", "module_font") {
+        let (_, parsed_size) = cce_ui::layout::parse_font_string(&font_str);
+        if let Some(size) = parsed_size {
+            return size;
+        }
     }
     if let Some(font_str) = cfg_string("/style/status/font", "status_font") {
         let (_, parsed_size) = cce_ui::layout::parse_font_string(&font_str);
