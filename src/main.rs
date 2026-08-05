@@ -649,6 +649,14 @@ impl StatusApp {
                 self.input_regions.clear();
                 self.input_regions.push((0, 0, self.width as i32, bar_h.round() as i32));
 
+                // No open menu: the surface is exactly the bar strip. This
+                // reset is what COLLAPSES an expanded surface after the menu
+                // closes — the compositor deliberately stops enforcing size
+                // while we are thicker than the bar, so nobody else will.
+                if self.context_menu.is_none() {
+                    self.height = bar_h.round() as u32;
+                }
+
                 // In-surface context menu: grow the surface below the bar
                 // strip and draw the menu into the retained buffers. The
                 // panel reuses the module box pipeline (so box_bevel applies)
