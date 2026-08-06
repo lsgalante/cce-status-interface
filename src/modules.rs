@@ -225,6 +225,7 @@ impl StatusModule for WindowModule {
                         radius: status_box_radius,
                         color,
                         corners: (false, false, true, true),
+                        border: None,
                     });
                 }
                 crate::draw_label(text_prims, label, cur_x + padding, centered_text_y(bar_h, font_size));
@@ -828,7 +829,7 @@ impl StatusModule for TrayModule {
 
 pub struct LightSourceModule;
 
-fn get_light_source_pos_from_config() -> f32 {
+pub(crate) fn get_light_source_pos_from_config() -> f32 {
     let val = crate::get_cached_config();
     if let Some(pos_val) = crate::json_find_key(&val, "light_source_position") {
         if let Some(f) = pos_val.as_f64() {
@@ -846,39 +847,41 @@ fn get_light_source_pos_from_config() -> f32 {
 impl StatusModule for LightSourceModule {
     fn name(&self) -> &'static str { "light_source" }
 
+    // The module is just the empty circle — no module box behind it.
+    fn has_custom_background(&self, _title: &str) -> bool { true }
+
     fn width(
         &self,
         _stats: &Option<SystemStats>,
         _viewport: &str,
         _layout: &str,
         _title: &str,
-        font_system: &mut FontSystem,
-        font_family: &str,
-        font_size: f32,
+        _font_system: &mut FontSystem,
+        _font_family: &str,
+        _font_size: f32,
         _tray_items: &HashMap<String, TrayItem>,
-        padding: f32,
+        _padding: f32,
     ) -> f32 {
-        let pos = get_light_source_pos_from_config();
-        let text = format!("Light: {:.2} rad", pos);
-        let label = Label::new_with_family(font_system, &text, font_size, [0.0, 0.0, 0.0, 1.0], font_family);
-        label.w + 2.0 * padding
+        // An empty circle with the bar's own thickness as its diameter; the
+        // radians value lives in the module's menu, not the strip.
+        crate::read_status_height_from_config()
     }
 
     fn render(
         &self,
         x: f32,
-        _w: f32,
+        w: f32,
         _stats: &Option<SystemStats>,
         _viewport: &str,
         _layout: &str,
         _title: &str,
-        font_system: &mut FontSystem,
-        font_family: &str,
-        font_size: f32,
+        _font_system: &mut FontSystem,
+        _font_family: &str,
+        _font_size: f32,
         normal_color: [f32; 4],
         bar_h: f32,
         _scale_factor: f64,
-        text_prims: &mut Vec<crate::TextPrim>,
+        _text_prims: &mut Vec<crate::TextPrim>,
         _rects: &mut Vec<RectWidget>,
         _overlay_rects: &mut Vec<RectWidget>,
         _viewport_bounds: &mut Vec<ViewportBounds>,
@@ -887,12 +890,28 @@ impl StatusModule for LightSourceModule {
         _tray_item_bounds: &mut Vec<TrayIconBounds>,
         _box_bg_color: Option<[f32; 4]>,
         _status_box_radius: f32,
-        _rounded_boxes: &mut Vec<RoundedBox>,
-        padding: f32,
+        rounded_boxes: &mut Vec<RoundedBox>,
+        _padding: f32,
     ) {
-        let pos = get_light_source_pos_from_config();
-        let text = format!("Light: {:.2} rad", pos);
-        let label = Label::new_with_family(font_system, &text, font_size, normal_color, font_family);
-        crate::draw_label(text_prims, label, x + padding, centered_text_y(bar_h, font_size));
+        let d = w.min(bar_h);
+        // normal_color is raw sRGB (a text color); the ring draws through the
+        // quad pipeline, which expects linear — convert so the stroke reads
+        // as the same shade as module text.
+        let ring = [
+            normal_color[0].powf(2.2),
+            normal_color[1].powf(2.2),
+            normal_color[2].powf(2.2),
+            1.0,
+        ];
+        rounded_boxes.push(RoundedBox {
+            x: x + (w - d) / 2.0,
+            y: (bar_h - d) / 2.0,
+            w: d,
+            h: d,
+            radius: d / 2.0,
+            color: [0.0, 0.0, 0.0, 0.0],
+            corners: (true, true, true, true),
+            border: Some((ring, 1.5)),
+        });
     }
 }

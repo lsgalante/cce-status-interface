@@ -275,6 +275,10 @@ pub struct RoundedBox {
     pub radius: f32,
     pub color: [f32; 4],
     pub corners: (bool, bool, bool, bool),
+    /// Some((color, thickness)): draw as an outlined shape — `color` fills
+    /// (pass transparent for an empty ring) and the stroke uses this color
+    /// and thickness. Skips the box bevel treatment.
+    pub border: Option<([f32; 4], f32)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -469,6 +473,7 @@ impl StatusApp {
                             radius: status_box_radius,
                             color,
                             corners: if self.selected_module_name.is_some() { (true, true, true, true) } else { (false, false, true, true) },
+                            border: None,
                         });
                     }
                 }
@@ -552,6 +557,7 @@ impl StatusApp {
                             radius: status_box_radius,
                             color,
                             corners: if self.selected_module_name.is_some() { (true, true, true, true) } else { (false, false, true, true) },
+                            border: None,
                         });
                     }
                 }
@@ -752,6 +758,7 @@ impl StatusApp {
                         radius: status_box_radius.max(4.0),
                         color: box_bg_color.unwrap_or([0.055, 0.055, 0.075, 0.97]),
                         corners: (true, true, true, true),
+                        border: None,
                     });
 
                     let text_u8 = [
@@ -1446,6 +1453,19 @@ impl cce_ui::engine::Application for StatusApp {
                 if rb.corners.2 { rb.radius } else { 0.0 },
                 if rb.corners.3 { rb.radius } else { 0.0 },
             );
+            // Outlined shapes: no bevel treatment. A full circle draws as an
+            // Arc ring — the rounded-rect corner family is the squircle
+            // (corner_shape), which reads as a rounded SQUARE at half-extent
+            // radius — anything else as a Border prim (fill + stroke).
+            if let Some((border_color, thickness)) = rb.border {
+                if (rb.w - rb.h).abs() < 0.5 && (rb.radius - rb.w / 2.0).abs() < 0.5 {
+                    let r = rb.w / 2.0;
+                    pc.arc(rb.x + r, rb.y + r, r, thickness, 0.0, std::f32::consts::TAU, border_color);
+                } else {
+                    pc.border(rect, radii, rb.color, border_color, thickness);
+                }
+                continue;
+            }
             match self.box_bevel {
                 Some(StatusBoxBevel::Raised) => {
                     // A lit plate: fill + rolled lip in one prim.
@@ -1745,7 +1765,7 @@ impl cce_ui::engine::Application for StatusApp {
                         separator: false,
                         action: MenuRowAction::Dispatch(ev),
                     };
-                    let rows = if self.adjust_position_mode {
+                    let mut rows = if self.adjust_position_mode {
                         vec![dispatch_row("Done", CustomEvent::ToggleAdjustPositionMode)]
                     } else {
                         vec![
@@ -1756,6 +1776,16 @@ impl cce_ui::engine::Application for StatusApp {
                             dispatch_row("Adjust Positions", CustomEvent::ToggleAdjustPositionMode),
                         ]
                     };
+                    // The light module's strip presence is just the empty
+                    // circle; its value lives here in the menu.
+                    if mb.name == "light_source" {
+                        rows.insert(0, MenuRow {
+                            label: format!("{:.2} rad", modules::get_light_source_pos_from_config()),
+                            enabled: true,
+                            separator: false,
+                            action: MenuRowAction::Inert,
+                        });
+                    }
                     self.context_menu = Some(ModuleContextMenu {
                         pages: vec![MenuPage { title: mb.name.clone(), rows }],
                         page: 0,
