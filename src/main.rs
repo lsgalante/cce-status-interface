@@ -119,6 +119,10 @@ pub(crate) enum CustomEvent {
     /// A bar-built in-surface menu (window picker), fetched off-thread.
     MenuReady { title: String, pages: Vec<MenuPage>, min_w: f32 },
     SwitcherTriggered,
+    /// Compositor click-away-close: a pointer press landed somewhere other
+    /// than this expanded segment. Payload = the pressed segment's app_id
+    /// ("-" for none); a segment ignores a dismiss naming itself.
+    MenuDismiss(String),
     /// A tray icon's DBusMenu, fetched and flattened for the in-surface menu.
     TrayMenuFetched { destination: String, menu_path: String, pages: Vec<MenuPage> },
     ToggleHideModules,
@@ -1170,6 +1174,9 @@ impl cce_ui::engine::Application for StatusApp {
             tokio::spawn(spawn_status_listener("layout", sender.clone()));
             tokio::spawn(spawn_status_listener("title", sender.clone()));
         }
+        // Every module can host an in-surface menu, so every process listens
+        // for the compositor's click-away dismiss pushes.
+        tokio::spawn(spawn_status_listener("dismiss", sender.clone()));
         let is_primary_for_switcher = selected_module.as_ref().map_or(true, |(name, _)| name == "window");
         if is_primary_for_switcher {
             tokio::spawn(spawn_switcher_listener(sender.clone()));
@@ -1337,6 +1344,18 @@ impl cce_ui::engine::Application for StatusApp {
             CustomEvent::SwitcherTriggered => {
                 log::debug!("[switcher] SwitcherTriggered event received, calling trigger_switcher");
                 self.trigger_switcher(true);
+            }
+            CustomEvent::MenuDismiss(pressed_app_id) => {
+                // Close-on-click-away, unless the press was on THIS segment
+                // (then handle_mouse_input already decided what to do).
+                if self.context_menu.is_some()
+                    && !self.menu_closing
+                    && pressed_app_id != self.get_app_id()
+                {
+                    self.menu_closing = true;
+                } else {
+                    changed = false;
+                }
             }
             CustomEvent::ToggleHideModules => {
                 self.status_hide_mode = !self.status_hide_mode;
