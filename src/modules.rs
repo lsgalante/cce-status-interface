@@ -878,7 +878,7 @@ impl StatusModule for LightSourceModule {
         _font_system: &mut FontSystem,
         _font_family: &str,
         _font_size: f32,
-        normal_color: [f32; 4],
+        _normal_color: [f32; 4],
         bar_h: f32,
         _scale_factor: f64,
         _text_prims: &mut Vec<crate::TextPrim>,
@@ -888,30 +888,25 @@ impl StatusModule for LightSourceModule {
         _layout_bounds: &mut Option<LayoutBounds>,
         _tray_items: &HashMap<String, TrayItem>,
         _tray_item_bounds: &mut Vec<TrayIconBounds>,
-        _box_bg_color: Option<[f32; 4]>,
+        box_bg_color: Option<[f32; 4]>,
         _status_box_radius: f32,
         rounded_boxes: &mut Vec<RoundedBox>,
         _padding: f32,
     ) {
         let d = w.min(bar_h);
-        // normal_color is raw sRGB (a text color); the ring draws through the
-        // quad pipeline, which expects linear — convert so the stroke reads
-        // as the same shade as module text.
-        let ring = [
-            normal_color[0].powf(2.2),
-            normal_color[1].powf(2.2),
-            normal_color[2].powf(2.2),
-            1.0,
-        ];
+        // The circle wears the module-box fill: same color, opacity and
+        // (per-pixel, compositor-side) backdrop blur as every other module's
+        // box — just circle-shaped and empty of content.
         rounded_boxes.push(RoundedBox {
             x: x + (w - d) / 2.0,
             y: (bar_h - d) / 2.0,
             w: d,
             h: d,
             radius: d / 2.0,
-            color: [0.0, 0.0, 0.0, 0.0],
+            color: box_bg_color.unwrap_or([0.0, 0.0, 0.0, 0.0]),
             corners: (true, true, true, true),
-            border: Some((ring, 1.5)),
+            // Circle marker; zero thickness = fill only, no stroke.
+            border: Some(([0.0; 4], 0.0)),
         });
     }
 }

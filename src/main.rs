@@ -1453,14 +1453,28 @@ impl cce_ui::engine::Application for StatusApp {
                 if rb.corners.2 { rb.radius } else { 0.0 },
                 if rb.corners.3 { rb.radius } else { 0.0 },
             );
-            // Outlined shapes: no bevel treatment. A full circle draws as an
-            // Arc ring — the rounded-rect corner family is the squircle
-            // (corner_shape), which reads as a rounded SQUARE at half-extent
-            // radius — anything else as a Border prim (fill + stroke).
+            // True-shape boxes (the light module's circle): no bevel
+            // treatment. A full circle draws through the Circle/Arc prims —
+            // the rounded-rect corner family is the squircle (corner_shape),
+            // which reads as a rounded SQUARE at half-extent radius — with
+            // the fill and stroke each optional. Anything else outlined goes
+            // through the Border prim (fill + stroke).
             if let Some((border_color, thickness)) = rb.border {
                 if (rb.w - rb.h).abs() < 0.5 && (rb.radius - rb.w / 2.0).abs() < 0.5 {
                     let r = rb.w / 2.0;
-                    pc.arc(rb.x + r, rb.y + r, r, thickness, 0.0, std::f32::consts::TAU, border_color);
+                    if rb.color[3] > 0.001 {
+                        // With raised module boxes (lit plates), the circle
+                        // takes the sphere-lit disc — the circular sibling of
+                        // the plate treatment, same light and material.
+                        if matches!(self.box_bevel, Some(StatusBoxBevel::Raised)) {
+                            pc.sphere(rb.x + r, rb.y + r, r, rb.color);
+                        } else {
+                            pc.circle(rb.x + r, rb.y + r, r, rb.color);
+                        }
+                    }
+                    if thickness > 0.05 {
+                        pc.arc(rb.x + r, rb.y + r, r, thickness, 0.0, std::f32::consts::TAU, border_color);
+                    }
                 } else {
                     pc.border(rect, radii, rb.color, border_color, thickness);
                 }
