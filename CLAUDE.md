@@ -120,8 +120,8 @@ Config comes from the shared `~/.config/cce/config.kdl` with the app's own
 `~/.config/cce/cce-status-interface/config.kdl` merged over it (cce-ui does the
 merge by executable name; both files' mtimes drive the live-reload poll via
 `config_files_modified`). App-native keys live in the app file — currently
-`module { corner_radius }` (overall module box radius, falls back to the shared
-`status_box_corner_radius`) and `module { spacing }` (the gap between segments;
+`module { corner_radius }` (overall module box radius; deliberately NO shared
+fallback — the old `status_box_corner_radius` rung was removed) and `module { spacing }` (the gap between segments;
 the COMPOSITOR reads this one for its arrange pass — bar-side it only affects a
 multi-module surface — applied on `ccectl reload`) and `module { height }` (the
 bar height; read by BOTH sides — bar surfaces live via the mtime poll, the
@@ -142,7 +142,7 @@ which splits snake_case keys across nesting — `status_background_color` matche
 `style { status background_color=... }`. Keys used here: `bar_height`, `status_font`
 (also via fontconfig alias `status-interface`), `status_font_size`, `status_padding`,
 `status_module_spacing`, `status_normal_color`,
-`status_background_color`, `status_background_blur`, `status_box_corner_radius`,
+`status_background_color`, `status_background_blur`,
 `background_color`/`low_color`/`desktop_gap_color` (bar bg fallback chain),
 `light_source_position`, and per-module-name position/side entries.
 
