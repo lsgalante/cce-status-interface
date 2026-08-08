@@ -81,6 +81,9 @@ fn stable_text_width(
     live.max(tmpl) + 2.0 * padding
 }
 
+/// Chip text shown by the window module while nothing holds keyboard focus.
+const NO_FOCUS_TEXT: &str = "no focus";
+
 pub struct WindowModule;
 
 impl StatusModule for WindowModule {
@@ -135,17 +138,21 @@ impl StatusModule for WindowModule {
             const TITLE_WIDTH_STEP: f32 = 24.0;
             ((total_w + 2.0 * padding) / TITLE_WIDTH_STEP).ceil() * TITLE_WIDTH_STEP
         } else {
+            // "(none)" is the compositor explicitly reporting Focus::None
+            // (keystrokes go nowhere); an empty title is just the feed not
+            // having connected yet, which must not flash the indicator.
+            let no_focus = title == "(none)";
             let viewport_parsed = parse_viewport_text(viewport);
-            if viewport_parsed.is_empty() {
-                0.0
-            } else {
-                let mut total_w = 0.0;
-                for (col, text) in &viewport_parsed {
-                    let label = Label::new_with_family(font_system, text, font_size, *col, font_family);
-                    total_w += label.w + 2.0 * padding + 4.0;
-                }
-                if total_w > 0.0 { total_w - 4.0 } else { 0.0 }
+            let mut total_w = 0.0;
+            if no_focus {
+                let label = Label::new_with_family(font_system, NO_FOCUS_TEXT, font_size, [0.0, 0.0, 0.0, 1.0], font_family);
+                total_w += label.w + 2.0 * padding + 4.0;
             }
+            for (col, text) in &viewport_parsed {
+                let label = Label::new_with_family(font_system, text, font_size, *col, font_family);
+                total_w += label.w + 2.0 * padding + 4.0;
+            }
+            if total_w > 0.0 { total_w - 4.0 } else { 0.0 }
         }
     }
 
@@ -211,8 +218,32 @@ impl StatusModule for WindowModule {
                 });
             }
         } else {
+            let no_focus = title == "(none)";
             let viewport_parsed = parse_viewport_text(viewport);
             let mut cur_x = x;
+            if no_focus {
+                // Dim chip signalling that no window has keyboard focus —
+                // the state where typing goes nowhere. Same box as the
+                // viewport tabs, half-alpha text, not clickable.
+                let mut dim = normal_color;
+                dim[3] *= 0.5;
+                let label = Label::new_with_family(font_system, NO_FOCUS_TEXT, font_size, dim, font_family);
+                let box_w = label.w + 2.0 * padding;
+                if let Some(color) = box_bg_color {
+                    rounded_boxes.push(RoundedBox {
+                        x: cur_x,
+                        y: 0.0,
+                        w: box_w,
+                        h: bar_h,
+                        radius: status_box_radius,
+                        color,
+                        corners: (false, false, true, true),
+                        border: None,
+                    });
+                }
+                crate::draw_label(text_prims, label, cur_x + padding, centered_text_y(bar_h, font_size));
+                cur_x += box_w + 4.0;
+            }
             for (col, text) in viewport_parsed {
                 let label = Label::new_with_family(font_system, &text, font_size, col, font_family);
                 let box_w = label.w + 2.0 * padding;
