@@ -57,7 +57,7 @@ The app implements `cce_ui::engine::Application` on the **`display_list()` paint
    `StatusApp`: `rects`, `rounded_boxes`, `text_prims`
    (the `TextPrim` tuple type; build them with `draw_label()` from a
    `cce_ui::widget::StyledLabel`), plus `input_regions`, `module_bounds`,
-   `tray_item_bounds`, `viewport_bounds`.
+   `tray_item_bounds`.
 2. `display_list()` replays those buffers into a `PaintCtx` each frame (and triggers
    `rebuild_layout()` when size/scale changed or `needs_rebuild` is set).
    `overlay_quads()` remains a separate on-top pass (used for drag feedback).
@@ -75,7 +75,9 @@ listen to tray D-Bus, etc.:
 - **Compositor status feed** (`spawn_status_listener`): connects to
   `/tmp/cce-status[-interface]-{WAYLAND_DISPLAY}.sock`, subscribes to `viewport`,
   `layout`, `title`, `modifiers` (line-oriented, auto-reconnects every 1s). The
-  `viewport` payload is Pango-ish markup parsed by `parse_viewport_text()`.
+  `viewport` payload is JSON carrying only the active viewport number
+  (`{"active": N}`), read at menu-open time for the layout menu's target —
+  nothing renders it (the old viewport tabs are gone).
 - **System stats** (`spawn_system_stats`): `/proc/stat`, `/proc/meminfo`,
   `/sys/class/power_supply/BAT*`, `/sys/class/backlight`, and `pactl` for volume/mute.
 - **Tray** (`spawn_status_tray`): a full StatusNotifierItem/Watcher host over `zbus`,
@@ -157,8 +159,7 @@ mtime in `tick()`, so there is no reload event to wire up.
   starts the same segment drag as adjust-position mode (snap to an edge on release,
   persisted to `layout.status_bar.<module>` in config.kdl). This app never sees those
   clicks and no longer tracks the super key.
-- Viewport tabs in the window module are clickable (`viewport_bounds` → `ccectl view`);
-  the layout indicator opens the layout-mode menu; tray icons left-click activate /
+- The layout indicator opens the layout-mode menu; tray icons left-click activate /
   right-click open their DBusMenu.
 - `ToggleHideModules` / `ToggleAdjustPositionMode` mirror their state to the compositor
   via `ccectl status-hide-mode|adjust-position-mode true|false`; the adjust-mode state

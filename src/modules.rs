@@ -4,8 +4,8 @@ use cce_ui::color;
 use cce_ui::widget::StyledLabel as Label;
 
 use crate::{
-    RectWidget, RoundedBox, ViewportBounds, LayoutBounds, SystemStats, TrayItem,
-    TrayIconBounds, make_text_buffer, parse_viewport_text,
+    RectWidget, RoundedBox, LayoutBounds, SystemStats, TrayItem,
+    TrayIconBounds, make_text_buffer,
 };
 
 /// Vertical offset that centers a text run in a box `box_h` tall. The engine
@@ -24,7 +24,6 @@ pub trait StatusModule {
     fn width(
         &self,
         stats: &Option<SystemStats>,
-        viewport: &str,
         layout: &str,
         title: &str,
         font_system: &mut FontSystem,
@@ -39,7 +38,6 @@ pub trait StatusModule {
         x: f32,
         w: f32,
         stats: &Option<SystemStats>,
-        viewport: &str,
         layout: &str,
         title: &str,
         font_system: &mut FontSystem,
@@ -51,7 +49,6 @@ pub trait StatusModule {
         text_prims: &mut Vec<crate::TextPrim>,
         rects: &mut Vec<RectWidget>,
         overlay_rects: &mut Vec<RectWidget>,
-        viewport_bounds: &mut Vec<ViewportBounds>,
         layout_bounds: &mut Option<LayoutBounds>,
         tray_items: &HashMap<String, TrayItem>,
         tray_item_bounds: &mut Vec<TrayIconBounds>,
@@ -96,7 +93,6 @@ impl StatusModule for WindowModule {
     fn width(
         &self,
         _stats: &Option<SystemStats>,
-        viewport: &str,
         layout: &str,
         title: &str,
         font_system: &mut FontSystem,
@@ -141,18 +137,12 @@ impl StatusModule for WindowModule {
             // "(none)" is the compositor explicitly reporting Focus::None
             // (keystrokes go nowhere); an empty title is just the feed not
             // having connected yet, which must not flash the indicator.
-            let no_focus = title == "(none)";
-            let viewport_parsed = parse_viewport_text(viewport);
-            let mut total_w = 0.0;
-            if no_focus {
+            if title == "(none)" {
                 let label = Label::new_with_family(font_system, NO_FOCUS_TEXT, font_size, [0.0, 0.0, 0.0, 1.0], font_family);
-                total_w += label.w + 2.0 * padding + 4.0;
+                label.w + 2.0 * padding
+            } else {
+                0.0
             }
-            for (col, text) in &viewport_parsed {
-                let label = Label::new_with_family(font_system, text, font_size, *col, font_family);
-                total_w += label.w + 2.0 * padding + 4.0;
-            }
-            if total_w > 0.0 { total_w - 4.0 } else { 0.0 }
         }
     }
 
@@ -161,7 +151,6 @@ impl StatusModule for WindowModule {
         x: f32,
         _w: f32,
         _stats: &Option<SystemStats>,
-        viewport: &str,
         layout: &str,
         title: &str,
         font_system: &mut FontSystem,
@@ -173,7 +162,6 @@ impl StatusModule for WindowModule {
         text_prims: &mut Vec<crate::TextPrim>,
         _rects: &mut Vec<RectWidget>,
         _overlay_rects: &mut Vec<RectWidget>,
-        viewport_bounds: &mut Vec<ViewportBounds>,
         layout_bounds: &mut Option<LayoutBounds>,
         _tray_items: &HashMap<String, TrayItem>,
         _tray_item_bounds: &mut Vec<TrayIconBounds>,
@@ -217,58 +205,27 @@ impl StatusModule for WindowModule {
                     h: bar_h,
                 });
             }
-        } else {
-            let no_focus = title == "(none)";
-            let viewport_parsed = parse_viewport_text(viewport);
-            let mut cur_x = x;
-            if no_focus {
-                // Dim chip signalling that no window has keyboard focus —
-                // the state where typing goes nowhere. Same box as the
-                // viewport tabs, half-alpha text, not clickable.
-                let mut dim = normal_color;
-                dim[3] *= 0.5;
-                let label = Label::new_with_family(font_system, NO_FOCUS_TEXT, font_size, dim, font_family);
-                let box_w = label.w + 2.0 * padding;
-                if let Some(color) = box_bg_color {
-                    rounded_boxes.push(RoundedBox {
-                        x: cur_x,
-                        y: 0.0,
-                        w: box_w,
-                        h: bar_h,
-                        radius: status_box_radius,
-                        color,
-                        corners: (false, false, true, true),
-                        border: None,
-                    });
-                }
-                crate::draw_label(text_prims, label, cur_x + padding, centered_text_y(bar_h, font_size));
-                cur_x += box_w + 4.0;
-            }
-            for (col, text) in viewport_parsed {
-                let label = Label::new_with_family(font_system, &text, font_size, col, font_family);
-                let box_w = label.w + 2.0 * padding;
-                if let Some(color) = box_bg_color {
-                    rounded_boxes.push(RoundedBox {
-                        x: cur_x,
-                        y: 0.0,
-                        w: box_w,
-                        h: bar_h,
-                        radius: status_box_radius,
-                        color,
-                        corners: (false, false, true, true),
-                        border: None,
-                    });
-                }
-                crate::draw_label(text_prims, label, cur_x + padding, centered_text_y(bar_h, font_size));
-                viewport_bounds.push(ViewportBounds {
-                    name: text.clone(),
-                    x: cur_x,
+        } else if title == "(none)" {
+            // Dim chip signalling that no window has keyboard focus — the
+            // state where typing goes nowhere. Half-alpha text, not
+            // clickable.
+            let mut dim = normal_color;
+            dim[3] *= 0.5;
+            let label = Label::new_with_family(font_system, NO_FOCUS_TEXT, font_size, dim, font_family);
+            let box_w = label.w + 2.0 * padding;
+            if let Some(color) = box_bg_color {
+                rounded_boxes.push(RoundedBox {
+                    x,
                     y: 0.0,
                     w: box_w,
                     h: bar_h,
+                    radius: status_box_radius,
+                    color,
+                    corners: (false, false, true, true),
+                    border: None,
                 });
-                cur_x += box_w + 4.0;
             }
+            crate::draw_label(text_prims, label, x + padding, centered_text_y(bar_h, font_size));
         }
     }
 }
@@ -281,7 +238,6 @@ impl StatusModule for ClockModule {
     fn width(
         &self,
         stats: &Option<SystemStats>,
-        _viewport: &str,
         _layout: &str,
         _title: &str,
         font_system: &mut FontSystem,
@@ -304,7 +260,6 @@ impl StatusModule for ClockModule {
         x: f32,
         _w: f32,
         stats: &Option<SystemStats>,
-        _viewport: &str,
         _layout: &str,
         _title: &str,
         font_system: &mut FontSystem,
@@ -316,7 +271,6 @@ impl StatusModule for ClockModule {
         text_prims: &mut Vec<crate::TextPrim>,
         _rects: &mut Vec<RectWidget>,
         _overlay_rects: &mut Vec<RectWidget>,
-        _viewport_bounds: &mut Vec<ViewportBounds>,
         _layout_bounds: &mut Option<LayoutBounds>,
         _tray_items: &HashMap<String, TrayItem>,
         _tray_item_bounds: &mut Vec<TrayIconBounds>,
@@ -340,7 +294,6 @@ impl StatusModule for BatteryModule {
     fn width(
         &self,
         stats: &Option<SystemStats>,
-        _viewport: &str,
         _layout: &str,
         _title: &str,
         font_system: &mut FontSystem,
@@ -362,7 +315,6 @@ impl StatusModule for BatteryModule {
         x: f32,
         _w: f32,
         stats: &Option<SystemStats>,
-        _viewport: &str,
         _layout: &str,
         _title: &str,
         font_system: &mut FontSystem,
@@ -374,7 +326,6 @@ impl StatusModule for BatteryModule {
         text_prims: &mut Vec<crate::TextPrim>,
         _rects: &mut Vec<RectWidget>,
         _overlay_rects: &mut Vec<RectWidget>,
-        _viewport_bounds: &mut Vec<ViewportBounds>,
         _layout_bounds: &mut Option<LayoutBounds>,
         _tray_items: &HashMap<String, TrayItem>,
         _tray_item_bounds: &mut Vec<TrayIconBounds>,
@@ -405,7 +356,6 @@ impl StatusModule for VolumeModule {
     fn width(
         &self,
         stats: &Option<SystemStats>,
-        _viewport: &str,
         _layout: &str,
         _title: &str,
         font_system: &mut FontSystem,
@@ -427,7 +377,6 @@ impl StatusModule for VolumeModule {
         x: f32,
         _w: f32,
         stats: &Option<SystemStats>,
-        _viewport: &str,
         _layout: &str,
         _title: &str,
         font_system: &mut FontSystem,
@@ -439,7 +388,6 @@ impl StatusModule for VolumeModule {
         text_prims: &mut Vec<crate::TextPrim>,
         _rects: &mut Vec<RectWidget>,
         overlay_rects: &mut Vec<RectWidget>,
-        _viewport_bounds: &mut Vec<ViewportBounds>,
         _layout_bounds: &mut Option<LayoutBounds>,
         _tray_items: &HashMap<String, TrayItem>,
         _tray_item_bounds: &mut Vec<TrayIconBounds>,
@@ -483,7 +431,6 @@ impl StatusModule for BrightnessModule {
     fn width(
         &self,
         stats: &Option<SystemStats>,
-        _viewport: &str,
         _layout: &str,
         _title: &str,
         font_system: &mut FontSystem,
@@ -505,7 +452,6 @@ impl StatusModule for BrightnessModule {
         x: f32,
         _w: f32,
         stats: &Option<SystemStats>,
-        _viewport: &str,
         _layout: &str,
         _title: &str,
         font_system: &mut FontSystem,
@@ -517,7 +463,6 @@ impl StatusModule for BrightnessModule {
         text_prims: &mut Vec<crate::TextPrim>,
         _rects: &mut Vec<RectWidget>,
         _overlay_rects: &mut Vec<RectWidget>,
-        _viewport_bounds: &mut Vec<ViewportBounds>,
         _layout_bounds: &mut Option<LayoutBounds>,
         _tray_items: &HashMap<String, TrayItem>,
         _tray_item_bounds: &mut Vec<TrayIconBounds>,
@@ -543,7 +488,6 @@ impl StatusModule for MemoryModule {
     fn width(
         &self,
         stats: &Option<SystemStats>,
-        _viewport: &str,
         _layout: &str,
         _title: &str,
         font_system: &mut FontSystem,
@@ -573,7 +517,6 @@ impl StatusModule for MemoryModule {
         x: f32,
         _w: f32,
         stats: &Option<SystemStats>,
-        _viewport: &str,
         _layout: &str,
         _title: &str,
         font_system: &mut FontSystem,
@@ -585,7 +528,6 @@ impl StatusModule for MemoryModule {
         text_prims: &mut Vec<crate::TextPrim>,
         _rects: &mut Vec<RectWidget>,
         _overlay_rects: &mut Vec<RectWidget>,
-        _viewport_bounds: &mut Vec<ViewportBounds>,
         _layout_bounds: &mut Option<LayoutBounds>,
         _tray_items: &HashMap<String, TrayItem>,
         _tray_item_bounds: &mut Vec<TrayIconBounds>,
@@ -609,7 +551,6 @@ impl StatusModule for CpuModule {
     fn width(
         &self,
         stats: &Option<SystemStats>,
-        _viewport: &str,
         _layout: &str,
         _title: &str,
         font_system: &mut FontSystem,
@@ -631,7 +572,6 @@ impl StatusModule for CpuModule {
         x: f32,
         _w: f32,
         stats: &Option<SystemStats>,
-        _viewport: &str,
         _layout: &str,
         _title: &str,
         font_system: &mut FontSystem,
@@ -643,7 +583,6 @@ impl StatusModule for CpuModule {
         text_prims: &mut Vec<crate::TextPrim>,
         _rects: &mut Vec<RectWidget>,
         _overlay_rects: &mut Vec<RectWidget>,
-        _viewport_bounds: &mut Vec<ViewportBounds>,
         _layout_bounds: &mut Option<LayoutBounds>,
         _tray_items: &HashMap<String, TrayItem>,
         _tray_item_bounds: &mut Vec<TrayIconBounds>,
@@ -667,7 +606,6 @@ impl StatusModule for TrayModule {
     fn width(
         &self,
         _stats: &Option<SystemStats>,
-        _viewport: &str,
         _layout: &str,
         _title: &str,
         _font_system: &mut FontSystem,
@@ -689,7 +627,6 @@ impl StatusModule for TrayModule {
         x: f32,
         _w: f32,
         _stats: &Option<SystemStats>,
-        _viewport: &str,
         _layout: &str,
         _title: &str,
         font_system: &mut FontSystem,
@@ -701,7 +638,6 @@ impl StatusModule for TrayModule {
         text_prims: &mut Vec<crate::TextPrim>,
         _rects: &mut Vec<RectWidget>,
         overlay_rects: &mut Vec<RectWidget>,
-        _viewport_bounds: &mut Vec<ViewportBounds>,
         _layout_bounds: &mut Option<LayoutBounds>,
         tray_items: &HashMap<String, TrayItem>,
         tray_item_bounds: &mut Vec<TrayIconBounds>,
@@ -884,7 +820,6 @@ impl StatusModule for LightSourceModule {
     fn width(
         &self,
         _stats: &Option<SystemStats>,
-        _viewport: &str,
         _layout: &str,
         _title: &str,
         _font_system: &mut FontSystem,
@@ -903,7 +838,6 @@ impl StatusModule for LightSourceModule {
         x: f32,
         w: f32,
         _stats: &Option<SystemStats>,
-        _viewport: &str,
         _layout: &str,
         _title: &str,
         _font_system: &mut FontSystem,
@@ -915,7 +849,6 @@ impl StatusModule for LightSourceModule {
         _text_prims: &mut Vec<crate::TextPrim>,
         _rects: &mut Vec<RectWidget>,
         _overlay_rects: &mut Vec<RectWidget>,
-        _viewport_bounds: &mut Vec<ViewportBounds>,
         _layout_bounds: &mut Option<LayoutBounds>,
         _tray_items: &HashMap<String, TrayItem>,
         _tray_item_bounds: &mut Vec<TrayIconBounds>,

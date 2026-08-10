@@ -55,15 +55,6 @@ pub struct TrayIconBounds {
 }
 
 #[derive(Debug, Clone)]
-pub struct ViewportBounds {
-    pub name: String,
-    pub x: f32,
-    pub y: f32,
-    pub w: f32,
-    pub h: f32,
-}
-
-#[derive(Debug, Clone)]
 pub struct LayoutBounds {
     pub x: f32,
     pub y: f32,
@@ -228,41 +219,6 @@ pub(crate) fn make_text_buffer(fs: &mut FontSystem, text: &str, size: f32, font_
     buf
 }
 
-pub(crate) fn parse_hex_to_rgba(hex: &str) -> Option<[f32; 4]> {
-    cce_ui::color::parse_hex_rgba(hex)
-}
-
-pub(crate) fn parse_viewport_text(input: &str) -> Vec<([f32; 4], String)> {
-    let mut pango = input.to_string();
-    if let Ok(val) = serde_json::from_str::<serde_json::Value>(input) {
-        if let Some(t) = val.get("text").and_then(|v| v.as_str()) {
-            pango = t.to_string();
-        }
-    }
-    let mut result = Vec::new();
-    let mut remaining = pango.as_str();
-    while let Some(start_span) = remaining.find("<span color='") {
-        let color_start = start_span + "<span color='".len();
-        if let Some(color_end) = remaining[color_start..].find("'") {
-            let hex_color = &remaining[color_start..color_start + color_end];
-            let tag_start = color_start + color_end + "'>".len();
-            if let Some(tag_end) = remaining[tag_start..].find("</span>") {
-                let tag_text = &remaining[tag_start..tag_start + tag_end];
-                let color = parse_hex_to_rgba(hex_color).unwrap_or([0.8, 0.8, 0.8, 1.0]);
-                result.push((color, tag_text.to_string()));
-                remaining = &remaining[tag_start + tag_end + "</span>".len()..];
-            } else {
-                break;
-            }
-        } else {
-            break;
-        }
-    }
-    if result.is_empty() && !pango.is_empty() {
-        result.push(([0.8, 0.8, 0.8, 1.0], pango.to_string()));
-    }
-    result
-}
 
 
 pub struct RectWidget {
@@ -306,7 +262,6 @@ struct StatusApp {
     cursor_pos: (f64, f64),
     hovered_tray_item: Option<String>,
     tray_item_bounds: Vec<TrayIconBounds>,
-    viewport_bounds: Vec<ViewportBounds>,
     layout_bounds: Option<LayoutBounds>,
 
     font_system: FontSystem,
@@ -434,7 +389,6 @@ impl StatusApp {
             self.status_bar.set_bg_color(self.current_bg_color);
         }
 
-        self.viewport_bounds.clear();
         self.layout_bounds = None;
 
         let is_single = self.selected_module_name.is_some();
@@ -445,7 +399,6 @@ impl StatusApp {
         for module in &left_modules {
             let w = module.width(
                 &self.stats,
-                &self.viewport,
                 &self.layout,
                 &self.title,
                 &mut self.font_system,
@@ -482,7 +435,6 @@ impl StatusApp {
                     left_x,
                     w,
                     &self.stats,
-                    &self.viewport,
                     &self.layout,
                     &self.title,
                     &mut self.font_system,
@@ -494,7 +446,6 @@ impl StatusApp {
                     &mut self.text_prims,
                     &mut self.rects,
                     &mut self.overlay_rects,
-                    &mut self.viewport_bounds,
                     &mut self.layout_bounds,
                     &self.tray_items,
                     &mut self.tray_item_bounds,
@@ -521,7 +472,6 @@ impl StatusApp {
         for module in right_modules.iter().rev() {
             let w = module.width(
                 &self.stats,
-                &self.viewport,
                 &self.layout,
                 &self.title,
                 &mut self.font_system,
@@ -566,7 +516,6 @@ impl StatusApp {
                     right_x,
                     w,
                     &self.stats,
-                    &self.viewport,
                     &self.layout,
                     &self.title,
                     &mut self.font_system,
@@ -578,7 +527,6 @@ impl StatusApp {
                     &mut self.text_prims,
                     &mut self.rects,
                     &mut self.overlay_rects,
-                    &mut self.viewport_bounds,
                     &mut self.layout_bounds,
                     &self.tray_items,
                     &mut self.tray_item_bounds,
@@ -1219,7 +1167,6 @@ impl cce_ui::engine::Application for StatusApp {
             cursor_pos: (0.0, 0.0),
             hovered_tray_item: None,
             tray_item_bounds: Vec::new(),
-            viewport_bounds: Vec::new(),
             layout_bounds: None,
             font_system,
             status_bar: cce_ui::widget::StatusBar::new(),
@@ -1283,15 +1230,10 @@ impl cce_ui::engine::Application for StatusApp {
         let mut changed = true;
         match msg {
             CustomEvent::ViewportUpdated(t) => {
-                // Dedup on the PARSED tabs, not the raw payload: the raw
-                // text embeds live camera pan/zoom numbers, so a camera
-                // animation re-delivers a string that differs every frame
-                // while the rendered viewport content is identical — raw
-                // comparison made the whole segment rebuild (and the
-                // compositor re-bake its blur) per animation frame, which
-                // reads as the module flickering until the camera settles.
-                changed = self.viewport != t
-                    && parse_viewport_text(&t) != parse_viewport_text(&self.viewport);
+                // Nothing renders the viewport payload (the tabs are gone);
+                // it is only read at menu-open time for the layout menu's
+                // active viewport, so a push never redraws.
+                changed = false;
                 self.viewport = t;
             }
             CustomEvent::LayoutUpdated(l) => {
@@ -1895,31 +1837,8 @@ impl cce_ui::engine::Application for StatusApp {
                     }
 
                     if clicked_window {
-                        let has_focus = !self.title.is_empty() && self.title != "(none)";
-                        if !has_focus {
-                            let mut clicked_viewport = false;
-                            for bound in &self.viewport_bounds {
-                                if cx >= bound.x as f64 && cx <= (bound.x + bound.w) as f64
-                                    && cy >= bound.y as f64 && cy <= (bound.y + bound.h) as f64 {
-                                    log::debug!("[viewport-click-via-window] Viewport matched: {}", bound.name);
-                                    let name = bound.name.clone();
-                                    std::thread::spawn(move || {
-                                        let _ = std::process::Command::new(get_ccectl_cmd())
-                                            .args(["view", &name])
-                                            .spawn();
-                                    });
-                                    clicked_viewport = true;
-                                    break;
-                                }
-                            }
-                            if !clicked_viewport {
-                                log::debug!("[window-click] Window module clicked (no window focused, fallback to switcher)!");
-                                self.trigger_switcher(false);
-                            }
-                        } else {
-                            log::debug!("[window-click] Window module clicked (window focused)!");
-                            self.trigger_switcher(false);
-                        }
+                        log::debug!("[window-click] Window module clicked, opening window picker");
+                        self.trigger_switcher(false);
                     }
                 }
             }
@@ -2109,78 +2028,7 @@ mod tests {
     // tests moved to config.rs with the phase-2 rewrite.
     // ------------------------------------------------------------------
 
-    fn assert_rgba_close(actual: [f32; 4], expected: [f32; 4]) {
-        for i in 0..4 {
-            assert!(
-                (actual[i] - expected[i]).abs() < 1e-3,
-                "channel {} differs: actual {:?} vs expected {:?}",
-                i,
-                actual,
-                expected
-            );
-        }
-    }
 
-    // --- parse_viewport_text ---
-
-    #[test]
-    fn viewport_text_single_span() {
-        let out = parse_viewport_text("<span color='#ff0000'>1</span>");
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0].1, "1");
-        assert_rgba_close(out[0].0, [1.0, 0.0, 0.0, 1.0]);
-    }
-
-    #[test]
-    fn viewport_text_multiple_spans() {
-        let out = parse_viewport_text(
-            "<span color='#ff0000'>1</span><span color='#00ff00'>2</span>",
-        );
-        assert_eq!(out.len(), 2);
-        assert_eq!(out[0].1, "1");
-        assert_eq!(out[1].1, "2");
-        assert_rgba_close(out[1].0, [0.0, 1.0, 0.0, 1.0]);
-    }
-
-    #[test]
-    fn viewport_text_json_wrapped() {
-        let out = parse_viewport_text(r##"{"text": "<span color='#0000ff'>3</span>"}"##);
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0].1, "3");
-        assert_rgba_close(out[0].0, [0.0, 0.0, 1.0, 1.0]);
-    }
-
-    #[test]
-    fn viewport_text_plain_text_falls_back_to_default_color() {
-        let out = parse_viewport_text("hello");
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0].1, "hello");
-        assert_rgba_close(out[0].0, [0.8, 0.8, 0.8, 1.0]);
-    }
-
-    #[test]
-    fn viewport_text_unterminated_span_falls_back_to_raw_input() {
-        // A span with no closing tag aborts markup parsing; the whole raw
-        // input (markup included) is emitted with the default color.
-        let input = "<span color='#ff0000'>abc";
-        let out = parse_viewport_text(input);
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0].1, input);
-        assert_rgba_close(out[0].0, [0.8, 0.8, 0.8, 1.0]);
-    }
-
-    #[test]
-    fn viewport_text_bad_hex_gets_default_color() {
-        let out = parse_viewport_text("<span color='zzz'>x</span>");
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0].1, "x");
-        assert_rgba_close(out[0].0, [0.8, 0.8, 0.8, 1.0]);
-    }
-
-    #[test]
-    fn viewport_text_empty_input_is_empty() {
-        assert!(parse_viewport_text("").is_empty());
-    }
 
     // --- module_side_from_json ---
 
