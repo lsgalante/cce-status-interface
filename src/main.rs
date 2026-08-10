@@ -958,6 +958,14 @@ fn get_closest_viewport(x: f64, y: f64) -> i32 {
 fn get_active_viewport_from_camera(viewport_json: &str) -> u32 {
     let mut text = viewport_json.to_string();
     if let Ok(val) = serde_json::from_str::<serde_json::Value>(viewport_json) {
+        // Current compositors send the active viewport explicitly alongside
+        // the tab markup; the Pan-text parse below is the fallback for the
+        // old camera-state payload.
+        if let Some(a) = val.get("active").and_then(|v| v.as_u64()) {
+            if (1..=4).contains(&a) {
+                return a as u32;
+            }
+        }
         if let Some(t) = val.get("text").and_then(|v| v.as_str()) {
             text = t.to_string();
         }
