@@ -383,7 +383,6 @@ impl StatusApp {
         for module in &left_modules {
             let w = module.width(
                 &self.stats,
-                &self.layout,
                 &self.title,
                 &mut self.font_system,
                 &font_family,
@@ -419,7 +418,6 @@ impl StatusApp {
                     left_x,
                     w,
                     &self.stats,
-                    &self.layout,
                     &self.title,
                     &mut self.font_system,
                     &font_family,
@@ -455,7 +453,6 @@ impl StatusApp {
         for module in right_modules.iter().rev() {
             let w = module.width(
                 &self.stats,
-                &self.layout,
                 &self.title,
                 &mut self.font_system,
                 &font_family,
@@ -499,7 +496,6 @@ impl StatusApp {
                     right_x,
                     w,
                     &self.stats,
-                    &self.layout,
                     &self.title,
                     &mut self.font_system,
                     &font_family,
@@ -1165,7 +1161,9 @@ impl cce_ui::engine::Application for StatusApp {
         let mut changed = true;
         match msg {
             CustomEvent::LayoutUpdated(l) => {
-                changed = self.layout != l;
+                // Nothing renders the mode in the strip anymore; it is read
+                // at menu-open time for the window module's menu row.
+                changed = false;
                 self.layout = l;
             }
             CustomEvent::TitleUpdated(t) => {
@@ -1651,6 +1649,16 @@ impl cce_ui::engine::Application for StatusApp {
                     if mb.name == "light_source" {
                         rows.insert(0, MenuRow {
                             label: format!("{:.2} rad", modules::get_light_source_pos_from_config()),
+                            enabled: true,
+                            separator: false,
+                            action: MenuRowAction::Inert,
+                        });
+                    }
+                    // The window module's strip shows only the title; the
+                    // focused window's mode lives here in its menu.
+                    if mb.name == "window" && !self.layout.is_empty() {
+                        rows.insert(0, MenuRow {
+                            label: self.layout.clone(),
                             enabled: true,
                             separator: false,
                             action: MenuRowAction::Inert,

@@ -24,7 +24,6 @@ pub trait StatusModule {
     fn width(
         &self,
         stats: &Option<SystemStats>,
-        layout: &str,
         title: &str,
         font_system: &mut FontSystem,
         font_family: &str,
@@ -38,7 +37,6 @@ pub trait StatusModule {
         x: f32,
         w: f32,
         stats: &Option<SystemStats>,
-        layout: &str,
         title: &str,
         font_system: &mut FontSystem,
         font_family: &str,
@@ -92,7 +90,6 @@ impl StatusModule for WindowModule {
     fn width(
         &self,
         _stats: &Option<SystemStats>,
-        layout: &str,
         title: &str,
         font_system: &mut FontSystem,
         font_family: &str,
@@ -102,26 +99,12 @@ impl StatusModule for WindowModule {
     ) -> f32 {
         let has_title = !title.is_empty() && title != "(none)";
         if has_title {
-            let has_layout = !layout.is_empty();
-            let mut total_w = 0.0;
-            if has_title {
-                let mut display_title = title.to_string();
-                if display_title.chars().count() > 40 {
-                    display_title = display_title.chars().take(37).collect::<String>() + "...";
-                }
-                let label = Label::new_with_family(font_system, &display_title, font_size, [0.0, 0.0, 0.0, 1.0], font_family);
-                total_w += label.w;
+            let mut display_title = title.to_string();
+            if display_title.chars().count() > 40 {
+                display_title = display_title.chars().take(37).collect::<String>() + "...";
             }
-
-            if has_title && has_layout {
-                let sep_label = Label::new_with_family(font_system, " - ", font_size, [0.0, 0.0, 0.0, 1.0], font_family);
-                total_w += sep_label.w;
-            }
-
-            if has_layout {
-                let layout_label = Label::new_with_family(font_system, layout, font_size, [0.0, 0.0, 0.0, 1.0], font_family);
-                total_w += layout_label.w;
-            }
+            let label = Label::new_with_family(font_system, &display_title, font_size, [0.0, 0.0, 0.0, 1.0], font_family);
+            let total_w = label.w;
 
             // Title-mode width quantized UP to a coarse step: titles change
             // constantly (dirty markers, browser tabs, terminal cwd), and
@@ -150,7 +133,6 @@ impl StatusModule for WindowModule {
         x: f32,
         _w: f32,
         _stats: &Option<SystemStats>,
-        layout: &str,
         title: &str,
         font_system: &mut FontSystem,
         font_family: &str,
@@ -170,32 +152,12 @@ impl StatusModule for WindowModule {
     ) {
         let has_title = !title.is_empty() && title != "(none)";
         if has_title {
-            let has_layout = !layout.is_empty();
-            let mut cur_x = x + padding;
-            let y_pos = centered_text_y(bar_h, font_size);
-
-            if has_title {
-                let mut display_title = title.to_string();
-                if display_title.chars().count() > 40 {
-                    display_title = display_title.chars().take(37).collect::<String>() + "...";
-                }
-                let label = Label::new_with_family(font_system, &display_title, font_size, normal_color, font_family);
-                let w = label.w;
-                crate::draw_label(text_prims, label, cur_x, y_pos);
-                cur_x += w;
+            let mut display_title = title.to_string();
+            if display_title.chars().count() > 40 {
+                display_title = display_title.chars().take(37).collect::<String>() + "...";
             }
-
-            if has_title && has_layout {
-                let sep_label = Label::new_with_family(font_system, " - ", font_size, normal_color, font_family);
-                let w = sep_label.w;
-                crate::draw_label(text_prims, sep_label, cur_x, y_pos);
-                cur_x += w;
-            }
-
-            if has_layout {
-                let layout_label = Label::new_with_family(font_system, layout, font_size, normal_color, font_family);
-                crate::draw_label(text_prims, layout_label, cur_x, y_pos);
-            }
+            let label = Label::new_with_family(font_system, &display_title, font_size, normal_color, font_family);
+            crate::draw_label(text_prims, label, x + padding, centered_text_y(bar_h, font_size));
         } else if title == "(none)" {
             // Dim chip signalling that no window has keyboard focus — the
             // state where typing goes nowhere. Half-alpha text, not
@@ -229,7 +191,6 @@ impl StatusModule for ClockModule {
     fn width(
         &self,
         stats: &Option<SystemStats>,
-        _layout: &str,
         _title: &str,
         font_system: &mut FontSystem,
         font_family: &str,
@@ -251,7 +212,6 @@ impl StatusModule for ClockModule {
         x: f32,
         _w: f32,
         stats: &Option<SystemStats>,
-        _layout: &str,
         _title: &str,
         font_system: &mut FontSystem,
         font_family: &str,
@@ -284,7 +244,6 @@ impl StatusModule for BatteryModule {
     fn width(
         &self,
         stats: &Option<SystemStats>,
-        _layout: &str,
         _title: &str,
         font_system: &mut FontSystem,
         font_family: &str,
@@ -305,7 +264,6 @@ impl StatusModule for BatteryModule {
         x: f32,
         _w: f32,
         stats: &Option<SystemStats>,
-        _layout: &str,
         _title: &str,
         font_system: &mut FontSystem,
         font_family: &str,
@@ -345,7 +303,6 @@ impl StatusModule for VolumeModule {
     fn width(
         &self,
         stats: &Option<SystemStats>,
-        _layout: &str,
         _title: &str,
         font_system: &mut FontSystem,
         font_family: &str,
@@ -366,7 +323,6 @@ impl StatusModule for VolumeModule {
         x: f32,
         _w: f32,
         stats: &Option<SystemStats>,
-        _layout: &str,
         _title: &str,
         font_system: &mut FontSystem,
         font_family: &str,
@@ -419,7 +375,6 @@ impl StatusModule for BrightnessModule {
     fn width(
         &self,
         stats: &Option<SystemStats>,
-        _layout: &str,
         _title: &str,
         font_system: &mut FontSystem,
         font_family: &str,
@@ -440,7 +395,6 @@ impl StatusModule for BrightnessModule {
         x: f32,
         _w: f32,
         stats: &Option<SystemStats>,
-        _layout: &str,
         _title: &str,
         font_system: &mut FontSystem,
         font_family: &str,
@@ -475,7 +429,6 @@ impl StatusModule for MemoryModule {
     fn width(
         &self,
         stats: &Option<SystemStats>,
-        _layout: &str,
         _title: &str,
         font_system: &mut FontSystem,
         font_family: &str,
@@ -504,7 +457,6 @@ impl StatusModule for MemoryModule {
         x: f32,
         _w: f32,
         stats: &Option<SystemStats>,
-        _layout: &str,
         _title: &str,
         font_system: &mut FontSystem,
         font_family: &str,
@@ -537,7 +489,6 @@ impl StatusModule for CpuModule {
     fn width(
         &self,
         stats: &Option<SystemStats>,
-        _layout: &str,
         _title: &str,
         font_system: &mut FontSystem,
         font_family: &str,
@@ -558,7 +509,6 @@ impl StatusModule for CpuModule {
         x: f32,
         _w: f32,
         stats: &Option<SystemStats>,
-        _layout: &str,
         _title: &str,
         font_system: &mut FontSystem,
         font_family: &str,
@@ -591,7 +541,6 @@ impl StatusModule for TrayModule {
     fn width(
         &self,
         _stats: &Option<SystemStats>,
-        _layout: &str,
         _title: &str,
         _font_system: &mut FontSystem,
         _font_family: &str,
@@ -612,7 +561,6 @@ impl StatusModule for TrayModule {
         x: f32,
         _w: f32,
         _stats: &Option<SystemStats>,
-        _layout: &str,
         _title: &str,
         font_system: &mut FontSystem,
         font_family: &str,
@@ -804,7 +752,6 @@ impl StatusModule for LightSourceModule {
     fn width(
         &self,
         _stats: &Option<SystemStats>,
-        _layout: &str,
         _title: &str,
         _font_system: &mut FontSystem,
         _font_family: &str,
@@ -822,7 +769,6 @@ impl StatusModule for LightSourceModule {
         x: f32,
         w: f32,
         _stats: &Option<SystemStats>,
-        _layout: &str,
         _title: &str,
         _font_system: &mut FontSystem,
         _font_family: &str,
