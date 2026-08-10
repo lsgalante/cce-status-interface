@@ -1275,7 +1275,15 @@ impl cce_ui::engine::Application for StatusApp {
         let mut changed = true;
         match msg {
             CustomEvent::ViewportUpdated(t) => {
-                changed = self.viewport != t;
+                // Dedup on the PARSED tabs, not the raw payload: the raw
+                // text embeds live camera pan/zoom numbers, so a camera
+                // animation re-delivers a string that differs every frame
+                // while the rendered viewport content is identical — raw
+                // comparison made the whole segment rebuild (and the
+                // compositor re-bake its blur) per animation frame, which
+                // reads as the module flickering until the camera settles.
+                changed = self.viewport != t
+                    && parse_viewport_text(&t) != parse_viewport_text(&self.viewport);
                 self.viewport = t;
             }
             CustomEvent::LayoutUpdated(l) => {
