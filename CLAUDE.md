@@ -73,11 +73,9 @@ in `new()` — which tasks run depends on the selected module, so a clock proces
 listen to tray D-Bus, etc.:
 
 - **Compositor status feed** (`spawn_status_listener`): connects to
-  `/tmp/cce-status[-interface]-{WAYLAND_DISPLAY}.sock`, subscribes to `viewport`,
-  `layout`, `title`, `modifiers` (line-oriented, auto-reconnects every 1s). The
-  `viewport` payload is JSON carrying only the active viewport number
-  (`{"active": N}`), read at menu-open time for the layout menu's target —
-  nothing renders it (the old viewport tabs are gone).
+  `/tmp/cce-status[-interface]-{WAYLAND_DISPLAY}.sock`, subscribes to `layout`,
+  `title`, `modifiers`, `dismiss` (line-oriented, auto-reconnects every 1s).
+  (The old `viewport` topic is gone with the viewport-tag feature.)
 - **System stats** (`spawn_system_stats`): `/proc/stat`, `/proc/meminfo`,
   `/sys/class/power_supply/BAT*`, `/sys/class/backlight`, and `pactl` for volume/mute.
 - **Tray** (`spawn_status_tray`): a full StatusNotifierItem/Watcher host over `zbus`,
@@ -87,9 +85,8 @@ listen to tray D-Bus, etc.:
   `/tmp/cce-status-interface-switcher-{WAYLAND_DISPLAY}.sock`; a line on it fires
   `SwitcherTriggered`.
 
-Outbound actions shell out to `ccectl` (`view <viewport>`, `windows --json`,
-`focus-window`, `viewport-layout`, `window-switcher`, `status-hide-mode`,
-`adjust-position-mode`), resolved from `~/.local/bin` first (`get_ccectl_cmd`).
+Outbound actions shell out to `ccectl` (`windows --json`, `focus-window`,
+`window-switcher`, `status-hide-mode`, `adjust-position-mode`), resolved from `~/.local/bin` first (`get_ccectl_cmd`).
 `ccectl windows --json` returns one JSON object per line; the text format is kept only
 as a parse fallback for older compositors (`parse_ccectl_window_any_line` handles
 both). Keyboard alt-tab switching is delegated to the compositor
@@ -109,9 +106,8 @@ segment thicker than the bar as expanded: frozen slot, no size enforcement,
 raised above overlapped windows; the bar must reset its own height on close.
 
 **No cce-cloud popups remain in this app**: the window picker (window-module
-title click → `MenuReady` rows of `Ccectl(["focus-window", id])`) and the
-layout-mode menu (layout-indicator click → `SetMode` rows + the in-place
-`ToggleApplyAll` checkbox row) are in-surface menus too. Menu width sizes to
+click → `MenuReady` rows of `Ccectl(["focus-window", id])`) is an in-surface
+menu too. Menu width sizes to
 the longest row label. Expanded segments stack in the compositor's popups
 layer (cce-fx@74a0f75) so click-away-close works across the whole surface,
 including the strip band over neighboring segments.
@@ -159,8 +155,8 @@ mtime in `tick()`, so there is no reload event to wire up.
   starts the same segment drag as adjust-position mode (snap to an edge on release,
   persisted to `layout.status_bar.<module>` in config.kdl). This app never sees those
   clicks and no longer tracks the super key.
-- The layout indicator opens the layout-mode menu; tray icons left-click activate /
-  right-click open their DBusMenu.
+- Tray icons left-click activate / right-click open their DBusMenu. (The old
+  layout-mode menu and viewport tabs are gone with the viewport-tag feature.)
 - `ToggleHideModules` / `ToggleAdjustPositionMode` mirror their state to the compositor
   via `ccectl status-hide-mode|adjust-position-mode true|false`; the adjust-mode state
   is read back with `ccectl adjust-position-mode query` (the compositor is the single

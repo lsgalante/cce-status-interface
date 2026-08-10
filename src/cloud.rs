@@ -113,11 +113,6 @@ pub(crate) enum MenuRowAction {
     Dispatch(CustomEvent),
     /// Run ccectl with these args, detached (window picker rows).
     Ccectl(Vec<String>),
-    /// Apply a window mode (the layout menu): honors the menu's live
-    /// apply-to-all toggle and captured viewport at click time.
-    SetMode(String),
-    /// Flip the layout menu's apply-to-all toggle in place (stays open).
-    ToggleApplyAll,
     /// Non-interactive (separators).
     Inert,
 }

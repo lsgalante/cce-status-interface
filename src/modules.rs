@@ -4,7 +4,7 @@ use cce_ui::color;
 use cce_ui::widget::StyledLabel as Label;
 
 use crate::{
-    RectWidget, RoundedBox, LayoutBounds, SystemStats, TrayItem,
+    RectWidget, RoundedBox, SystemStats, TrayItem,
     TrayIconBounds, make_text_buffer,
 };
 
@@ -49,7 +49,6 @@ pub trait StatusModule {
         text_prims: &mut Vec<crate::TextPrim>,
         rects: &mut Vec<RectWidget>,
         overlay_rects: &mut Vec<RectWidget>,
-        layout_bounds: &mut Option<LayoutBounds>,
         tray_items: &HashMap<String, TrayItem>,
         tray_item_bounds: &mut Vec<TrayIconBounds>,
         box_bg_color: Option<[f32; 4]>,
@@ -162,7 +161,6 @@ impl StatusModule for WindowModule {
         text_prims: &mut Vec<crate::TextPrim>,
         _rects: &mut Vec<RectWidget>,
         _overlay_rects: &mut Vec<RectWidget>,
-        layout_bounds: &mut Option<LayoutBounds>,
         _tray_items: &HashMap<String, TrayItem>,
         _tray_item_bounds: &mut Vec<TrayIconBounds>,
         box_bg_color: Option<[f32; 4]>,
@@ -196,14 +194,7 @@ impl StatusModule for WindowModule {
 
             if has_layout {
                 let layout_label = Label::new_with_family(font_system, layout, font_size, normal_color, font_family);
-                let w = layout_label.w;
                 crate::draw_label(text_prims, layout_label, cur_x, y_pos);
-                *layout_bounds = Some(LayoutBounds {
-                    x: cur_x - 2.0,
-                    y: 0.0,
-                    w: w + 4.0,
-                    h: bar_h,
-                });
             }
         } else if title == "(none)" {
             // Dim chip signalling that no window has keyboard focus — the
@@ -271,7 +262,6 @@ impl StatusModule for ClockModule {
         text_prims: &mut Vec<crate::TextPrim>,
         _rects: &mut Vec<RectWidget>,
         _overlay_rects: &mut Vec<RectWidget>,
-        _layout_bounds: &mut Option<LayoutBounds>,
         _tray_items: &HashMap<String, TrayItem>,
         _tray_item_bounds: &mut Vec<TrayIconBounds>,
         _box_bg_color: Option<[f32; 4]>,
@@ -326,7 +316,6 @@ impl StatusModule for BatteryModule {
         text_prims: &mut Vec<crate::TextPrim>,
         _rects: &mut Vec<RectWidget>,
         _overlay_rects: &mut Vec<RectWidget>,
-        _layout_bounds: &mut Option<LayoutBounds>,
         _tray_items: &HashMap<String, TrayItem>,
         _tray_item_bounds: &mut Vec<TrayIconBounds>,
         _box_bg_color: Option<[f32; 4]>,
@@ -388,7 +377,6 @@ impl StatusModule for VolumeModule {
         text_prims: &mut Vec<crate::TextPrim>,
         _rects: &mut Vec<RectWidget>,
         overlay_rects: &mut Vec<RectWidget>,
-        _layout_bounds: &mut Option<LayoutBounds>,
         _tray_items: &HashMap<String, TrayItem>,
         _tray_item_bounds: &mut Vec<TrayIconBounds>,
         _box_bg_color: Option<[f32; 4]>,
@@ -463,7 +451,6 @@ impl StatusModule for BrightnessModule {
         text_prims: &mut Vec<crate::TextPrim>,
         _rects: &mut Vec<RectWidget>,
         _overlay_rects: &mut Vec<RectWidget>,
-        _layout_bounds: &mut Option<LayoutBounds>,
         _tray_items: &HashMap<String, TrayItem>,
         _tray_item_bounds: &mut Vec<TrayIconBounds>,
         _box_bg_color: Option<[f32; 4]>,
@@ -528,7 +515,6 @@ impl StatusModule for MemoryModule {
         text_prims: &mut Vec<crate::TextPrim>,
         _rects: &mut Vec<RectWidget>,
         _overlay_rects: &mut Vec<RectWidget>,
-        _layout_bounds: &mut Option<LayoutBounds>,
         _tray_items: &HashMap<String, TrayItem>,
         _tray_item_bounds: &mut Vec<TrayIconBounds>,
         _box_bg_color: Option<[f32; 4]>,
@@ -583,7 +569,6 @@ impl StatusModule for CpuModule {
         text_prims: &mut Vec<crate::TextPrim>,
         _rects: &mut Vec<RectWidget>,
         _overlay_rects: &mut Vec<RectWidget>,
-        _layout_bounds: &mut Option<LayoutBounds>,
         _tray_items: &HashMap<String, TrayItem>,
         _tray_item_bounds: &mut Vec<TrayIconBounds>,
         _box_bg_color: Option<[f32; 4]>,
@@ -638,7 +623,6 @@ impl StatusModule for TrayModule {
         text_prims: &mut Vec<crate::TextPrim>,
         _rects: &mut Vec<RectWidget>,
         overlay_rects: &mut Vec<RectWidget>,
-        _layout_bounds: &mut Option<LayoutBounds>,
         tray_items: &HashMap<String, TrayItem>,
         tray_item_bounds: &mut Vec<TrayIconBounds>,
         _box_bg_color: Option<[f32; 4]>,
@@ -849,7 +833,6 @@ impl StatusModule for LightSourceModule {
         _text_prims: &mut Vec<crate::TextPrim>,
         _rects: &mut Vec<RectWidget>,
         _overlay_rects: &mut Vec<RectWidget>,
-        _layout_bounds: &mut Option<LayoutBounds>,
         _tray_items: &HashMap<String, TrayItem>,
         _tray_item_bounds: &mut Vec<TrayIconBounds>,
         box_bg_color: Option<[f32; 4]>,

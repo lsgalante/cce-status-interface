@@ -35,7 +35,6 @@ pub(crate) async fn spawn_status_listener(sub: &'static str, sender: calloop::ch
                     log::debug!("[status-listener] received '{}' update: '{}'", sub, val);
                     if !val.is_empty() {
                         let ev = match sub {
-                            "viewport" => CustomEvent::ViewportUpdated(val.clone()),
                             "layout" => CustomEvent::LayoutUpdated(val.clone()),
                             "title" => CustomEvent::TitleUpdated(val.clone()),
                             // Click-away-close: the payload is the app_id of

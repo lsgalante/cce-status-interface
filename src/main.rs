@@ -55,14 +55,6 @@ pub struct TrayIconBounds {
 }
 
 #[derive(Debug, Clone)]
-pub struct LayoutBounds {
-    pub x: f32,
-    pub y: f32,
-    pub w: f32,
-    pub h: f32,
-}
-
-#[derive(Debug, Clone)]
 pub struct SystemStats {
     pub clock: String,
     pub memory: String,
@@ -101,7 +93,6 @@ fn stats_signature(module: Option<&str>, s: &SystemStats) -> Option<String> {
 
 #[derive(Debug, Clone)]
 pub(crate) enum CustomEvent {
-    ViewportUpdated(String),
     LayoutUpdated(String),
     TitleUpdated(String),
     SystemStatsUpdated(SystemStats),
@@ -133,10 +124,6 @@ struct ModuleContextMenu {
     /// to; None for the bar's own module menu.
     tray_target: Option<(String, String)>,
     min_w: f32,
-    /// The layout menu's "apply to all sharing mode" toggle.
-    apply_all: bool,
-    /// Viewport captured when the layout menu opened (SetMode target).
-    active_viewport: i32,
     hovered: Option<usize>,
     /// Menu box in surface-local logical coords, set by `rebuild_layout`.
     rect: (f32, f32, f32, f32),
@@ -254,7 +241,6 @@ pub struct ModuleBounds {
 
 struct StatusApp {
     // Status State
-    viewport: String,
     layout: String,
     title: String,
     stats: Option<SystemStats>,
@@ -262,7 +248,6 @@ struct StatusApp {
     cursor_pos: (f64, f64),
     hovered_tray_item: Option<String>,
     tray_item_bounds: Vec<TrayIconBounds>,
-    layout_bounds: Option<LayoutBounds>,
 
     font_system: FontSystem,
     status_bar: cce_ui::widget::Adapted<cce_ui::widget::StatusBar>,
@@ -389,7 +374,6 @@ impl StatusApp {
             self.status_bar.set_bg_color(self.current_bg_color);
         }
 
-        self.layout_bounds = None;
 
         let is_single = self.selected_module_name.is_some();
         let margin_padding = if is_single { 6.0 } else { 12.0 };
@@ -446,7 +430,6 @@ impl StatusApp {
                     &mut self.text_prims,
                     &mut self.rects,
                     &mut self.overlay_rects,
-                    &mut self.layout_bounds,
                     &self.tray_items,
                     &mut self.tray_item_bounds,
                     box_bg_color,
@@ -527,7 +510,6 @@ impl StatusApp {
                     &mut self.text_prims,
                     &mut self.rects,
                     &mut self.overlay_rects,
-                    &mut self.layout_bounds,
                     &self.tray_items,
                     &mut self.tray_item_bounds,
                     box_bg_color,
@@ -696,7 +678,7 @@ impl StatusApp {
                     // ONE continuous box in the module's own fill, spanning
                     // the strip band and the menu — the module box literally
                     // grows into the menu. Inserted at the front so the
-                    // module's strip content (tray icons, viewport tabs)
+                    // module's strip content (tray icons, labels)
                     // renders on top of its band.
                     self.rounded_boxes.insert(0, RoundedBox {
                         x: plate_x,
@@ -887,50 +869,6 @@ impl StatusApp {
     }
 }
 
-fn get_closest_viewport(x: f64, y: f64) -> i32 {
-    let centers = [(0.0, 0.0), (2000.0, 0.0), (0.0, 2000.0), (2000.0, 2000.0)];
-    let mut min_dist = f64::MAX;
-    let mut best_tag = 1;
-    for (i, &(cx, cy)) in centers.iter().enumerate() {
-        let dx = x - cx;
-        let dy = y - cy;
-        let dist = dx * dx + dy * dy;
-        if dist < min_dist {
-            min_dist = dist;
-            best_tag = (i + 1) as i32;
-        }
-    }
-    best_tag
-}
-
-fn get_active_viewport_from_camera(viewport_json: &str) -> u32 {
-    let mut text = viewport_json.to_string();
-    if let Ok(val) = serde_json::from_str::<serde_json::Value>(viewport_json) {
-        // Current compositors send the active viewport explicitly alongside
-        // the tab markup; the Pan-text parse below is the fallback for the
-        // old camera-state payload.
-        if let Some(a) = val.get("active").and_then(|v| v.as_u64()) {
-            if (1..=4).contains(&a) {
-                return a as u32;
-            }
-        }
-        if let Some(t) = val.get("text").and_then(|v| v.as_str()) {
-            text = t.to_string();
-        }
-    }
-    if let Some(pan_idx) = text.find("Pan: (") {
-        let coords_str = &text[pan_idx + "Pan: (".len()..];
-        if let Some(end_idx) = coords_str.find(")") {
-            let parts: Vec<&str> = coords_str[..end_idx].split(',').collect();
-            if parts.len() == 2 {
-                let pan_x = parts[0].trim().parse::<f64>().unwrap_or(0.0);
-                let pan_y = parts[1].trim().parse::<f64>().unwrap_or(0.0);
-                return get_closest_viewport(pan_x, pan_y) as u32;
-            }
-        }
-    }
-    1
-}
 
 fn get_module_side(name: &str) -> Side {
     let content = std::fs::read_to_string(cce_ui::config::get_config_path()).unwrap_or_default();
@@ -1133,7 +1071,6 @@ impl cce_ui::engine::Application for StatusApp {
         left_modules.push(module);
 
         if has_window {
-            tokio::spawn(spawn_status_listener("viewport", sender.clone()));
             tokio::spawn(spawn_status_listener("layout", sender.clone()));
             tokio::spawn(spawn_status_listener("title", sender.clone()));
         }
@@ -1159,7 +1096,6 @@ impl cce_ui::engine::Application for StatusApp {
         let font_system = cce_ui::create_font_system();
 
         let mut app = Self {
-            viewport: String::new(),
             layout: String::new(),
             title: String::new(),
             stats: if has_stats { Some(get_initial_stats()) } else { None },
@@ -1167,7 +1103,6 @@ impl cce_ui::engine::Application for StatusApp {
             cursor_pos: (0.0, 0.0),
             hovered_tray_item: None,
             tray_item_bounds: Vec::new(),
-            layout_bounds: None,
             font_system,
             status_bar: cce_ui::widget::StatusBar::new(),
             rects: Vec::new(),
@@ -1225,17 +1160,10 @@ impl cce_ui::engine::Application for StatusApp {
     fn update(&mut self, msg: Self::Message, needs_rebuild: &mut bool, _exit: &mut bool) {
         // Default to redrawing; the high-frequency push events below clear this when
         // their value is unchanged, so a once-a-second stats poll (or a repeated
-        // viewport/title push) no longer forces a redraw — and the compositor's
+        // title push) no longer forces a redraw — and the compositor's
         // whole-backdrop blur re-bake — every time.
         let mut changed = true;
         match msg {
-            CustomEvent::ViewportUpdated(t) => {
-                // Nothing renders the viewport payload (the tabs are gone);
-                // it is only read at menu-open time for the layout menu's
-                // active viewport, so a push never redraws.
-                changed = false;
-                self.viewport = t;
-            }
             CustomEvent::LayoutUpdated(l) => {
                 changed = self.layout != l;
                 self.layout = l;
@@ -1275,8 +1203,6 @@ impl cce_ui::engine::Application for StatusApp {
                         page: 0,
                         tray_target: None,
                         min_w,
-                        apply_all: false,
-                        active_viewport: 0,
                         hovered: None,
                         rect: (0.0, 0.0, 0.0, 0.0),
                         row_bounds: Vec::new(),
@@ -1296,8 +1222,6 @@ impl cce_ui::engine::Application for StatusApp {
                         page: 0,
                         tray_target: Some((destination, menu_path)),
                         min_w: 260.0,
-                        apply_all: false,
-                        active_viewport: 0,
                         hovered: None,
                         rect: (0.0, 0.0, 0.0, 0.0),
                         row_bounds: Vec::new(),
@@ -1575,32 +1499,6 @@ impl cce_ui::engine::Application for StatusApp {
                             });
                             self.menu_closing = true;
                         }
-                        Some(MenuRowAction::SetMode(mode)) => {
-                            let args = if menu.apply_all {
-                                vec!["apply-mode-sharing".to_string(), mode]
-                            } else {
-                                vec![
-                                    "viewport-layout".to_string(),
-                                    menu.active_viewport.to_string(),
-                                    mode,
-                                ]
-                            };
-                            std::thread::spawn(move || {
-                                let _ = std::process::Command::new(get_ccectl_cmd())
-                                    .args(&args)
-                                    .spawn();
-                            });
-                            self.menu_closing = true;
-                        }
-                        Some(MenuRowAction::ToggleApplyAll) => {
-                            menu.apply_all = !menu.apply_all;
-                            let mark = if menu.apply_all { "[x]" } else { "[ ]" };
-                            if let Some(page) = menu.pages.get_mut(menu.page) {
-                                if let Some(row) = page.rows.get_mut(i) {
-                                    row.label = format!("{} Apply to all sharing mode", mark);
-                                }
-                            }
-                        }
                         _ => {}
                     }
                 }
@@ -1763,8 +1661,6 @@ impl cce_ui::engine::Application for StatusApp {
                         page: 0,
                         tray_target: None,
                         min_w: 190.0,
-                        apply_all: false,
-                        active_viewport: 0,
                         hovered: None,
                         rect: (0.0, 0.0, 0.0, 0.0),
                         row_bounds: Vec::new(),
@@ -1776,70 +1672,19 @@ impl cce_ui::engine::Application for StatusApp {
             }
 
             if button == MouseButton::Left {
-                log::debug!("[viewport-click] Mouse left click at logical: ({}, {})", cx, cy);
-                
-                // Check if layout mode was clicked
-                let mut clicked_layout = false;
-                if let Some(ref bounds) = self.layout_bounds {
-                    if cx >= bounds.x as f64 && cx <= (bounds.x + bounds.w) as f64
-                        && cy >= bounds.y as f64 && cy <= (bounds.y + bounds.h) as f64 {
-                        clicked_layout = true;
+                let mut clicked_window = false;
+                for mb in &self.module_bounds {
+                    if mb.name == "window" {
+                        if coord >= mb.x && coord <= (mb.x + mb.w) {
+                            clicked_window = true;
+                            break;
+                        }
                     }
                 }
 
-                if clicked_layout {
-                    log::debug!("[layout-click] opening in-surface layout menu");
-                    if self.context_menu.is_none() {
-                        self.menu_anim = 0.0;
-                    }
-                    self.menu_closing = false;
-                    let mode_row = |label: &str| MenuRow {
-                        label: label.to_string(),
-                        enabled: true,
-                        separator: false,
-                        action: MenuRowAction::SetMode(label.to_lowercase()),
-                    };
-                    let rows = vec![
-                        MenuRow {
-                            label: "[ ] Apply to all sharing mode".to_string(),
-                            enabled: true,
-                            separator: false,
-                            action: MenuRowAction::ToggleApplyAll,
-                        },
-                        mode_row("Cascade"),
-                        mode_row("Grid"),
-                        mode_row("Fullscreen"),
-                        mode_row("Floating"),
-                        mode_row("Popup"),
-                    ];
-                    self.context_menu = Some(ModuleContextMenu {
-                        pages: vec![MenuPage { title: "Window Mode".to_string(), rows }],
-                        page: 0,
-                        tray_target: None,
-                        min_w: 240.0,
-                        apply_all: false,
-                        active_viewport: get_active_viewport_from_camera(&self.viewport) as i32,
-                        hovered: None,
-                        rect: (0.0, 0.0, 0.0, 0.0),
-                        row_bounds: Vec::new(),
-                    });
-                    self.needs_rebuild = true;
-                    *needs_rebuild = true;
-                } else {
-                    let mut clicked_window = false;
-                    for mb in &self.module_bounds {
-                        if mb.name == "window" {
-                            if coord >= mb.x && coord <= (mb.x + mb.w) {
-                                clicked_window = true;
-                                break;
-                            }
-                        }
-                    }
-
-                    if clicked_window {
-                        log::debug!("[window-click] Window module clicked, opening window picker");
-                        self.trigger_switcher(false);
-                    }
+                if clicked_window {
+                    log::debug!("[window-click] Window module clicked, opening window picker");
+                    self.trigger_switcher(false);
                 }
             }
         }
