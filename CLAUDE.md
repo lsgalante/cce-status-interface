@@ -5,10 +5,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this is
 
 `cce-status-interface` is the status bar of the `cce` Wayland desktop environment. It
-is one crate in the multi-repo `cce` workspace — see `../CLAUDE.md` for the workspace
-layout, the multi-repo git rules (commit here, never `git init` at the root), and the
-`cce-ui` toolkit this app is built on. This crate is deliberately small: `src/main.rs`
-(the `StatusApp` application + IPC + config parsing) and `src/modules.rs` (the
+is one crate in the multi-repo `cce` workspace — see `../cce-compositor/WORKSPACE.md` for
+the workspace layout, the multi-repo git rules (commit here, never `git init` at the root),
+and the `cce-ui` toolkit this app is built on. This crate is deliberately small:
+`src/main.rs` (the `StatusApp` application + IPC + config parsing) and `src/modules.rs` (the
 `StatusModule` trait and its nine implementations).
 
 ## Build, test, run
