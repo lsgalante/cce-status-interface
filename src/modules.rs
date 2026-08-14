@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use glyphon::FontSystem;
+use cce_ui::cosmic_text::FontSystem;
 use cce_ui::color;
 use cce_ui::widget::StyledLabel as Label;
 

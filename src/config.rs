@@ -8,8 +8,8 @@
 //! user's config (or collides with an unrelated key of the same name).
 //!
 //! Color space: text colors stay **raw sRGB** — they end up as `[u8; 3]` for
-//! glyphon (see `StyledLabel`), which expects sRGB. Quad/box colors are
-//! converted with [`cce_ui::color::srgb_to_linear`] because the wgpu pipeline
+//! cosmic-text (see `StyledLabel`), which expects sRGB. Quad/box colors are
+//! converted with [`cce_ui::color::srgb_to_linear`] because the Vulkan pipeline
 //! samples them in linear space.
 
 use std::collections::HashSet;
@@ -89,7 +89,7 @@ fn cfg_string(pointer: &str, legacy_key: &str) -> Option<String> {
     pointer_or_fuzzy(&val, pointer, legacy_key).and_then(|v| v.as_str()).map(|s| s.to_string())
 }
 
-/// A text color: raw sRGB RGB with alpha forced to 1.0 (glyphon consumes
+/// A text color: raw sRGB RGB with alpha forced to 1.0 (cosmic-text consumes
 /// text colors as sRGB `[u8; 3]`; alpha is not carried by the text path).
 pub(crate) fn text_color_from(val: &serde_json::Value, pointer: &str, legacy_key: &str) -> Option<[f32; 4]> {
     let s = pointer_or_fuzzy(val, pointer, legacy_key)?.as_str()?;
@@ -97,7 +97,7 @@ pub(crate) fn text_color_from(val: &serde_json::Value, pointer: &str, legacy_key
     Some([r, g, b, 1.0])
 }
 
-/// A quad/box color: RGB converted sRGB→linear for the wgpu pipeline, alpha
+/// A quad/box color: RGB converted sRGB→linear for the Vulkan pipeline, alpha
 /// kept raw.
 pub(crate) fn quad_color_from(val: &serde_json::Value, pointer: &str, legacy_key: &str) -> Option<[f32; 4]> {
     let s = pointer_or_fuzzy(val, pointer, legacy_key)?.as_str()?;
@@ -448,11 +448,11 @@ style {
         let raw = 128.0f32 / 255.0;
         let linear = cce_ui::color::srgb_to_linear(raw);
 
-        // Text color: raw sRGB, alpha forced to 1.0 (glyphon takes sRGB u8).
+        // Text color: raw sRGB, alpha forced to 1.0 (cosmic-text takes sRGB u8).
         let text = text_color_from(&val, "/style/status/normal_color", "status_normal_color").unwrap();
         assert_rgba_close(text, [raw, raw, raw, 1.0]);
 
-        // Quad color: RGB linearized for the wgpu pipeline, alpha raw.
+        // Quad color: RGB linearized for the Vulkan pipeline, alpha raw.
         let quad = quad_color_from(&val, "/style/status/background_color", "status_background_color").unwrap();
         assert_rgba_close(quad, [linear, linear, linear, raw]);
     }

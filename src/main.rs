@@ -16,7 +16,7 @@ pub(crate) use tray::*;
 use modules::{StatusModule, WindowModule, ClockModule, BatteryModule, VolumeModule, BrightnessModule, MemoryModule, CpuModule, TrayModule, LightSourceModule};
 
 use std::collections::HashMap;
-use glyphon::{
+use cce_ui::cosmic_text::{
     Attrs, Buffer, FontSystem, Metrics,
 };
 use cce_ui::color;
@@ -194,14 +194,14 @@ pub(crate) fn make_text_buffer(fs: &mut FontSystem, text: &str, size: f32, font_
     let mut attrs = Attrs::new();
     if let Some(ref font_name) = family_name {
         let family = match font_name.as_str() {
-            "monospace" => glyphon::Family::Name(cce_ui::layout::get_system_monospace_font()),
-            "sans-serif" => glyphon::Family::SansSerif,
-            "serif" => glyphon::Family::Serif,
-            name => glyphon::Family::Name(name),
+            "monospace" => cce_ui::cosmic_text::Family::Name(cce_ui::layout::get_system_monospace_font()),
+            "sans-serif" => cce_ui::cosmic_text::Family::SansSerif,
+            "serif" => cce_ui::cosmic_text::Family::Serif,
+            name => cce_ui::cosmic_text::Family::Name(name),
         };
         attrs = attrs.family(family);
     }
-    buf.set_text(fs, text, attrs, glyphon::Shaping::Advanced);
+    buf.set_text(fs, text, attrs, cce_ui::cosmic_text::Shaping::Advanced);
     buf.shape_until_scroll(fs, true);
     buf
 }
