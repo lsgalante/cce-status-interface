@@ -202,8 +202,12 @@ pub(crate) fn resolve_icon_path(theme_path: Option<&str>, icon_name: &str) -> Op
         return None;
     }
 
+    // Dropbox registers plain "dropbox" but ships only dropboxstatus-* icons.
     let icon_name = if icon_name == "dropbox" { "dropboxstatus-idle" } else { icon_name };
 
+    // SNI IconThemePath: the item may point at its own icon directory, which
+    // outranks any installed theme. Layout inside it is unspecified, hence the
+    // recursive scan.
     if let Some(path_str) = theme_path {
         if !path_str.is_empty() {
             let path = std::path::Path::new(path_str);
@@ -215,61 +219,7 @@ pub(crate) fn resolve_icon_path(theme_path: Option<&str>, icon_name: &str) -> Op
         }
     }
 
-    let mut search_dirs = Vec::new();
-    if let Ok(home) = std::env::var("HOME") {
-        search_dirs.push(format!("{}/.local/share/icons", home));
-        search_dirs.push(format!("{}/.icons", home));
-    }
-    search_dirs.push("/usr/share/icons".to_string());
-    search_dirs.push("/usr/share/pixmaps".to_string());
-
-    let sub_paths = [
-        "hicolor/16x16/status",
-        "hicolor/22x22/status",
-        "hicolor/24x24/status",
-        "hicolor/32x32/status",
-        "hicolor/48x48/status",
-        "hicolor/scalable/status",
-        "hicolor/16x16/apps",
-        "hicolor/22x22/apps",
-        "hicolor/24x24/apps",
-        "hicolor/32x32/apps",
-        "hicolor/48x48/apps",
-        "hicolor/scalable/apps",
-        "gnome/16x16/status",
-        "gnome/22x22/status",
-        "gnome/24x24/status",
-        "gnome/32x32/status",
-        "gnome/48x48/status",
-        "gnome/scalable/status",
-        "gnome/16x16/apps",
-        "gnome/22x22/apps",
-        "gnome/24x24/apps",
-        "gnome/32x32/apps",
-        "gnome/48x48/apps",
-        "gnome/scalable/apps",
-    ];
-
-    for base in &search_dirs {
-        for sub in &sub_paths {
-            let path_png = std::path::Path::new(base).join(sub).join(format!("{}.png", icon_name));
-            if path_png.exists() && path_png.is_file() {
-                return Some(path_png);
-            }
-            let path_svg = std::path::Path::new(base).join(sub).join(format!("{}.svg", icon_name));
-            if path_svg.exists() && path_svg.is_file() {
-                return Some(path_svg);
-            }
-        }
-        let base_path = std::path::Path::new(base);
-        if base_path.exists() {
-            if let Some(found) = find_icon_file(base_path, icon_name) {
-                return Some(found);
-            }
-        }
-    }
-
-    None
+    cce_ui::icon::lookup_in(icon_name, &["status", "apps"])
 }
 
 pub(crate) async fn fetch_tray_item(conn: &zbus::Connection, addr: &NotifierAddress) -> Result<TrayItem, zbus::Error> {
@@ -539,5 +489,30 @@ pub(crate) async fn spawn_status_tray(sender: calloop::channel::Sender<CustomEve
     // Keep the task alive
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_icon_path;
+
+    /// The two tray-specific pieces kept local when the theme search moved to
+    /// `cce_ui::icon::lookup_in`: the dropbox alias, and the SNI IconThemePath
+    /// directory outranking the theme search (recursively — Dropbox nests its
+    /// icons under images/hicolor/<size>/status/).
+    #[test]
+    fn theme_path_override_and_dropbox_alias() {
+        let root = std::env::temp_dir().join("cce-tray-icon-test");
+        let status = root.join("hicolor/16x16/status");
+        std::fs::create_dir_all(&status).unwrap();
+        let icon = status.join("dropboxstatus-idle.png");
+        std::fs::write(&icon, b"x").unwrap();
+
+        let theme_path = root.to_str().unwrap();
+        assert_eq!(resolve_icon_path(Some(theme_path), "dropbox"), Some(icon.clone()));
+        assert_eq!(resolve_icon_path(Some(theme_path), "dropboxstatus-idle"), Some(icon));
+        assert_eq!(resolve_icon_path(Some(theme_path), ""), None);
+
+        std::fs::remove_dir_all(&root).ok();
     }
 }
