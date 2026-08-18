@@ -138,15 +138,14 @@ background_blur tint scaling still applies on top) and `module { text_color }`
 (module text, raw-sRGB like every text color, falls back to the shared
 `status_normal_color`). Everything is read through
 `cce_ui::config::cached_config()`; KDL is converted to JSON
-(`cce_ui::config::parse_kdl_to_json`) and looked up **pointer-first**
-(`config.rs::pointer_or_fuzzy`): every key has an explicit JSON-pointer for its
-canonical nesting (`/style/status/background_color`, `/module/height`,
+(`cce_ui::config::parse_kdl_to_json`) and looked up by **explicit JSON
+pointer only**: every key names its canonical nesting
+(`/style/status/background_color`, `/module/height`,
 `/window_manager/light_source_position`, `/layout/status_bar/<module>` for
-per-module sides, …), with the legacy fuzzy `json_find_key` (snake_case split
-across nesting, then depth-first search) kept only as a fallback that
-`log::warn!`s once per key when it alone hits. When adding a key, add its
-pointer; once the warnings stay quiet across a release the fuzzy fallback is
-scheduled for deletion. Shared keys used here: `bar_height`, `status_font`
+per-module sides, …), and a key parked anywhere else simply does not resolve.
+(The legacy fuzzy `json_find_key` — snake_case split across nesting, then
+depth-first search — was deleted 2026-08-18 after its fallback warnings went
+quiet; don't reintroduce it.) Shared keys used here: `bar_height`, `status_font`
 (also via fontconfig alias `status-interface`), `status_font_size`,
 `status_padding`, `status_module_spacing`, `status_normal_color`,
 `status_background_color`, `status_background_blur`, `status_box_bevel`(`_depth`),

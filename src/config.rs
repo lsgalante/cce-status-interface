@@ -1,135 +1,69 @@
 //! Config access: cached KDL config lookup, color/font/dimension readers,
 //! and resolution of the ccectl binary.
 //!
-//! Every key has an explicit JSON-pointer location (the canonical nesting in
-//! config.kdl). Reads try the pointer first and fall back to the legacy fuzzy
-//! search ([`json_find_key`]), warning once per key when only the fallback
-//! hits — those warnings mean the key sits somewhere non-canonical in the
-//! user's config (or collides with an unrelated key of the same name).
+//! Every key is read by an explicit JSON pointer — the canonical nesting in
+//! config.kdl. A key at a non-canonical location simply does not resolve.
+//! (The legacy fuzzy search that split snake_case keys across nesting was
+//! deleted after a release of quiet fallback-warning logs.)
 //!
 //! Color space: text colors stay **raw sRGB** — they end up as `[u8; 3]` for
 //! cosmic-text (see `StyledLabel`), which expects sRGB. Quad/box colors are
 //! converted with [`cce_ui::color::srgb_to_linear`] because the Vulkan pipeline
 //! samples them in linear space.
 
-use std::collections::HashSet;
-use std::sync::{Mutex, OnceLock};
-
 pub(crate) fn get_cached_config() -> serde_json::Value {
     cce_ui::config::cached_config()
 }
 
-/// Legacy fuzzy lookup: exact key, then snake_case prefixes split across
-/// nesting, then a depth-first search of every object. Kept only as the
-/// fallback for configs that predate the canonical pointer locations.
-pub(crate) fn json_find_key<'a>(val: &'a serde_json::Value, key: &str) -> Option<&'a serde_json::Value> {
-    fn find_recursive<'a>(val: &'a serde_json::Value, key: &str) -> Option<&'a serde_json::Value> {
-        if let Some(obj) = val.as_object() {
-            if let Some(v) = obj.get(key) {
-                return Some(v);
-            }
-            let parts: Vec<&str> = key.split('_').collect();
-            for i in 1..parts.len() {
-                let (prefix_parts, suffix_parts) = parts.split_at(i);
-                let prefix = prefix_parts.join("_");
-                let suffix = suffix_parts.join("_");
-                if let Some(sub_val) = obj.get(&prefix) {
-                    if let Some(found) = find_recursive(sub_val, &suffix) {
-                        return Some(found);
-                    }
-                }
-            }
-            for (_, sub_val) in obj.iter() {
-                if let Some(found) = find_recursive(sub_val, key) {
-                    return Some(found);
-                }
-            }
-        }
-        None
-    }
-    find_recursive(val, key)
+fn cfg_f32(pointer: &str) -> Option<f32> {
+    get_cached_config().pointer(pointer).and_then(|v| v.as_f64()).map(|n| n as f32)
 }
 
-fn warn_fuzzy_once(pointer: &str, legacy_key: &str) {
-    static WARNED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
-    let warned = WARNED.get_or_init(|| Mutex::new(HashSet::new()));
-    if warned.lock().map_or(false, |mut set| set.insert(pointer.to_string())) {
-        log::warn!(
-            "config key '{}' not found at its canonical location {} — \
-             resolved by fuzzy search instead; consider moving it in config.kdl",
-            legacy_key, pointer
-        );
-    }
-}
-
-/// Look up `pointer` in `val`, falling back to the legacy fuzzy search for
-/// `legacy_key` (with a once-per-pointer warning when only the fallback hits).
-pub(crate) fn pointer_or_fuzzy<'a>(
-    val: &'a serde_json::Value,
-    pointer: &str,
-    legacy_key: &str,
-) -> Option<&'a serde_json::Value> {
-    if let Some(v) = val.pointer(pointer) {
-        return Some(v);
-    }
-    let found = json_find_key(val, legacy_key);
-    if found.is_some() {
-        warn_fuzzy_once(pointer, legacy_key);
-    }
-    found
-}
-
-fn cfg_f32(pointer: &str, legacy_key: &str) -> Option<f32> {
-    let val = get_cached_config();
-    pointer_or_fuzzy(&val, pointer, legacy_key).and_then(|v| v.as_f64()).map(|n| n as f32)
-}
-
-fn cfg_string(pointer: &str, legacy_key: &str) -> Option<String> {
-    let val = get_cached_config();
-    pointer_or_fuzzy(&val, pointer, legacy_key).and_then(|v| v.as_str()).map(|s| s.to_string())
+fn cfg_string(pointer: &str) -> Option<String> {
+    get_cached_config().pointer(pointer).and_then(|v| v.as_str()).map(|s| s.to_string())
 }
 
 /// A text color: raw sRGB RGB with alpha forced to 1.0 (cosmic-text consumes
 /// text colors as sRGB `[u8; 3]`; alpha is not carried by the text path).
-pub(crate) fn text_color_from(val: &serde_json::Value, pointer: &str, legacy_key: &str) -> Option<[f32; 4]> {
-    let s = pointer_or_fuzzy(val, pointer, legacy_key)?.as_str()?;
+pub(crate) fn text_color_from(val: &serde_json::Value, pointer: &str) -> Option<[f32; 4]> {
+    let s = val.pointer(pointer)?.as_str()?;
     let [r, g, b, _] = cce_ui::color::parse_hex_rgba(s)?;
     Some([r, g, b, 1.0])
 }
 
 /// A quad/box color: RGB converted sRGB→linear for the Vulkan pipeline, alpha
 /// kept raw.
-pub(crate) fn quad_color_from(val: &serde_json::Value, pointer: &str, legacy_key: &str) -> Option<[f32; 4]> {
-    let s = pointer_or_fuzzy(val, pointer, legacy_key)?.as_str()?;
+pub(crate) fn quad_color_from(val: &serde_json::Value, pointer: &str) -> Option<[f32; 4]> {
+    let s = val.pointer(pointer)?.as_str()?;
     cce_ui::color::parse_hex_rgba_linear(s)
 }
 
-fn cfg_text_color(pointer: &str, legacy_key: &str) -> Option<[f32; 4]> {
-    text_color_from(&get_cached_config(), pointer, legacy_key)
+fn cfg_text_color(pointer: &str) -> Option<[f32; 4]> {
+    text_color_from(&get_cached_config(), pointer)
 }
 
-fn cfg_quad_color(pointer: &str, legacy_key: &str) -> Option<[f32; 4]> {
-    quad_color_from(&get_cached_config(), pointer, legacy_key)
+fn cfg_quad_color(pointer: &str) -> Option<[f32; 4]> {
+    quad_color_from(&get_cached_config(), pointer)
 }
 
 pub(crate) fn read_normal_color_from_config() -> Option<[f32; 4]> {
     // App-native `module { text_color }` first (a TEXT color — raw sRGB, per
     // the color-space split in CLAUDE.md), then the shared status key.
-    cfg_text_color("/module/text_color", "module_text_color")
-        .or_else(|| cfg_text_color("/style/status/normal_color", "status_normal_color"))
+    cfg_text_color("/module/text_color")
+        .or_else(|| cfg_text_color("/style/status/normal_color"))
 }
 
 pub(crate) fn read_disabled_color_from_config() -> Option<[f32; 4]> {
-    cfg_text_color("/style/status/disabled_color", "disabled_color")
+    cfg_text_color("/style/status/disabled_color")
 }
 
 pub(crate) fn read_status_font_from_config() -> String {
     // App-native `module { font }` first (a family; an embedded size ranks
     // below module { font_size } in the size chain), then the shared key.
-    if let Some(font_str) = cfg_string("/module/font", "module_font") {
+    if let Some(font_str) = cfg_string("/module/font") {
         return font_str;
     }
-    if let Some(font_str) = cfg_string("/style/status/font", "status_font") {
+    if let Some(font_str) = cfg_string("/style/status/font") {
         return font_str;
     }
 
@@ -146,8 +80,8 @@ pub(crate) fn read_status_height_from_config() -> f32 {
     // App-native `module { height }` first — the compositor reads the same
     // key for the arrange pass's segment height and reserved strip, so the
     // two sides always agree — then the shared layout { bar_height }.
-    cfg_f32("/module/height", "module_height")
-        .or_else(|| cfg_f32("/layout/bar_height", "bar_height"))
+    cfg_f32("/module/height")
+        .or_else(|| cfg_f32("/layout/bar_height"))
         .unwrap_or(28.0)
 }
 
@@ -155,30 +89,30 @@ pub(crate) fn read_status_font_size_from_config() -> f32 {
     // App-native `module { font_size }` wins over everything — including the
     // size embedded in the shared font string ("Chivo Mono 14"), which stays
     // the fallback along with the shared status_font_size key.
-    if let Some(size) = cfg_f32("/module/font_size", "module_font_size") {
+    if let Some(size) = cfg_f32("/module/font_size") {
         return size;
     }
-    if let Some(font_str) = cfg_string("/module/font", "module_font") {
+    if let Some(font_str) = cfg_string("/module/font") {
         let (_, parsed_size) = cce_ui::layout::parse_font_string(&font_str);
         if let Some(size) = parsed_size {
             return size;
         }
     }
-    if let Some(font_str) = cfg_string("/style/status/font", "status_font") {
+    if let Some(font_str) = cfg_string("/style/status/font") {
         let (_, parsed_size) = cce_ui::layout::parse_font_string(&font_str);
         if let Some(size) = parsed_size {
             return size;
         }
     }
 
-    cfg_f32("/style/status/font_size", "status_font_size").unwrap_or(11.0)
+    cfg_f32("/style/status/font_size").unwrap_or(11.0)
 }
 
 pub(crate) fn read_status_padding_from_config() -> f32 {
     // App-native `module { padding }` first (the text inset inside each
     // module box — bar-side only), then the shared status key.
-    cfg_f32("/module/padding", "module_padding")
-        .or_else(|| cfg_f32("/style/status/padding", "status_padding"))
+    cfg_f32("/module/padding")
+        .or_else(|| cfg_f32("/style/status/padding"))
         .unwrap_or(8.0)
 }
 
@@ -186,8 +120,8 @@ pub(crate) fn read_status_module_spacing_from_config() -> f32 {
     // App-native `module { spacing }` first (the same value the compositor
     // reads for the gap BETWEEN segments — this reader only matters for the
     // intra-surface layout of a multi-module bar), then the shared key.
-    cfg_f32("/module/spacing", "module_spacing")
-        .or_else(|| cfg_f32("/style/status/module_spacing", "status_module_spacing"))
+    cfg_f32("/module/spacing")
+        .or_else(|| cfg_f32("/style/status/module_spacing"))
         .unwrap_or(8.0)
 }
 
@@ -222,7 +156,8 @@ pub(crate) fn parse_font_for_alias(content: &str, alias: &str) -> Option<String>
 /// and converted. (This unifies the two previous readers, one of which only
 /// degree-converted integer values.)
 pub(crate) fn light_source_position_from(val: &serde_json::Value) -> f32 {
-    let raw = pointer_or_fuzzy(val, "/window_manager/light_source_position", "light_source_position")
+    let raw = val
+        .pointer("/window_manager/light_source_position")
         .and_then(|v| v.as_f64())
         .map(|f| f as f32)
         .unwrap_or(2.356_194_5); // 135°, the compositor default
@@ -238,15 +173,15 @@ pub(crate) fn read_light_source_position_from_config() -> f32 {
 }
 
 pub(crate) fn read_status_background_blur_from_config() -> f32 {
-    cfg_f32("/style/status/background_blur", "status_background_blur").unwrap_or(0.0)
+    cfg_f32("/style/status/background_blur").unwrap_or(0.0)
 }
 
 pub(crate) fn read_status_box_background_color_from_config() -> Option<[f32; 4]> {
     // App-native `module { background_color }` first (a quad color — the
     // sRGB→linear conversion applies, per the color-space split in
     // CLAUDE.md), then the shared status key, then the built-in default.
-    let mut color = cfg_quad_color("/module/background_color", "module_background_color")
-        .or_else(|| cfg_quad_color("/style/status/background_color", "status_background_color"))
+    let mut color = cfg_quad_color("/module/background_color")
+        .or_else(|| cfg_quad_color("/style/status/background_color"))
         .unwrap_or_else(|| {
             let c = cce_ui::color::srgb_to_linear(0x15 as f32 / 255.0);
             let b = cce_ui::color::srgb_to_linear(0x20 as f32 / 255.0);
@@ -269,7 +204,7 @@ pub(crate) fn read_status_box_corner_radius_from_config() -> f32 {
     // Unlike the other module styling keys there is deliberately no shared
     // `style { status ... }` fallback — the radius is purely bar-side
     // cosmetics (the old `status_box_corner_radius` rung was removed).
-    cfg_f32("/module/corner_radius", "module_corner_radius").unwrap_or(4.0)
+    cfg_f32("/module/corner_radius").unwrap_or(4.0)
 }
 
 /// Bevel treatment for the module boxes.
@@ -284,7 +219,7 @@ pub(crate) enum StatusBoxBevel {
 /// `style { status box_bevel="raised"|"inset" }`; absent, `"none"`, or any
 /// other value keeps the flat boxes.
 pub(crate) fn read_status_box_bevel_from_config() -> Option<StatusBoxBevel> {
-    match cfg_string("/style/status/box_bevel", "status_box_bevel")?.to_ascii_lowercase().as_str() {
+    match cfg_string("/style/status/box_bevel")?.to_ascii_lowercase().as_str() {
         "raised" => Some(StatusBoxBevel::Raised),
         "inset" => Some(StatusBoxBevel::Inset),
         _ => None,
@@ -295,7 +230,7 @@ pub(crate) fn read_status_box_bevel_from_config() -> Option<StatusBoxBevel> {
 /// in logical px. The DE-wide `bevel_width` (~9px) is window-scale; module
 /// boxes in a ~24px bar want a much tighter lip.
 pub(crate) fn read_status_box_bevel_depth_from_config() -> f32 {
-    cfg_f32("/style/status/box_bevel_depth", "status_box_bevel_depth").unwrap_or(3.0)
+    cfg_f32("/style/status/box_bevel_depth").unwrap_or(3.0)
 }
 
 pub(crate) fn get_ccectl_cmd() -> String {
@@ -371,74 +306,14 @@ style {
         );
     }
 
-    // --- json_find_key (legacy fuzzy fallback) ---
+    // --- pointer-only lookup ---
 
     #[test]
-    fn find_key_exact_match_at_top_level() {
-        let val = serde_json::json!({"bar_height": 30.0});
-        assert_eq!(json_find_key(&val, "bar_height").and_then(|v| v.as_f64()), Some(30.0));
-    }
-
-    #[test]
-    fn find_key_splits_snake_case_across_nesting() {
-        // "status_background_color" matches status { background_color }.
-        let val = serde_json::json!({"style": {"status": {"background_color": "#101010"}}});
-        assert_eq!(
-            json_find_key(&val, "status_background_color").and_then(|v| v.as_str()),
-            Some("#101010")
-        );
-    }
-
-    #[test]
-    fn find_key_exact_match_wins_over_split() {
-        // An exact "status_font" key beats descending into status { font }.
-        let val = serde_json::json!({
-            "status_font": "Exact Font",
-            "status": {"font": "Split Font"}
-        });
-        assert_eq!(
-            json_find_key(&val, "status_font").and_then(|v| v.as_str()),
-            Some("Exact Font")
-        );
-    }
-
-    #[test]
-    fn find_key_recurses_into_unrelated_parents() {
-        // The key is found even under a parent the key name never mentions.
-        let val = serde_json::json!({"unrelated": {"deeply": {"bar_height": 42.0}}});
-        assert_eq!(json_find_key(&val, "bar_height").and_then(|v| v.as_f64()), Some(42.0));
-    }
-
-    #[test]
-    fn find_key_miss_is_none() {
-        let val = serde_json::json!({"style": {"status": {}}});
-        assert!(json_find_key(&val, "nonexistent_key").is_none());
-    }
-
-    // --- pointer_or_fuzzy ---
-
-    #[test]
-    fn pointer_wins_over_fuzzy_match() {
-        // With both a canonical and a stray same-named key, the pointer wins.
-        let val = serde_json::json!({
-            "style": {"status": {"normal_color": "#111111"}},
-            "stray": {"status_normal_color": "#222222"}
-        });
-        assert_eq!(
-            pointer_or_fuzzy(&val, "/style/status/normal_color", "status_normal_color")
-                .and_then(|v| v.as_str()),
-            Some("#111111")
-        );
-    }
-
-    #[test]
-    fn pointer_miss_falls_back_to_fuzzy() {
+    fn non_canonical_locations_do_not_resolve() {
+        // A key parked somewhere other than its canonical nesting is simply
+        // absent — the fuzzy search that used to find these is gone.
         let val = serde_json::json!({"stray": {"status_normal_color": "#222222"}});
-        assert_eq!(
-            pointer_or_fuzzy(&val, "/style/status/normal_color", "status_normal_color")
-                .and_then(|v| v.as_str()),
-            Some("#222222")
-        );
+        assert!(text_color_from(&val, "/style/status/normal_color").is_none());
     }
 
     // --- light_source_position ---
@@ -473,11 +348,11 @@ style {
         let linear = cce_ui::color::srgb_to_linear(raw);
 
         // Text color: raw sRGB, alpha forced to 1.0 (cosmic-text takes sRGB u8).
-        let text = text_color_from(&val, "/style/status/normal_color", "status_normal_color").unwrap();
+        let text = text_color_from(&val, "/style/status/normal_color").unwrap();
         assert_rgba_close(text, [raw, raw, raw, 1.0]);
 
         // Quad color: RGB linearized for the Vulkan pipeline, alpha raw.
-        let quad = quad_color_from(&val, "/style/status/background_color", "status_background_color").unwrap();
+        let quad = quad_color_from(&val, "/style/status/background_color").unwrap();
         assert_rgba_close(quad, [linear, linear, linear, raw]);
     }
 }

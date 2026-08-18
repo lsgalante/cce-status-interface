@@ -1,10 +1,10 @@
 # Proposal: cce-status-interface cleanup
 
 > **Status (2026-08-18): executed.** Phases 0–3 and 5 are done; phase 4 became
-> moot when the cce-cloud popups were replaced by in-surface menus. The one
-> open item from phase 2: `json_find_key` survives as the warn-once fallback
-> behind `pointer_or_fuzzy` — delete it after a release of quiet logs. Phase 6
-> follow-ups remain available.
+> moot when the cce-cloud popups were replaced by in-surface menus. Phase 2's
+> final step landed too: `json_find_key` and the warn-once fallback are
+> deleted — config lookup is explicit JSON pointers only. Phase 6 follow-ups
+> remain available.
 
 Fixes for the issues identified in the 2026-07 review: `main.rs` carrying five jobs,
 a fuzzy config-lookup layer that partially duplicates `cce-ui`, stringly-typed

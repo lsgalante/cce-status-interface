@@ -888,7 +888,7 @@ fn module_side_from_json(val: &serde_json::Value, name: &str) -> Side {
     // Canonical: `layout { status_bar <name>="top-left" }` — the same key the
     // compositor persists a super+drag snap into.
     let pointer = format!("/layout/status_bar/{}", name);
-    if let Some(side_val) = pointer_or_fuzzy(val, &pointer, name) {
+    if let Some(side_val) = val.pointer(&pointer) {
         if let Some(side_str) = side_val.as_str() {
             match side_str.to_lowercase().as_str() {
                 "left" | "top-left" | "bottom-left" | "top-center" | "bottom-center" => return Side::Left,
@@ -1867,11 +1867,14 @@ mod tests {
 
     // --- module_side_from_json ---
 
+    fn side_cfg(name: &str, value: &str) -> serde_json::Value {
+        serde_json::json!({"layout": {"status_bar": {name: value}}})
+    }
+
     #[test]
     fn module_side_explicit_values() {
-        let val = serde_json::json!({"clock": "left", "window": "right"});
-        assert_eq!(module_side_from_json(&val, "clock"), Side::Left);
-        assert_eq!(module_side_from_json(&val, "window"), Side::Right);
+        assert_eq!(module_side_from_json(&side_cfg("clock", "left"), "clock"), Side::Left);
+        assert_eq!(module_side_from_json(&side_cfg("window", "right"), "window"), Side::Right);
     }
 
     #[test]
@@ -1885,20 +1888,16 @@ mod tests {
             ("bottom-right", Side::Right),
             ("TOP-LEFT", Side::Left), // case-insensitive
         ] {
-            let val = serde_json::json!({"cpu": snap});
-            assert_eq!(module_side_from_json(&val, "cpu"), side, "snap {}", snap);
+            assert_eq!(module_side_from_json(&side_cfg("cpu", snap), "cpu"), side, "snap {}", snap);
         }
     }
 
     #[test]
-    fn module_side_canonical_location_wins() {
-        // `layout { status_bar clock="left" }` beats a stray same-named key
-        // the fuzzy fallback would otherwise find.
-        let val = serde_json::json!({
-            "layout": {"status_bar": {"clock": "left"}},
-            "stray": {"clock": "right"}
-        });
-        assert_eq!(module_side_from_json(&val, "clock"), Side::Left);
+    fn module_side_only_canonical_location_resolves() {
+        // Only `layout { status_bar <name>=... }` counts; a same-named key
+        // anywhere else is ignored (the fuzzy search is gone).
+        let val = serde_json::json!({"stray": {"clock": "left"}});
+        assert_eq!(module_side_from_json(&val, "clock"), Side::Right);
     }
 
     #[test]
@@ -1911,9 +1910,8 @@ mod tests {
 
     #[test]
     fn module_side_unknown_value_falls_through_to_default() {
-        let val = serde_json::json!({"window": "sideways", "clock": "sideways"});
-        assert_eq!(module_side_from_json(&val, "window"), Side::Left);
-        assert_eq!(module_side_from_json(&val, "clock"), Side::Right);
+        assert_eq!(module_side_from_json(&side_cfg("window", "sideways"), "window"), Side::Left);
+        assert_eq!(module_side_from_json(&side_cfg("clock", "sideways"), "clock"), Side::Right);
     }
 
     #[test]
