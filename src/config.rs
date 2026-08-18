@@ -217,6 +217,26 @@ pub(crate) fn parse_font_for_alias(content: &str, alias: &str) -> Option<String>
     None
 }
 
+/// The DE-wide light angle, canonical at `window_manager { light_source_position }`.
+/// Radians normally; a value above 2π is taken as legacy degrees (e.g. `135`)
+/// and converted. (This unifies the two previous readers, one of which only
+/// degree-converted integer values.)
+pub(crate) fn light_source_position_from(val: &serde_json::Value) -> f32 {
+    let raw = pointer_or_fuzzy(val, "/window_manager/light_source_position", "light_source_position")
+        .and_then(|v| v.as_f64())
+        .map(|f| f as f32)
+        .unwrap_or(2.356_194_5); // 135°, the compositor default
+    if raw > 2.0 * std::f32::consts::PI {
+        raw.to_radians()
+    } else {
+        raw
+    }
+}
+
+pub(crate) fn read_light_source_position_from_config() -> f32 {
+    light_source_position_from(&get_cached_config())
+}
+
 pub(crate) fn read_status_background_blur_from_config() -> f32 {
     cfg_f32("/style/status/background_blur", "status_background_blur").unwrap_or(0.0)
 }
@@ -419,6 +439,23 @@ style {
                 .and_then(|v| v.as_str()),
             Some("#222222")
         );
+    }
+
+    // --- light_source_position ---
+
+    #[test]
+    fn light_source_position_canonical_and_units() {
+        // Canonical location, radians as-is.
+        let val = parse_kdl("window_manager {\n    light_source_position (f64)2.5\n}");
+        assert!((light_source_position_from(&val) - 2.5).abs() < 1e-6);
+
+        // A value above 2π is legacy degrees.
+        let val = parse_kdl("window_manager {\n    light_source_position (f64)135.0\n}");
+        assert!((light_source_position_from(&val) - 135.0f32.to_radians()).abs() < 1e-6);
+
+        // Absent: the compositor's 135° default.
+        let val = serde_json::json!({});
+        assert!((light_source_position_from(&val) - 2.356_194_5).abs() < 1e-6);
     }
 
     // --- color space (spec: text = raw sRGB, quads = linearized) ---

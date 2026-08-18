@@ -861,35 +861,21 @@ impl StatusApp {
 
 
 fn get_module_side(name: &str) -> Side {
-    let content = std::fs::read_to_string(cce_ui::config::get_config_path()).unwrap_or_default();
-    let val = cce_ui::config::parse_kdl_to_json(&content);
-    module_side_from_json(&val, name)
+    module_side_from_json(&get_cached_config(), name)
 }
 
 fn module_side_from_json(val: &serde_json::Value, name: &str) -> Side {
     if name == "light_source" {
-        let mut light_pos = 2.356194490192345_f32; // Default 135 deg in rad
-        if let Some(wm_obj) = json_find_key(val, "window_manager") {
-            if let Some(pos_val) = json_find_key(&wm_obj, "light_source_position") {
-                if let Some(f) = pos_val.as_f64() {
-                    light_pos = f as f32;
-                } else if let Some(i) = pos_val.as_i64() {
-                    let deg = i as f32;
-                    if deg > 2.0 * std::f32::consts::PI {
-                        light_pos = deg.to_radians();
-                    } else {
-                        light_pos = deg;
-                    }
-                }
-            }
-        }
-        
+        // The light module ignores any status_bar side entry: it sits on
+        // whichever side the configured light angle points at.
+        let light_pos = crate::config::light_source_position_from(val);
+
         let two_pi = 2.0 * std::f32::consts::PI;
         let mut angle = light_pos % two_pi;
         if angle < 0.0 {
             angle += two_pi;
         }
-        
+
         let pi = std::f32::consts::PI;
         // Side mapping: Left side is roughly [5pi/8, 11pi/8)
         if angle >= 5.0 * pi / 8.0 && angle < 11.0 * pi / 8.0 {
@@ -899,7 +885,10 @@ fn module_side_from_json(val: &serde_json::Value, name: &str) -> Side {
         }
     }
 
-    if let Some(side_val) = json_find_key(val, name) {
+    // Canonical: `layout { status_bar <name>="top-left" }` — the same key the
+    // compositor persists a super+drag snap into.
+    let pointer = format!("/layout/status_bar/{}", name);
+    if let Some(side_val) = pointer_or_fuzzy(val, &pointer, name) {
         if let Some(side_str) = side_val.as_str() {
             match side_str.to_lowercase().as_str() {
                 "left" | "top-left" | "bottom-left" | "top-center" | "bottom-center" => return Side::Left,
@@ -1902,6 +1891,17 @@ mod tests {
     }
 
     #[test]
+    fn module_side_canonical_location_wins() {
+        // `layout { status_bar clock="left" }` beats a stray same-named key
+        // the fuzzy fallback would otherwise find.
+        let val = serde_json::json!({
+            "layout": {"status_bar": {"clock": "left"}},
+            "stray": {"clock": "right"}
+        });
+        assert_eq!(module_side_from_json(&val, "clock"), Side::Left);
+    }
+
+    #[test]
     fn module_side_defaults() {
         let val = serde_json::json!({});
         assert_eq!(module_side_from_json(&val, "window"), Side::Left);
@@ -1927,8 +1927,9 @@ mod tests {
             Side::Left
         );
         assert_eq!(module_side_from_json(&mk(serde_json::json!(0.0)), "light_source"), Side::Right);
-        // Integers > 2π are degrees, otherwise radians.
+        // Values > 2π are degrees (int or float), otherwise radians.
         assert_eq!(module_side_from_json(&mk(serde_json::json!(180)), "light_source"), Side::Left);
+        assert_eq!(module_side_from_json(&mk(serde_json::json!(135.0)), "light_source"), Side::Left);
         assert_eq!(module_side_from_json(&mk(serde_json::json!(3)), "light_source"), Side::Left);
         assert_eq!(module_side_from_json(&mk(serde_json::json!(0)), "light_source"), Side::Right);
     }

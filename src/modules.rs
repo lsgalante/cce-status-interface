@@ -729,18 +729,7 @@ impl StatusModule for TrayModule {
 pub struct LightSourceModule;
 
 pub(crate) fn get_light_source_pos_from_config() -> f32 {
-    let val = crate::get_cached_config();
-    if let Some(pos_val) = crate::json_find_key(&val, "light_source_position") {
-        if let Some(f) = pos_val.as_f64() {
-            let val = f as f32;
-            if val > 2.0 * std::f32::consts::PI {
-                return val.to_radians();
-            } else {
-                return val;
-            }
-        }
-    }
-    2.35619
+    crate::config::read_light_source_position_from_config()
 }
 
 impl StatusModule for LightSourceModule {
