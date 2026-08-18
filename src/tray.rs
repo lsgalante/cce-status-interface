@@ -408,38 +408,50 @@ pub(crate) async fn spawn_status_tray(sender: calloop::channel::Sender<CustomEve
     let registered_items = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
     let tokio_handle = tokio::runtime::Handle::current();
 
-    let watcher = Watcher {
-        registered_items: registered_items.clone(),
-        sender: sender.clone(),
-        tokio_handle,
-    };
-
-    let conn = match zbus::ConnectionBuilder::session() {
-        Ok(builder) => {
-            match builder
-                .name("org.kde.StatusNotifierWatcher")
-                .unwrap()
-                .serve_at("/StatusNotifierWatcher", watcher)
-                .unwrap()
-                .serve_at("/StatusInterface", StatusInterface)
-                .unwrap()
-                .build()
-                .await
-            {
-                Ok(c) => c,
-                Err(e) => {
-                    log::warn!("Failed to build D-Bus connection: {:?}", e);
-                    return;
-                }
+    // Across a service restart the outgoing tray process can still own the
+    // well-known name for a moment, so NameTaken here is normally transient.
+    // Without the retry the new process gave up for good and the tray hosted
+    // no icons until the next restart.
+    let mut conn = None;
+    for attempt in 1..=10 {
+        if attempt > 1 {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+        let watcher = Watcher {
+            registered_items: registered_items.clone(),
+            sender: sender.clone(),
+            tokio_handle: tokio_handle.clone(),
+        };
+        let builder = match zbus::ConnectionBuilder::session() {
+            Ok(b) => b,
+            Err(e) => {
+                log::warn!("Failed to initialize D-Bus session: {:?}", e);
+                return;
             }
+        };
+        match builder
+            .name("org.kde.StatusNotifierWatcher")
+            .unwrap()
+            .serve_at("/StatusNotifierWatcher", watcher)
+            .unwrap()
+            .serve_at("/StatusInterface", StatusInterface)
+            .unwrap()
+            .build()
+            .await
+        {
+            Ok(c) => {
+                conn = Some(c);
+                break;
+            }
+            Err(e) => log::warn!("Failed to build D-Bus connection (attempt {}/10): {:?}", attempt, e),
         }
-        Err(e) => {
-            log::warn!("Failed to initialize D-Bus session: {:?}", e);
-            return;
-        }
+    }
+    let Some(conn) = conn else {
+        log::warn!("StatusNotifierWatcher name never became available; tray disabled");
+        return;
     };
 
-    println!("StatusNotifierWatcher running successfully on D-Bus!");
+    log::info!("StatusNotifierWatcher running successfully on D-Bus!");
 
     // Start NameOwnerChanged listener to detect when tray apps disconnect
     let dbus_proxy = match zbus::fdo::DBusProxy::new(&conn).await {
