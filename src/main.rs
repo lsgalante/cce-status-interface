@@ -261,7 +261,6 @@ struct StatusApp {
     width: u32,
     height: u32,
     needs_rebuild: bool,
-    current_bg_color: [f32; 4],
     box_bevel: Option<StatusBoxBevel>,
     box_bevel_depth: f32,
     context_menu: Option<ModuleContextMenu>,
@@ -346,11 +345,6 @@ impl StatusApp {
         let sw_logical = if is_vertical { self.height as f32 } else { self.width as f32 };
         let bar_h = if is_vertical { self.width as f32 } else { read_status_height_from_config() };
 
-        self.current_bg_color = read_bg_color_from_config().unwrap_or(color::STATUS_BG);
-        if let Some(opacity) = cce_ui::color::read_opacity_if_configured() {
-            self.current_bg_color[3] = opacity;
-        }
-
         self.rects.clear();
         self.overlay_rects.clear();
         self.rounded_boxes.clear();
@@ -368,11 +362,11 @@ impl StatusApp {
         self.box_bevel_depth = read_status_box_bevel_depth_from_config();
 
         self.status_bar.set_rect(0.0, 0.0, self.width as f32, self.height as f32);
-        if self.selected_module_name.is_some() {
-            self.status_bar.set_bg_color([0.0, 0.0, 0.0, 0.0]);
-        } else {
-            self.status_bar.set_bg_color(self.current_bg_color);
-        }
+        // The surface itself is transparent: every StatusApp is a single
+        // `--module` segment (the no-arg form is the launcher daemon and
+        // never creates a surface), so the only painted background is each
+        // module's own rounded box.
+        self.status_bar.set_bg_color([0.0, 0.0, 0.0, 0.0]);
 
 
         let is_single = self.selected_module_name.is_some();
@@ -1109,7 +1103,6 @@ impl cce_ui::engine::Application for StatusApp {
             width: if selected_module.is_some() { 120 } else { 1920 },
             height: read_status_height_from_config() as u32,
             needs_rebuild: true,
-            current_bg_color: color::STATUS_BG,
             box_bevel: None,
             box_bevel_depth: 3.0,
             context_menu: None,

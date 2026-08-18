@@ -217,19 +217,6 @@ pub(crate) fn parse_font_for_alias(content: &str, alias: &str) -> Option<String>
     None
 }
 
-/// The whole-bar background, from a chain of legacy desktop-background keys.
-/// None of these has an established canonical location — the top-level
-/// pointers are aspirational, so today these normally resolve via the fuzzy
-/// fallback (and warn). Note the fuzzy search for "background_color" can land
-/// on an unrelated widget color (e.g. style.control.checkbox); that behavior
-/// is preserved here and flagged by the warning.
-pub(crate) fn read_bg_color_from_config() -> Option<[f32; 4]> {
-    let val = get_cached_config();
-    quad_color_from(&val, "/background_color", "background_color")
-        .or_else(|| quad_color_from(&val, "/low_color", "low_color"))
-        .or_else(|| quad_color_from(&val, "/desktop_gap_color", "desktop_gap_color"))
-}
-
 pub(crate) fn read_status_background_blur_from_config() -> f32 {
     cfg_f32("/style/status/background_blur", "status_background_blur").unwrap_or(0.0)
 }
