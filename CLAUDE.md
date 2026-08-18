@@ -8,8 +8,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 is one crate in the multi-repo `cce` workspace — see `../cce-compositor/WORKSPACE.md` for
 the workspace layout, the multi-repo git rules (commit here, never `git init` at the root),
 and the `cce-ui` toolkit this app is built on. This crate is deliberately small:
-`src/main.rs` (the `StatusApp` application + IPC + config parsing) and `src/modules.rs` (the
-`StatusModule` trait and its nine implementations).
+`src/main.rs` (the `StatusApp` application, layout/input, launcher daemon),
+`src/modules.rs` (the `StatusModule` trait and its nine implementations),
+`src/config.rs` (pointer-first config readers), `src/tray.rs` (SNI host),
+`src/cloud.rs` (menu page building), `src/stats.rs` (system stat readers),
+`src/listeners.rs` (status/switcher socket tasks).
 
 ## Build, test, run
 
@@ -135,19 +138,29 @@ background_blur tint scaling still applies on top) and `module { text_color }`
 (module text, raw-sRGB like every text color, falls back to the shared
 `status_normal_color`). Everything is read through
 `cce_ui::config::cached_config()`; KDL is converted to JSON
-(`cce_ui::config::parse_kdl_to_json`) and looked up with the local `json_find_key`,
-which splits snake_case keys across nesting — `status_background_color` matches
-`style { status background_color=... }`. Keys used here: `bar_height`, `status_font`
-(also via fontconfig alias `status-interface`), `status_font_size`, `status_padding`,
-`status_module_spacing`, `status_normal_color`,
-`status_background_color`, `status_background_blur`,
-`background_color`/`low_color`/`desktop_gap_color` (bar bg fallback chain),
-`light_source_position`, and per-module-name position/side entries.
+(`cce_ui::config::parse_kdl_to_json`) and looked up **pointer-first**
+(`config.rs::pointer_or_fuzzy`): every key has an explicit JSON-pointer for its
+canonical nesting (`/style/status/background_color`, `/module/height`,
+`/window_manager/light_source_position`, `/layout/status_bar/<module>` for
+per-module sides, …), with the legacy fuzzy `json_find_key` (snake_case split
+across nesting, then depth-first search) kept only as a fallback that
+`log::warn!`s once per key when it alone hits. When adding a key, add its
+pointer; once the warnings stay quiet across a release the fuzzy fallback is
+scheduled for deletion. Shared keys used here: `bar_height`, `status_font`
+(also via fontconfig alias `status-interface`), `status_font_size`,
+`status_padding`, `status_module_spacing`, `status_normal_color`,
+`status_background_color`, `status_background_blur`, `status_box_bevel`(`_depth`),
+`light_source_position`, and the per-module side entries. (The whole-bar
+background chain is gone: a `StatusApp` is always a single `--module` segment,
+so the surface bg is permanently transparent and only module boxes paint.)
 
-Two gotchas: background/box colors are gamma-corrected (`.powf(2.2)`) while
-`status_normal_color` is plain sRGB — match the existing `parse_*_color_from_key`
-helper for the kind of color you add. Config changes are picked up by polling the file
-mtime in `tick()`, so there is no reload event to wire up.
+Color space (one rule, enforced in `config.rs`): **text colors stay raw sRGB**
+(`text_color_from` — cosmic-text consumes sRGB `[u8; 3]`), **quad/box colors
+are linearized** (`quad_color_from` via `cce_ui::color::parse_hex_rgba_linear`,
+for the Vulkan pipeline). No local gamma math — the old scattered `.powf(2.2)`
+is gone; `test_text_colors_stay_srgb_and_quad_colors_are_linearized` is the
+spec. Config changes are picked up by polling the file mtime in `tick()`, so
+there is no reload event to wire up.
 
 ## Interactions worth knowing before touching input code
 
