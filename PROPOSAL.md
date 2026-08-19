@@ -1,10 +1,14 @@
 # Proposal: cce-status-interface cleanup
 
-> **Status (2026-08-18): executed.** Phases 0–3 and 5 are done; phase 4 became
+> **Status (2026-08-19): closed.** Phases 0–3 and 5 are done; phase 4 became
 > moot when the cce-cloud popups were replaced by in-surface menus. Phase 2's
 > final step landed too: `json_find_key` and the warn-once fallback are
-> deleted — config lookup is explicit JSON pointers only. Phase 6 follow-ups
-> remain available.
+> deleted — config lookup is explicit JSON pointers only. Phase 6: the
+> launcher backoff shipped (4353b94), the fuzzy upstream was rejected here
+> and is moot since the deletion, and the `cce-tray` extraction stays
+> deliberately gated on a second SNI consumer existing (user-confirmed
+> 2026-08-19) — `src/tray.rs` keeps that extraction cheap whenever one
+> appears. Nothing on this document remains actionable.
 
 Fixes for the issues identified in the 2026-07 review: `main.rs` carrying five jobs,
 a fuzzy config-lookup layer that partially duplicates `cce-ui`, stringly-typed
