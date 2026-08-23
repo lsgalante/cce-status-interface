@@ -67,13 +67,12 @@ pub(crate) fn read_status_font_from_config() -> String {
         return font_str;
     }
 
-    let font_conf_path = cce_ui::config::config_home().join("fontconfig").join("fonts.conf");
-    if let Ok(content) = std::fs::read_to_string(&font_conf_path) {
-        if let Some(font) = parse_font_for_alias(&content, "status-interface") {
-            return font;
-        }
-    }
-    "sans-serif".to_string()
+    // The third rung used to be fontconfig's `status-interface` alias — a cce
+    // invention squatting in fontconfig's family namespace, and one this
+    // precedence chain had already demoted to a last resort. It is gone along
+    // with the settings app's Fonts page; the DE's families now live in the
+    // shared config's `fonts { }` block.
+    cce_ui::layout::read_preferred_fonts().0
 }
 
 pub(crate) fn read_status_height_from_config() -> f32 {
@@ -125,31 +124,6 @@ pub(crate) fn read_status_module_spacing_from_config() -> f32 {
         .unwrap_or(8.0)
 }
 
-
-pub(crate) fn parse_font_for_alias(content: &str, alias: &str) -> Option<String> {
-    let lines: Vec<&str> = content.lines().collect();
-    for i in 0..lines.len() {
-        let line = lines[i].trim();
-        if line.contains("<test") && line.contains("name=\"family\"") && line.contains(&format!("<string>{}</string>", alias)) {
-            for j in (i + 1)..(i + 6).min(lines.len()) {
-                let next_line = lines[j].trim();
-                if next_line.contains("<edit") {
-                    for k in (j + 1)..(j + 6).min(lines.len()) {
-                        let str_line = lines[k].trim();
-                        if str_line.contains("<string>") && str_line.contains("</string>") {
-                            if let Some(start) = str_line.find("<string>") {
-                                if let Some(end) = str_line.find("</string>") {
-                                    return Some(str_line[start + 8..end].to_string());
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    None
-}
 
 /// The DE-wide light angle, canonical at `window_manager { light_source_position }`.
 /// Radians normally; a value above 2π is taken as legacy degrees (e.g. `135`)
