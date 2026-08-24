@@ -179,37 +179,9 @@ pub(crate) fn read_status_box_background_color_from_config() -> Option<[f32; 4]>
 /// spec-string idiom. Unknown keys warn and are skipped, so a typo shows up in
 /// the log instead of silently reverting one knob.
 pub(crate) fn read_droplet_from_config() -> Option<cce_ui::scene::paint::DropletSpec> {
-    let raw = cfg_string("/module/droplet")?;
-    let mut spec = cce_ui::scene::paint::DropletSpec::default();
-    for tok in raw.split_whitespace() {
-        let Some((key, val)) = tok.split_once('=') else {
-            log::warn!("module.droplet: token '{}' is not k=v — skipped", tok);
-            continue;
-        };
-        let Ok(v) = val.parse::<f32>() else {
-            log::warn!("module.droplet: '{}' has a non-numeric value — skipped", tok);
-            continue;
-        };
-        match key {
-            "sag" => spec.sag = v,
-            "belly" => spec.belly = v,
-            "belly_w" => spec.belly_w = v,
-            "blend" => spec.blend = v,
-            "sheet_r" => spec.sheet_r = v,
-            "attach" => spec.attach = v,
-            "clarity" => spec.clarity = v,
-            "dome" => spec.dome = v,
-            "band" => spec.band = v,
-            "gleam" => spec.gleam = v,
-            "shine" => spec.shine = v,
-            "rim" => spec.rim = v,
-            "bow" => spec.bow = v,
-            "curve" => spec.curve = v,
-            "core" => spec.core = v,
-            _ => log::warn!("module.droplet: unknown key '{}' — skipped", key),
-        }
-    }
-    Some(spec)
+    // The parser is shared with the compositor (whose scenefx droplet node
+    // refracts the backdrop behind each segment from the same spec).
+    Some(cce_ui::scene::paint::DropletSpec::parse(&cfg_string("/module/droplet")?))
 }
 
 /// `module { text_raise }` — lifts module text above vertical center by this
