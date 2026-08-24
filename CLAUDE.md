@@ -136,7 +136,12 @@ module { font_size } in the size chain) and `module { background_color }` (the
 module box fill, rgba; linearized like every quad color, and the
 background_blur tint scaling still applies on top) and `module { text_color }`
 (module text, raw-sRGB like every text color, falls back to the shared
-`status_normal_color`). Everything is read through
+`status_normal_color`) and `module { droplet }` (the water-droplet module
+style — cce-ui's `Prim::Droplet`, shader mode 10; the key's PRESENCE enables
+it, its value is whitespace-separated `k=v` pairs onto `DropletSpec` — sag,
+belly, belly_w, blend, sheet_r, clarity, dome, band, gleam, shine, rim —
+warn-and-skip on unknown keys; the expanded menu box becomes the drop growing,
+and drops inset 1px from the surface bottom for the silhouette's AA feather). Everything is read through
 `cce_ui::config::cached_config()`; KDL is converted to JSON
 (`cce_ui::config::parse_kdl_to_json`) and looked up by **explicit JSON
 pointer only**: every key names its canonical nesting
