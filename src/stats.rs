@@ -40,7 +40,7 @@ pub(crate) fn read_memory_usage() -> Option<String> {
     }
     if total > 0.0 {
         let used = total - free - buffers - cached;
-        Some(format!("Mem {:.1}/{:.1}G", used, total))
+        Some(format!("Mem {:.0}/{:.0}G", used, total))
     } else {
         None
     }
@@ -151,7 +151,7 @@ pub(crate) fn get_initial_stats() -> SystemStats {
     SystemStats {
         clock,
         memory,
-        cpu: "Cpu 0.0%".to_string(),
+        cpu: "Cpu 0%".to_string(),
         battery: battery_str,
         battery_capacity,
         battery_charging,
@@ -175,9 +175,9 @@ pub(crate) async fn spawn_system_stats(sender: calloop::channel::Sender<CustomEv
             last_cpu = current_cpu;
             if total_diff > 0 {
                 let usage = 100.0 - (idle_diff as f32 * 100.0 / total_diff as f32);
-                format!("Cpu {:.1}%", usage)
+                format!("Cpu {:.0}%", usage)
             } else {
-                "Cpu 0.0%".to_string()
+                "Cpu 0%".to_string()
             }
         } else {
             "Cpu N/A".to_string()

@@ -57,7 +57,7 @@ pub trait StatusModule {
 }
 
 /// A stat module's width from the WIDER of its live text and a
-/// widest-plausible template ("Cpu 99.9%"), plus padding. Sizing to the live
+/// widest-plausible template ("Cpu 100%"), plus padding. Sizing to the live
 /// text alone made the surface resize whenever the value crossed a digit
 /// boundary ("Cpu 9.9%" ↔ "Cpu 10.2%"), which re-arranged the whole status
 /// strip and — through the compositor's configure echo — ping-ponged the
@@ -437,11 +437,11 @@ impl StatusModule for MemoryModule {
         padding: f32,
     ) -> f32 {
         let text = if let Some(ref s) = stats {
-            if !s.memory.is_empty() { &s.memory } else { "Mem 0.0/0.0G" }
+            if !s.memory.is_empty() { &s.memory } else { "Mem 0/0G" }
         } else {
-            "Mem 0.0/0.0G"
+            "Mem 0/0G"
         };
-        // "Mem 8.2/62.4G" → "Mem 62.4/62.4G": used pinned to the total, the
+        // "Mem 17/62G" → "Mem 62/62G": used pinned to the total, the
         // widest this machine's readout gets.
         let template = text
             .rsplit('/')
@@ -497,11 +497,11 @@ impl StatusModule for CpuModule {
         padding: f32,
     ) -> f32 {
         let text = if let Some(ref s) = stats {
-            if !s.cpu.is_empty() { &s.cpu } else { "Cpu 0.0%" }
+            if !s.cpu.is_empty() { &s.cpu } else { "Cpu 0%" }
         } else {
-            "Cpu 0.0%"
+            "Cpu 0%"
         };
-        stable_text_width(font_system, text, "Cpu 99.9%", font_size, font_family, padding)
+        stable_text_width(font_system, text, "Cpu 100%", font_size, font_family, padding)
     }
 
     fn render(
