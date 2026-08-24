@@ -140,8 +140,10 @@ background_blur tint scaling still applies on top) and `module { text_color }`
 style — cce-ui's `Prim::Droplet`, shader mode 10; the key's PRESENCE enables
 it, its value is whitespace-separated `k=v` pairs onto `DropletSpec` — sag,
 belly, belly_w, blend, sheet_r, attach, clarity, dome, band, gleam, shine,
-rim, bow; defaults = the oval dewdrop (no belly, attach-tapered contact, a
-continuous bottom arc via bow), belly>0 brings back the pendant-pool look —
+rim, bow, curve; defaults = the oval dewdrop (no belly; attach 0.42 +
+sheet_r 0.58 fill the height so there is NO straight side; bow arcs the
+bottom; curve 2.6 = superellipse joins, so everything but the flat top is one
+continuous curve), belly>0 brings back the pendant-pool look —
 warn-and-skip on unknown keys; the expanded menu box becomes the drop growing,
 and drops inset 1px from the surface bottom for the silhouette's AA feather). Everything is read through
 `cce_ui::config::cached_config()`; KDL is converted to JSON

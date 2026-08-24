@@ -204,6 +204,7 @@ pub(crate) fn read_droplet_from_config() -> Option<cce_ui::scene::paint::Droplet
             "shine" => spec.shine = v,
             "rim" => spec.rim = v,
             "bow" => spec.bow = v,
+            "curve" => spec.curve = v,
             _ => log::warn!("module.droplet: unknown key '{}' — skipped", key),
         }
     }
