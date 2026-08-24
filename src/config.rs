@@ -211,6 +211,13 @@ pub(crate) fn read_droplet_from_config() -> Option<cce_ui::scene::paint::Droplet
     Some(spec)
 }
 
+/// `module { text_raise }` — lifts module text above vertical center by this
+/// many logical px (negative lowers it). Bar-side only; every module's text
+/// baseline funnels through `centered_text_y`, which subtracts this.
+pub(crate) fn read_text_raise_from_config() -> f32 {
+    cfg_f32("/module/text_raise").unwrap_or(0.0)
+}
+
 pub(crate) fn read_status_box_corner_radius_from_config() -> f32 {
     // App-native ONLY (~/.config/cce/cce-status-interface/config.kdl,
     // merged over the shared config by cce-ui): `module { corner_radius }`.

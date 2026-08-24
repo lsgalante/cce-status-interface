@@ -13,7 +13,7 @@ use crate::{
 /// window_runner uses line_height = physical_size * 1.0), so centering must
 /// use that height — not a CSS-ish 1.4em line box.
 pub(crate) fn centered_text_y(box_h: f32, font_size: f32) -> f32 {
-    (box_h - font_size) / 2.0
+    (box_h - font_size) / 2.0 - crate::config::read_text_raise_from_config()
 }
 
 pub trait StatusModule {

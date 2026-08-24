@@ -145,7 +145,9 @@ sheet_r 0.58 fill the height so there is NO straight side; bow arcs the
 bottom; curve 2.6 = superellipse joins, so everything but the flat top is one
 continuous curve), belly>0 brings back the pendant-pool look —
 warn-and-skip on unknown keys; the expanded menu box becomes the drop growing,
-and drops inset 1px from the surface bottom for the silhouette's AA feather). Everything is read through
+and drops inset 1px from the surface bottom for the silhouette's AA feather)
+and `module { text_raise }` (lifts module text above vertical center, logical
+px, bar-side only — every module funnels through `centered_text_y`). Everything is read through
 `cce_ui::config::cached_config()`; KDL is converted to JSON
 (`cce_ui::config::parse_kdl_to_json`) and looked up by **explicit JSON
 pointer only**: every key names its canonical nesting
