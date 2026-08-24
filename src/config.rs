@@ -196,6 +196,7 @@ pub(crate) fn read_droplet_from_config() -> Option<cce_ui::scene::paint::Droplet
             "belly_w" => spec.belly_w = v,
             "blend" => spec.blend = v,
             "sheet_r" => spec.sheet_r = v,
+            "attach" => spec.attach = v,
             "clarity" => spec.clarity = v,
             "dome" => spec.dome = v,
             "band" => spec.band = v,
