@@ -150,7 +150,9 @@ and `module { text_raise }` (lifts module text above vertical center, logical
 px, bar-side only — every module funnels through `centered_text_y`) and
 `module { text_relief }` (letterpress underlay strength 0-1: a translucent
 white copy 0.75px down-right beneath each non-boxed text run — engraved text,
-guaranteed contrast on dark backdrops). Everything is read through
+guaranteed contrast on dark backdrops) and `module { text_halo }` (full white
+outline 0-1: FOUR diagonal white copies around each run; beats text_relief
+when set). Everything is read through
 `cce_ui::config::cached_config()`; KDL is converted to JSON
 (`cce_ui::config::parse_kdl_to_json`) and looked up by **explicit JSON
 pointer only**: every key names its canonical nesting

@@ -263,6 +263,9 @@ struct StatusApp {
     /// Letterpress underlay strength for module text (0 = off) — see
     /// `read_text_relief_from_config`.
     text_relief: f32,
+    /// Full white outline strength (0 = off); beats `text_relief` when set —
+    /// see `read_text_halo_from_config`.
+    text_halo: f32,
     text_prims: Vec<TextPrim>,
 
     scale_factor: f64,
@@ -371,6 +374,7 @@ impl StatusApp {
         self.droplet = read_droplet_from_config();
         self.droplet_boxes.clear();
         self.text_relief = read_text_relief_from_config();
+        self.text_halo = read_text_halo_from_config();
 
         self.status_bar.set_rect(0.0, 0.0, self.width as f32, self.height as f32);
         // The surface itself is transparent: every StatusApp is a single
@@ -1121,6 +1125,7 @@ impl cce_ui::engine::Application for StatusApp {
             droplet_boxes: Vec::new(),
             droplet: None,
             text_relief: 0.0,
+            text_halo: 0.0,
             text_prims: Vec::new(),
             scale_factor: 1.0,
             width: if selected_module.is_some() { 120 } else { 1920 },
@@ -1418,10 +1423,16 @@ impl cce_ui::engine::Application for StatusApp {
             match layout {
                 Some(l) => pc.text_boxed(text.clone(), *x, *y, *tsize, *color, font.clone(), *bounds, cce_ui::scene::paint::TextAttrs::default(), *l),
                 None => {
-                    // Letterpress underlay: a translucent white copy offset
-                    // down-right BENEATH the glyphs — dark text keeps a lit
-                    // edge on dark backdrops (the engraved-text treatment).
-                    if self.text_relief > 0.0 {
+                    if self.text_halo > 0.0 {
+                        // Full halo: four diagonal white copies — a true
+                        // outline, readable over any backdrop.
+                        for (dx, dy) in [(-0.75, -0.75), (0.75, -0.75), (-0.75, 0.75), (0.75, 0.75)] {
+                            pc.text_faded(text.clone(), *x + dx, *y + dy, *tsize, [255, 255, 255], self.text_halo, font.clone(), *bounds);
+                        }
+                    } else if self.text_relief > 0.0 {
+                        // Letterpress underlay: a translucent white copy offset
+                        // down-right BENEATH the glyphs — dark text keeps a lit
+                        // edge on dark backdrops (the engraved-text treatment).
                         pc.text_faded(text.clone(), *x + 0.75, *y + 0.75, *tsize, [255, 255, 255], self.text_relief, font.clone(), *bounds);
                     }
                     pc.text_with(text.clone(), *x, *y, *tsize, *color, font.clone(), *bounds)

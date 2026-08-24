@@ -227,6 +227,14 @@ pub(crate) fn read_text_relief_from_config() -> f32 {
     cfg_f32("/module/text_relief").unwrap_or(0.0).clamp(0.0, 1.0)
 }
 
+/// `module { text_halo }` — full white outline strength (0 = off, 1 = opaque):
+/// four translucent white copies at the diagonal offsets ±0.75px around each
+/// module text run, a true halo readable over any backdrop. When set it
+/// replaces the single-offset `text_relief` underlay.
+pub(crate) fn read_text_halo_from_config() -> f32 {
+    cfg_f32("/module/text_halo").unwrap_or(0.0).clamp(0.0, 1.0)
+}
+
 pub(crate) fn read_status_box_corner_radius_from_config() -> f32 {
     // App-native ONLY (~/.config/cce/cce-status-interface/config.kdl,
     // merged over the shared config by cce-ui): `module { corner_radius }`.
