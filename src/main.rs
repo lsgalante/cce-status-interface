@@ -260,6 +260,9 @@ struct StatusApp {
     /// first so module content sits on the drop.
     droplet_boxes: Vec<(f32, f32, f32, f32, [f32; 4])>,
     droplet: Option<cce_ui::scene::paint::DropletSpec>,
+    /// Letterpress underlay strength for module text (0 = off) — see
+    /// `read_text_relief_from_config`.
+    text_relief: f32,
     text_prims: Vec<TextPrim>,
 
     scale_factor: f64,
@@ -367,6 +370,7 @@ impl StatusApp {
         self.box_bevel_depth = read_status_box_bevel_depth_from_config();
         self.droplet = read_droplet_from_config();
         self.droplet_boxes.clear();
+        self.text_relief = read_text_relief_from_config();
 
         self.status_bar.set_rect(0.0, 0.0, self.width as f32, self.height as f32);
         // The surface itself is transparent: every StatusApp is a single
@@ -1116,6 +1120,7 @@ impl cce_ui::engine::Application for StatusApp {
             rounded_boxes: Vec::new(),
             droplet_boxes: Vec::new(),
             droplet: None,
+            text_relief: 0.0,
             text_prims: Vec::new(),
             scale_factor: 1.0,
             width: if selected_module.is_some() { 120 } else { 1920 },
@@ -1412,7 +1417,15 @@ impl cce_ui::engine::Application for StatusApp {
         for (text, tsize, x, y, color, font, bounds, layout) in &self.text_prims {
             match layout {
                 Some(l) => pc.text_boxed(text.clone(), *x, *y, *tsize, *color, font.clone(), *bounds, cce_ui::scene::paint::TextAttrs::default(), *l),
-                None => pc.text_with(text.clone(), *x, *y, *tsize, *color, font.clone(), *bounds),
+                None => {
+                    // Letterpress underlay: a translucent white copy offset
+                    // down-right BENEATH the glyphs — dark text keeps a lit
+                    // edge on dark backdrops (the engraved-text treatment).
+                    if self.text_relief > 0.0 {
+                        pc.text_faded(text.clone(), *x + 0.75, *y + 0.75, *tsize, [255, 255, 255], self.text_relief, font.clone(), *bounds);
+                    }
+                    pc.text_with(text.clone(), *x, *y, *tsize, *color, font.clone(), *bounds)
+                }
             }
         }
 

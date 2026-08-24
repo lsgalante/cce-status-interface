@@ -140,14 +140,17 @@ background_blur tint scaling still applies on top) and `module { text_color }`
 style — cce-ui's `Prim::Droplet`, shader mode 10; the key's PRESENCE enables
 it, its value is whitespace-separated `k=v` pairs onto `DropletSpec` — sag,
 belly, belly_w, blend, sheet_r, attach, clarity, dome, band, gleam, shine,
-rim, bow, curve; defaults = the oval dewdrop (no belly; attach 0.42 +
+rim, bow, curve, core; defaults = the oval dewdrop (no belly; attach 0.42 +
 sheet_r 0.58 fill the height so there is NO straight side; bow arcs the
 bottom; curve 2.6 = superellipse joins, so everything but the flat top is one
 continuous curve), belly>0 brings back the pendant-pool look —
 warn-and-skip on unknown keys; the expanded menu box becomes the drop growing,
 and drops inset 1px from the surface bottom for the silhouette's AA feather)
 and `module { text_raise }` (lifts module text above vertical center, logical
-px, bar-side only — every module funnels through `centered_text_y`). Everything is read through
+px, bar-side only — every module funnels through `centered_text_y`) and
+`module { text_relief }` (letterpress underlay strength 0-1: a translucent
+white copy 0.75px down-right beneath each non-boxed text run — engraved text,
+guaranteed contrast on dark backdrops). Everything is read through
 `cce_ui::config::cached_config()`; KDL is converted to JSON
 (`cce_ui::config::parse_kdl_to_json`) and looked up by **explicit JSON
 pointer only**: every key names its canonical nesting

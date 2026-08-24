@@ -205,6 +205,7 @@ pub(crate) fn read_droplet_from_config() -> Option<cce_ui::scene::paint::Droplet
             "rim" => spec.rim = v,
             "bow" => spec.bow = v,
             "curve" => spec.curve = v,
+            "core" => spec.core = v,
             _ => log::warn!("module.droplet: unknown key '{}' — skipped", key),
         }
     }
@@ -216,6 +217,14 @@ pub(crate) fn read_droplet_from_config() -> Option<cce_ui::scene::paint::Droplet
 /// baseline funnels through `centered_text_y`, which subtracts this.
 pub(crate) fn read_text_raise_from_config() -> f32 {
     cfg_f32("/module/text_raise").unwrap_or(0.0)
+}
+
+/// `module { text_relief }` — letterpress underlay strength (0 = off, 1 =
+/// opaque): each module text run gets a white copy offset ~0.75px down-right
+/// BENEATH the glyphs, so dark text keeps a lit edge on dark backdrops (the
+/// engraved-text treatment, matching the DE's relief language). Bar-side only.
+pub(crate) fn read_text_relief_from_config() -> f32 {
+    cfg_f32("/module/text_relief").unwrap_or(0.0).clamp(0.0, 1.0)
 }
 
 pub(crate) fn read_status_box_corner_radius_from_config() -> f32 {
