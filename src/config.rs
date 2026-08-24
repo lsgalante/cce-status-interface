@@ -172,6 +172,42 @@ pub(crate) fn read_status_box_background_color_from_config() -> Option<[f32; 4]>
     Some(color)
 }
 
+/// `module { droplet "sag=0.45 belly=0.75 gleam=1.2 ..." }` — the water-drop
+/// module style ([`cce_ui::scene::paint::Prim::Droplet`]). The key's PRESENCE
+/// turns the style on (an empty string takes every default); its value is
+/// whitespace-separated `k=v` pairs onto [`DropletSpec`]'s fields, in the DE's
+/// spec-string idiom. Unknown keys warn and are skipped, so a typo shows up in
+/// the log instead of silently reverting one knob.
+pub(crate) fn read_droplet_from_config() -> Option<cce_ui::scene::paint::DropletSpec> {
+    let raw = cfg_string("/module/droplet")?;
+    let mut spec = cce_ui::scene::paint::DropletSpec::default();
+    for tok in raw.split_whitespace() {
+        let Some((key, val)) = tok.split_once('=') else {
+            log::warn!("module.droplet: token '{}' is not k=v — skipped", tok);
+            continue;
+        };
+        let Ok(v) = val.parse::<f32>() else {
+            log::warn!("module.droplet: '{}' has a non-numeric value — skipped", tok);
+            continue;
+        };
+        match key {
+            "sag" => spec.sag = v,
+            "belly" => spec.belly = v,
+            "belly_w" => spec.belly_w = v,
+            "blend" => spec.blend = v,
+            "sheet_r" => spec.sheet_r = v,
+            "clarity" => spec.clarity = v,
+            "dome" => spec.dome = v,
+            "band" => spec.band = v,
+            "gleam" => spec.gleam = v,
+            "shine" => spec.shine = v,
+            "rim" => spec.rim = v,
+            _ => log::warn!("module.droplet: unknown key '{}' — skipped", key),
+        }
+    }
+    Some(spec)
+}
+
 pub(crate) fn read_status_box_corner_radius_from_config() -> f32 {
     // App-native ONLY (~/.config/cce/cce-status-interface/config.kdl,
     // merged over the shared config by cce-ui): `module { corner_radius }`.

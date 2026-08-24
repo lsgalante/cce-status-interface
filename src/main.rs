@@ -255,6 +255,11 @@ struct StatusApp {
     rects: Vec<RectWidget>,
     overlay_rects: Vec<RectWidget>,
     rounded_boxes: Vec<RoundedBox>,
+    /// Module boxes drawn as water droplets instead of `rounded_boxes` entries
+    /// when `module { droplet }` is configured — (x, y, w, h, color), painted
+    /// first so module content sits on the drop.
+    droplet_boxes: Vec<(f32, f32, f32, f32, [f32; 4])>,
+    droplet: Option<cce_ui::scene::paint::DropletSpec>,
     text_prims: Vec<TextPrim>,
 
     scale_factor: f64,
@@ -360,6 +365,8 @@ impl StatusApp {
         let status_box_radius = read_status_box_corner_radius_from_config();
         self.box_bevel = read_status_box_bevel_from_config();
         self.box_bevel_depth = read_status_box_bevel_depth_from_config();
+        self.droplet = read_droplet_from_config();
+        self.droplet_boxes.clear();
 
         self.status_bar.set_rect(0.0, 0.0, self.width as f32, self.height as f32);
         // The surface itself is transparent: every StatusApp is a single
@@ -395,16 +402,23 @@ impl StatusApp {
                 // the module box GROWS into the menu, it doesn't sit atop it.
                 if !module.has_custom_background(&self.title) && self.context_menu.is_none() {
                     if let Some(color) = box_bg_color {
-                        self.rounded_boxes.push(RoundedBox {
-                            x: left_x,
-                            y: 0.0,
-                            w,
-                            h: bar_h,
-                            radius: status_box_radius,
-                            color,
-                            corners: if self.selected_module_name.is_some() { (true, true, true, true) } else { (false, false, true, true) },
-                            border: None,
-                        });
+                        if self.droplet.is_some() {
+                            // 1px inset from the surface bottom: the belly's
+                            // silhouette (and its AA feather) must live inside
+                            // the buffer, or the drop bottom cuts off flat.
+                            self.droplet_boxes.push((left_x, 0.0, w, bar_h - 1.0, color));
+                        } else {
+                            self.rounded_boxes.push(RoundedBox {
+                                x: left_x,
+                                y: 0.0,
+                                w,
+                                h: bar_h,
+                                radius: status_box_radius,
+                                color,
+                                corners: if self.selected_module_name.is_some() { (true, true, true, true) } else { (false, false, true, true) },
+                                border: None,
+                            });
+                        }
                     }
                 }
 
@@ -473,16 +487,21 @@ impl StatusApp {
                 // box for the unified expanded box.
                 if !module.has_custom_background(&self.title) && self.context_menu.is_none() {
                     if let Some(color) = box_bg_color {
-                        self.rounded_boxes.push(RoundedBox {
-                            x: right_x,
-                            y: 0.0,
-                            w,
-                            h: bar_h,
-                            radius: status_box_radius,
-                            color,
-                            corners: if self.selected_module_name.is_some() { (true, true, true, true) } else { (false, false, true, true) },
-                            border: None,
-                        });
+                        if self.droplet.is_some() {
+                            // Same 1px bottom inset as the left loop.
+                            self.droplet_boxes.push((right_x, 0.0, w, bar_h - 1.0, color));
+                        } else {
+                            self.rounded_boxes.push(RoundedBox {
+                                x: right_x,
+                                y: 0.0,
+                                w,
+                                h: bar_h,
+                                radius: status_box_radius,
+                                color,
+                                corners: if self.selected_module_name.is_some() { (true, true, true, true) } else { (false, false, true, true) },
+                                border: None,
+                            });
+                        }
                     }
                 }
 
@@ -669,17 +688,25 @@ impl StatusApp {
                     // the strip band and the menu — the module box literally
                     // grows into the menu. Inserted at the front so the
                     // module's strip content (tray icons, labels)
-                    // renders on top of its band.
-                    self.rounded_boxes.insert(0, RoundedBox {
-                        x: plate_x,
-                        y: 0.0,
-                        w: anim_w,
-                        h: bar_h + reveal_h,
-                        radius: status_box_radius.max(4.0),
-                        color: box_bg_color.unwrap_or([0.055, 0.055, 0.075, 0.97]),
-                        corners: (true, true, true, true),
-                        border: None,
-                    });
+                    // renders on top of its band. In droplet style the drop
+                    // itself grows: the belly follows the expanding bottom
+                    // edge, which is the metaball merge the smin silhouette
+                    // gives for free.
+                    let menu_color = box_bg_color.unwrap_or([0.055, 0.055, 0.075, 0.97]);
+                    if self.droplet.is_some() {
+                        self.droplet_boxes.push((plate_x, 0.0, anim_w, bar_h + reveal_h - 1.0, menu_color));
+                    } else {
+                        self.rounded_boxes.insert(0, RoundedBox {
+                            x: plate_x,
+                            y: 0.0,
+                            w: anim_w,
+                            h: bar_h + reveal_h,
+                            radius: status_box_radius.max(4.0),
+                            color: menu_color,
+                            corners: (true, true, true, true),
+                            border: None,
+                        });
+                    }
 
                     let text_u8 = [
                         (normal_color[0] * 255.0) as u8,
@@ -1087,6 +1114,8 @@ impl cce_ui::engine::Application for StatusApp {
             rects: Vec::new(),
             overlay_rects: Vec::new(),
             rounded_boxes: Vec::new(),
+            droplet_boxes: Vec::new(),
+            droplet: None,
             text_prims: Vec::new(),
             scale_factor: 1.0,
             width: if selected_module.is_some() { 120 } else { 1920 },
@@ -1305,6 +1334,14 @@ impl cce_ui::engine::Application for StatusApp {
             self.rebuild_layout();
         }
         let mut pc = cce_ui::scene::paint::PaintCtx::new();
+
+        // Droplet-style module boxes paint first, so any remaining rounded
+        // boxes (module-internal chips) and all content sit on the drops.
+        if let Some(spec) = self.droplet {
+            for &(x, y, w, h, color) in &self.droplet_boxes {
+                pc.droplet(Rect { x, y, width: w, height: h }, color, spec);
+            }
+        }
 
         for rb in &self.rounded_boxes {
             let rect = Rect { x: rb.x, y: rb.y, width: rb.w, height: rb.h };
