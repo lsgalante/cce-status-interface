@@ -410,11 +410,12 @@ impl StatusApp {
                 // the module box GROWS into the menu, it doesn't sit atop it.
                 if !module.has_custom_background(&self.title) && self.context_menu.is_none() {
                     if let Some(color) = box_bg_color {
-                        if self.droplet.is_some() {
-                            // 1px inset from the surface bottom: the belly's
-                            // silhouette (and its AA feather) must live inside
-                            // the buffer, or the drop bottom cuts off flat.
-                            self.droplet_boxes.push((left_x, 0.0, w, bar_h - 1.0, color));
+                        if let Some(spec) = self.droplet {
+                            // Inset from the surface bottom: 1px for the
+                            // belly silhouette's AA feather, plus the
+                            // contact shadow's reserved gap.
+                            let inset = 1.0 + spec.shadow_gap(bar_h);
+                            self.droplet_boxes.push((left_x, 0.0, w, bar_h - inset, color));
                         } else {
                             self.rounded_boxes.push(RoundedBox {
                                 x: left_x,
@@ -495,9 +496,10 @@ impl StatusApp {
                 // box for the unified expanded box.
                 if !module.has_custom_background(&self.title) && self.context_menu.is_none() {
                     if let Some(color) = box_bg_color {
-                        if self.droplet.is_some() {
-                            // Same 1px bottom inset as the left loop.
-                            self.droplet_boxes.push((right_x, 0.0, w, bar_h - 1.0, color));
+                        if let Some(spec) = self.droplet {
+                            // Same bottom inset as the left loop.
+                            let inset = 1.0 + spec.shadow_gap(bar_h);
+                            self.droplet_boxes.push((right_x, 0.0, w, bar_h - inset, color));
                         } else {
                             self.rounded_boxes.push(RoundedBox {
                                 x: right_x,
@@ -701,8 +703,9 @@ impl StatusApp {
                     // edge, which is the metaball merge the smin silhouette
                     // gives for free.
                     let menu_color = box_bg_color.unwrap_or([0.055, 0.055, 0.075, 0.97]);
-                    if self.droplet.is_some() {
-                        self.droplet_boxes.push((plate_x, 0.0, anim_w, bar_h + reveal_h - 1.0, menu_color));
+                    if let Some(spec) = self.droplet {
+                        let inset = 1.0 + spec.shadow_gap(bar_h);
+                        self.droplet_boxes.push((plate_x, 0.0, anim_w, bar_h + reveal_h - inset, menu_color));
                     } else {
                         self.rounded_boxes.insert(0, RoundedBox {
                             x: plate_x,
