@@ -207,6 +207,20 @@ pub(crate) fn read_text_halo_from_config() -> f32 {
     cfg_f32("/module/text_halo").unwrap_or(0.0).clamp(0.0, 1.0)
 }
 
+/// `module { text_contrast }` — adaptive contrast strength (0 = off, the
+/// default; 1 = full). When set, the compositor's per-segment `backdrop`
+/// measurement drives the halo instead of `text_halo`'s fixed strength: the
+/// outline appears only over a backdrop the configured text color cannot
+/// carry, and its strength tracks how badly it is losing. Bar-side only.
+///
+/// This is the knob that makes `text_relief`/`text_halo` unnecessary rather
+/// than a constant tax — those stay as the manual override for a session
+/// with no backdrop feed (an older compositor), which is why they are not
+/// deprecated by it.
+pub(crate) fn read_text_contrast_from_config() -> f32 {
+    cfg_f32("/module/text_contrast").unwrap_or(0.0).clamp(0.0, 1.0)
+}
+
 pub(crate) fn read_status_box_corner_radius_from_config() -> f32 {
     // App-native ONLY (~/.config/cce/cce-status-interface/config.kdl,
     // merged over the shared config by cce-ui): `module { corner_radius }`.

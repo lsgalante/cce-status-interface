@@ -84,6 +84,11 @@ listen to tray D-Bus, etc.:
 - **Tray** (`spawn_status_tray`): a full StatusNotifierItem/Watcher host over `zbus`,
   including DBusMenu fetching. Icons arrive as pixmaps or theme names (rendered via
   `resvg`/`png`).
+- **Backdrop** (`spawn_status_listener("backdrop <app_id>")`): what THIS segment
+  is composited over, measured compositor-side and pushed as `<luma> <spread>`
+  (0-100 each) or `unknown`. Every module process subscribes, naming itself with
+  `status_app_id()`. A Wayland client cannot see behind its own surface, so this
+  is the only source of the fact — see `module { text_contrast }` below.
 - **Switcher** (`spawn_switcher_listener`): binds
   `/tmp/cce-status-interface-switcher-{WAYLAND_DISPLAY}.sock`; a line on it fires
   `SwitcherTriggered`.
@@ -152,7 +157,12 @@ px, bar-side only — every module funnels through `centered_text_y`) and
 white copy 0.75px down-right beneath each non-boxed text run — engraved text,
 guaranteed contrast on dark backdrops) and `module { text_halo }` (full white
 outline 0-1: FOUR diagonal white copies around each run; beats text_relief
-when set). Everything is read through
+when set) and `module { text_contrast }` (adaptive contrast 0-1, default 0 =
+off — when set it SUPERSEDES both fixed knobs above and drives the halo from
+the compositor's `backdrop` measurement instead, so the outline appears only
+over a backdrop the configured text color cannot carry; `text_relief`/
+`text_halo` remain as the manual override for a session whose compositor
+predates the topic). Everything is read through
 `cce_ui::config::cached_config()`; KDL is converted to JSON
 (`cce_ui::config::parse_kdl_to_json`) and looked up by **explicit JSON
 pointer only**: every key names its canonical nesting
@@ -176,6 +186,28 @@ for the Vulkan pipeline). No local gamma math — the old scattered `.powf(2.2)`
 is gone; `test_text_colors_stay_srgb_and_quad_colors_are_linearized` is the
 spec. Config changes are picked up by polling the file mtime in `tick()`, so
 there is no reload event to wire up.
+
+## Adaptive text contrast
+
+The bar draws into its own buffer and can never see what it is composited
+over, so a module box at `background_color` alpha `30` leaves its text at the
+mercy of whatever the desktop shows through it. `module { text_contrast }`
+closes that loop with the compositor, which CAN see:
+
+1. `cce-fx` measures each segment's backdrop per frame (`backdrop.rs`) and
+   pushes `<luma> <spread>` on the status socket's `backdrop` topic.
+2. `halo_demand()` checks the configured text color's WCAG contrast against
+   that backdrop at three points — the mean AND both ends of the spread — and
+   takes the worst. Checking only the mean is the trap: a segment half on a
+   black grid cell and half on a light gap averages to a comfortable mid-gray
+   while the text is invisible over one half.
+3. `tick` eases `halo_now` toward that demand over ~120ms. Stepping straight
+   to it makes the outline strobe as the desktop pans under the segment.
+
+Two failure directions, both deliberately resolved toward legible: an
+unparseable or absent line reads as `(50, 100)` — "unknown, assume the worst"
+— and so does a window overlapping the segment, whose pixels the compositor
+cannot know either.
 
 ## Interactions worth knowing before touching input code
 

@@ -107,8 +107,61 @@ pub(crate) enum CustomEvent {
     MenuDismiss(String),
     /// A tray icon's DBusMenu, fetched and flattened for the in-surface menu.
     TrayMenuFetched { destination: String, menu_path: String, pages: Vec<MenuPage> },
+    /// What this segment is composited over, measured by the compositor:
+    /// (luma, spread), both 0-100. The bar cannot see behind its own
+    /// translucent box, so this is the only source of that fact — see
+    /// `module { text_contrast }`.
+    BackdropUpdated((u8, u8)),
     ToggleHideModules,
     ToggleAdjustPositionMode,
+}
+
+/// One sRGB channel to linear light (the WCAG transfer function).
+fn to_linear(c: f32) -> f32 {
+    let c = c.clamp(0.0, 1.0);
+    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+}
+
+/// WCAG relative luminance of a raw-sRGB color, 0-1. Must agree with the
+/// compositor's `backdrop::relative_luminance` — the two are the halves of
+/// one contrast comparison, and weighting them differently would make the
+/// ratio meaningless.
+fn relative_luminance(rgba: [f32; 4]) -> f32 {
+    0.2126 * to_linear(rgba[0]) + 0.7152 * to_linear(rgba[1]) + 0.0722 * to_linear(rgba[2])
+}
+
+/// WCAG contrast ratio between two relative luminances, 1.0 (identical) to
+/// 21.0 (black on white).
+fn contrast_ratio(a: f32, b: f32) -> f32 {
+    let (hi, lo) = if a > b { (a, b) } else { (b, a) };
+    (hi + 0.05) / (lo + 0.05)
+}
+
+/// How badly `text` fails to read against a backdrop of luminance `bg`:
+/// 0 once the pair clears WCAG AA for normal text (4.5:1), rising to 1 as
+/// the two converge on invisible.
+fn contrast_deficit(text: f32, bg: f32) -> f32 {
+    const AA: f32 = 4.5;
+    ((AA - contrast_ratio(text, bg)) / (AA - 1.0)).clamp(0.0, 1.0)
+}
+
+/// How much outline text of luminance `text_luma` needs over a backdrop
+/// measured as `(luma, spread)`, 0 (none) to 1 (as much as the knob allows).
+///
+/// Contrast is checked at BOTH ends of the spread as well as at the mean, and
+/// the worst answer wins: a segment lying half on a black cell and half on a
+/// light gap averages to a perfectly comfortable mid-gray while the text is
+/// unreadable over one of the two halves. Checking only the mean is the
+/// mistake that would make an adaptive scheme look broken exactly where the
+/// fixed one already worked.
+fn halo_demand(text_luma: f32, (luma, spread): (u8, u8)) -> f32 {
+    let mid = luma as f32 / 100.0;
+    let half = (spread as f32 / 100.0) / 2.0;
+    let lo = (mid - half).clamp(0.0, 1.0);
+    let hi = (mid + half).clamp(0.0, 1.0);
+    contrast_deficit(text_luma, mid)
+        .max(contrast_deficit(text_luma, lo))
+        .max(contrast_deficit(text_luma, hi))
 }
 
 /// The in-surface right-click menu: instead of spawning a popup process, the
@@ -266,6 +319,24 @@ struct StatusApp {
     /// Full white outline strength (0 = off); beats `text_relief` when set —
     /// see `read_text_halo_from_config`.
     text_halo: f32,
+    /// Adaptive-contrast strength (0 = off) — see
+    /// `read_text_contrast_from_config`. When on it supersedes the two fixed
+    /// knobs above, driving the halo from the measured backdrop instead.
+    text_contrast: f32,
+    /// The compositor's last `backdrop` push for this segment: (luma,
+    /// spread), both 0-100. Starts at the worst case, so a segment that
+    /// never hears from the compositor errs toward legible rather than
+    /// toward bare.
+    backdrop: (u8, u8),
+    /// Relative luminance of the configured module text color, 0-1. Cached
+    /// at config-reload time because the contrast decision needs it every
+    /// frame and the color changes about never.
+    text_luma: f32,
+    /// The halo strength actually being painted, eased toward the backdrop's
+    /// demand in `tick`. Stepping straight to the target makes the outline
+    /// snap on and off as the desktop pans under a segment, which reads as a
+    /// flicker rather than as an adaptation.
+    halo_now: f32,
     text_prims: Vec<TextPrim>,
 
     scale_factor: f64,
@@ -294,24 +365,44 @@ struct StatusApp {
     adjust_position_mode: bool,
 }
 
+/// The Wayland `app_id` a segment presents — the compositor places segments
+/// by it, and it is also how this process names itself to the `backdrop`
+/// subscription. A free function because `new()` must be able to spell it
+/// before there is a `StatusApp` to ask, and the two spellings below are
+/// exactly the kind of thing that drifts when copied.
+fn status_app_id(selected: Option<(&str, Side)>) -> String {
+    let display = std::env::var("WAYLAND_DISPLAY").unwrap_or_else(|_| "wayland-0".to_string());
+    let use_interface_prefix = std::path::Path::new(&format!("/tmp/cce-status-interface-{}.sock", display)).exists();
+    let prefix = if use_interface_prefix { "cce-status-interface" } else { "cce-status" };
+    match selected {
+        Some((name, side)) => format!("{}-{:?}-{}", prefix, side, name).to_lowercase(),
+        None => prefix.to_string(),
+    }
+}
+
 impl StatusApp {
     fn get_app_id(&self) -> String {
-        let display = std::env::var("WAYLAND_DISPLAY").unwrap_or_else(|_| "wayland-0".to_string());
-        let use_interface_prefix = std::path::Path::new(&format!("/tmp/cce-status-interface-{}.sock", display)).exists();
+        let selected = match (&self.selected_module_name, &self.selected_module_side) {
+            (Some(name), Some(side)) => Some((name.as_str(), *side)),
+            _ => None,
+        };
+        status_app_id(selected)
+    }
 
-        if let (Some(ref name), Some(ref side)) = (&self.selected_module_name, &self.selected_module_side) {
-            if use_interface_prefix {
-                format!("cce-status-interface-{:?}-{}", side, name).to_lowercase()
-            } else {
-                format!("cce-status-{:?}-{}", side, name).to_lowercase()
-            }
-        } else {
-            if use_interface_prefix {
-                "cce-status-interface".to_string()
-            } else {
-                "cce-status".to_string()
-            }
+    /// The halo strength this segment's measured backdrop calls for, 0-1.
+    ///
+    /// The compositor reports a mean luminance and a spread. Contrast is
+    /// checked at BOTH ends of that spread as well as at the mean, and the
+    /// worst answer wins: a segment lying half on a black cell and half on a
+    /// light gap averages to a perfectly comfortable mid-gray, and the text
+    /// is still unreadable over one of the two halves. Checking only the mean
+    /// is the mistake that makes an adaptive scheme look broken exactly where
+    /// a fixed one already worked.
+    fn backdrop_halo_target(&self) -> f32 {
+        if self.text_contrast <= 0.0 {
+            return 0.0;
         }
+        halo_demand(self.text_luma, self.backdrop) * self.text_contrast
     }
 
     fn is_vertical(&self) -> bool {
@@ -353,6 +444,7 @@ impl StatusApp {
         let padding = read_status_padding_from_config();
         let spacing = read_status_module_spacing_from_config();
         let normal_color = read_normal_color_from_config().unwrap_or(color::TEXT_FG);
+        self.text_luma = relative_luminance(normal_color);
         let sw_logical = if is_vertical { self.height as f32 } else { self.width as f32 };
         let bar_h = if is_vertical { self.width as f32 } else { read_status_height_from_config() };
 
@@ -375,6 +467,7 @@ impl StatusApp {
         self.droplet_boxes.clear();
         self.text_relief = read_text_relief_from_config();
         self.text_halo = read_text_halo_from_config();
+        self.text_contrast = read_text_contrast_from_config();
 
         self.status_bar.set_rect(0.0, 0.0, self.width as f32, self.height as f32);
         // The surface itself is transparent: every StatusApp is a single
@@ -1088,12 +1181,23 @@ impl cce_ui::engine::Application for StatusApp {
         left_modules.push(module);
 
         if has_window {
-            tokio::spawn(spawn_status_listener("layout", sender.clone()));
-            tokio::spawn(spawn_status_listener("title", sender.clone()));
+            tokio::spawn(spawn_status_listener("layout".to_string(), sender.clone()));
+            tokio::spawn(spawn_status_listener("title".to_string(), sender.clone()));
         }
         // Every module can host an in-surface menu, so every process listens
         // for the compositor's click-away dismiss pushes.
-        tokio::spawn(spawn_status_listener("dismiss", sender.clone()));
+        tokio::spawn(spawn_status_listener("dismiss".to_string(), sender.clone()));
+        // ...and every module has text over a backdrop it cannot see, so
+        // every one asks the compositor what it is sitting on. Subscribed
+        // unconditionally rather than behind `module { text_contrast }`: the
+        // knob is re-read live from the config file, and a task spawned once
+        // in `new()` could not follow it being switched on.
+        {
+            let app_id = status_app_id(
+                selected_module.as_ref().map(|(name, side)| (name.as_str(), *side)),
+            );
+            tokio::spawn(spawn_status_listener(format!("backdrop {}", app_id), sender.clone()));
+        }
         let is_primary_for_switcher = selected_module.as_ref().map_or(true, |(name, _)| name == "window");
         if is_primary_for_switcher {
             tokio::spawn(spawn_switcher_listener(sender.clone()));
@@ -1129,6 +1233,10 @@ impl cce_ui::engine::Application for StatusApp {
             droplet: None,
             text_relief: 0.0,
             text_halo: 0.0,
+            text_contrast: 0.0,
+            backdrop: (50, 100),
+            text_luma: 0.0,
+            halo_now: 0.0,
             text_prims: Vec::new(),
             scale_factor: 1.0,
             width: if selected_module.is_some() { 120 } else { 1920 },
@@ -1252,6 +1360,15 @@ impl cce_ui::engine::Application for StatusApp {
                     changed = false;
                 }
             }
+            CustomEvent::BackdropUpdated(sample) => {
+                if self.backdrop != sample {
+                    self.backdrop = sample;
+                    // Only the paint changes, but something has to ask for a
+                    // frame: `tick` eases toward the new target and nothing
+                    // else on this segment is animating.
+                    self.needs_rebuild = true;
+                }
+            }
             CustomEvent::SwitcherTriggered => {
                 log::debug!("[switcher] SwitcherTriggered event received, calling trigger_switcher");
                 self.trigger_switcher(true);
@@ -1301,6 +1418,25 @@ impl cce_ui::engine::Application for StatusApp {
     }
 
     fn tick(&mut self, dt: f32, needs_rebuild: &mut bool) {
+        // Ease the halo toward what the backdrop currently demands. The
+        // measurement itself is quantized and only pushed on change, so this
+        // is the only thing standing between a camera pan and the outline
+        // strobing on the cell edges it crosses.
+        if self.text_contrast > 0.0 {
+            const HALO_EASE_S: f32 = 0.12;
+            let target = self.backdrop_halo_target();
+            if (target - self.halo_now).abs() > 0.002 {
+                let step = (dt / HALO_EASE_S).clamp(0.0, 1.0);
+                self.halo_now += (target - self.halo_now) * step;
+                *needs_rebuild = true;
+                self.needs_rebuild = true;
+            } else if self.halo_now != target {
+                self.halo_now = target;
+                *needs_rebuild = true;
+                self.needs_rebuild = true;
+            }
+        }
+
         // In-surface menu expansion/contraction: the surface grows into the
         // menu and shrinks back over MENU_ANIM_S, one resize+repaint per
         // tick. The menu object is dropped only when the contraction lands.
@@ -1426,13 +1562,17 @@ impl cce_ui::engine::Application for StatusApp {
             match layout {
                 Some(l) => pc.text_boxed(text.clone(), *x, *y, *tsize, *color, font.clone(), *bounds, cce_ui::scene::paint::TextAttrs::default(), *l),
                 None => {
-                    if self.text_halo > 0.0 {
+                    // With `module { text_contrast }` on, the measured
+                    // backdrop drives the outline and the fixed knobs step
+                    // aside; with it off, they rule exactly as before.
+                    let halo = if self.text_contrast > 0.0 { self.halo_now } else { self.text_halo };
+                    if halo > 0.0 {
                         // Full halo: four diagonal white copies — a true
                         // outline, readable over any backdrop.
                         for (dx, dy) in [(-0.75, -0.75), (0.75, -0.75), (-0.75, 0.75), (0.75, 0.75)] {
-                            pc.text_faded(text.clone(), *x + dx, *y + dy, *tsize, [255, 255, 255], self.text_halo, font.clone(), *bounds);
+                            pc.text_faded(text.clone(), *x + dx, *y + dy, *tsize, [255, 255, 255], halo, font.clone(), *bounds);
                         }
-                    } else if self.text_relief > 0.0 {
+                    } else if self.text_contrast <= 0.0 && self.text_relief > 0.0 {
                         // Letterpress underlay: a translucent white copy offset
                         // down-right BENEATH the glyphs — dark text keeps a lit
                         // edge on dark backdrops (the engraved-text treatment).
@@ -1919,6 +2059,90 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ------------------------------------------------------------------
+    // Adaptive contrast: the bar cannot see its own backdrop, so these pin
+    // down what it does with the compositor's measurement of it.
+    // ------------------------------------------------------------------
+
+    /// Luminance of the black text the droplet style is configured with.
+    const BLACK_TEXT: f32 = 0.0;
+    const WHITE_TEXT: f32 = 1.0;
+
+    #[test]
+    fn dark_text_on_a_light_uniform_backdrop_wants_no_halo() {
+        // The case that must stay untouched: the bar already reads fine, so
+        // an adaptive scheme that decorates it anyway is worse than nothing.
+        assert_eq!(halo_demand(BLACK_TEXT, (100, 0)), 0.0);
+    }
+
+    #[test]
+    fn dark_text_on_a_dark_uniform_backdrop_wants_a_full_halo() {
+        // Black text over a black grid cell — invisible, and the whole
+        // reason for the feature.
+        assert_eq!(halo_demand(BLACK_TEXT, (0, 0)), 1.0);
+    }
+
+    #[test]
+    fn light_text_reverses_the_verdict() {
+        // The decision is about the CONFIGURED color, not a hardcoded
+        // assumption that module text is dark.
+        assert_eq!(halo_demand(WHITE_TEXT, (0, 0)), 0.0);
+        assert_eq!(halo_demand(WHITE_TEXT, (100, 0)), 1.0);
+    }
+
+    #[test]
+    fn a_comfortable_mean_over_a_split_backdrop_still_wants_a_halo() {
+        // Half black cell, half light gap: the mean alone says "mid-gray,
+        // fine" while the text is invisible over one half. Checking the
+        // spread's ends is what catches it.
+        let mean_only = contrast_deficit(BLACK_TEXT, 0.5);
+        let with_spread = halo_demand(BLACK_TEXT, (50, 100));
+        assert!(with_spread > mean_only, "{} !> {}", with_spread, mean_only);
+        assert_eq!(with_spread, 1.0);
+    }
+
+    #[test]
+    fn an_unknown_backdrop_is_treated_as_the_worst_case() {
+        // What a segment reports before it has heard from the compositor,
+        // and what an occluding window resolves to: assume unreadable.
+        assert_eq!(halo_demand(BLACK_TEXT, (50, 100)), 1.0);
+    }
+
+    #[test]
+    fn contrast_ratio_matches_the_wcag_endpoints() {
+        assert!((contrast_ratio(0.0, 1.0) - 21.0).abs() < 0.01);
+        assert!((contrast_ratio(0.5, 0.5) - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn parse_backdrop_reads_a_well_formed_line() {
+        assert_eq!(crate::listeners::parse_backdrop("42 17"), (42, 17));
+        assert_eq!(crate::listeners::parse_backdrop("  0 0  "), (0, 0));
+    }
+
+    #[test]
+    fn parse_backdrop_falls_back_to_the_worst_case_not_the_best() {
+        // Every unreadable form must fail toward "assume unreadable": a
+        // fallback of (bright, uniform) would silently switch the treatment
+        // off, and bare text over an unknown backdrop is the failure this
+        // whole path exists to prevent.
+        for line in ["unknown", "", "42", "nonsense here", "42 spread"] {
+            assert_eq!(crate::listeners::parse_backdrop(line), (50, 100), "line {:?}", line);
+        }
+        assert_eq!(halo_demand(BLACK_TEXT, crate::listeners::parse_backdrop("unknown")), 1.0);
+    }
+
+    #[test]
+    fn parse_backdrop_rejects_out_of_range_but_tolerates_extra_fields() {
+        // Out of protocol is unknown, not clamped — clamping a bad luma to
+        // 100 would read as "bright and uniform" and switch the halo off.
+        assert_eq!(crate::listeners::parse_backdrop("200 200"), (50, 100));
+        assert_eq!(crate::listeners::parse_backdrop("101 0"), (50, 100));
+        // Room for the compositor to grow the line without the bar
+        // misreading it as garbage.
+        assert_eq!(crate::listeners::parse_backdrop("30 40 future"), (30, 40));
+    }
 
     // ------------------------------------------------------------------
     // Characterization tests (phase 0): these pin down current behavior
