@@ -12,6 +12,14 @@ use crate::CustomEvent;
 pub(crate) async fn spawn_status_listener(sub: String, sender: calloop::channel::Sender<CustomEvent>) {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::net::UnixStream;
+    // Retry delay, doubling while connections keep ending without ever
+    // delivering a line and reset the moment one does. A compositor that
+    // does not know this topic drops the subscription on sight, so the flat
+    // 1s retry turned an unrecognized topic into a permanent once-a-second
+    // reconnect from every module process — which is exactly what a bar
+    // running ahead of its compositor does with `backdrop` (the two halves
+    // deploy separately, and cce-fx only restarts at login).
+    let mut retry_s = 1u64;
     loop {
         let socket_path = match std::env::var("WAYLAND_DISPLAY") {
             Ok(display) => {
@@ -37,6 +45,8 @@ pub(crate) async fn spawn_status_listener(sub: String, sender: calloop::channel:
                 let mut reader = BufReader::new(stream);
                 let mut line = String::new();
                 while reader.read_line(&mut line).await.unwrap_or(0) > 0 {
+                    // Anything at all means the topic is understood.
+                    retry_s = 1;
                     let val = line.trim().to_string();
                     log::debug!("[status-listener] received '{}' update: '{}'", sub, val);
                     if !val.is_empty() {
@@ -60,7 +70,8 @@ pub(crate) async fn spawn_status_listener(sub: String, sender: calloop::channel:
                 }
             }
         }
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(retry_s)).await;
+        retry_s = (retry_s * 2).min(30);
     }
 }
 
