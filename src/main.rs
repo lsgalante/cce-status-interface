@@ -332,6 +332,11 @@ struct StatusApp {
     /// at config-reload time because the contrast decision needs it every
     /// frame and the color changes about never.
     text_luma: f32,
+    /// The color the halo is drawn in — black or white, whichever the TEXT
+    /// reads against. A halo exists to separate the glyphs from what is
+    /// behind them, so it has to contrast with the glyphs; a white outline
+    /// around white text is not a weaker treatment, it is an eraser.
+    halo_rgb: [u8; 3],
     /// The halo strength actually being painted, eased toward the backdrop's
     /// demand in `tick`. Stepping straight to the target makes the outline
     /// snap on and off as the desktop pans under a segment, which reads as a
@@ -445,6 +450,14 @@ impl StatusApp {
         let spacing = read_status_module_spacing_from_config();
         let normal_color = read_normal_color_from_config().unwrap_or(color::TEXT_FG);
         self.text_luma = relative_luminance(normal_color);
+        // Whichever of black/white the text itself reads against — compared
+        // by contrast ratio rather than a luminance midpoint, because the
+        // WCAG curve does not put the crossover at 0.5.
+        self.halo_rgb = if contrast_ratio(self.text_luma, 0.0) >= contrast_ratio(self.text_luma, 1.0) {
+            [0, 0, 0]
+        } else {
+            [255, 255, 255]
+        };
         let sw_logical = if is_vertical { self.height as f32 } else { self.width as f32 };
         let bar_h = if is_vertical { self.width as f32 } else { read_status_height_from_config() };
 
@@ -1236,6 +1249,7 @@ impl cce_ui::engine::Application for StatusApp {
             text_contrast: 0.0,
             backdrop: (50, 100),
             text_luma: 0.0,
+            halo_rgb: [255, 255, 255],
             halo_now: 0.0,
             text_prims: Vec::new(),
             scale_factor: 1.0,
@@ -1570,7 +1584,7 @@ impl cce_ui::engine::Application for StatusApp {
                         // Full halo: four diagonal white copies — a true
                         // outline, readable over any backdrop.
                         for (dx, dy) in [(-0.75, -0.75), (0.75, -0.75), (-0.75, 0.75), (0.75, 0.75)] {
-                            pc.text_faded(text.clone(), *x + dx, *y + dy, *tsize, [255, 255, 255], halo, font.clone(), *bounds);
+                            pc.text_faded(text.clone(), *x + dx, *y + dy, *tsize, self.halo_rgb, halo, font.clone(), *bounds);
                         }
                     } else if self.text_contrast <= 0.0 && self.text_relief > 0.0 {
                         // Letterpress underlay: a translucent white copy offset
@@ -2107,6 +2121,34 @@ mod tests {
         // What a segment reports before it has heard from the compositor,
         // and what an occluding window resolves to: assume unreadable.
         assert_eq!(halo_demand(BLACK_TEXT, (50, 100)), 1.0);
+    }
+
+    /// The same choice `rebuild_layout` makes, factored for the test.
+    fn halo_rgb_for(text_luma: f32) -> [u8; 3] {
+        if contrast_ratio(text_luma, 0.0) >= contrast_ratio(text_luma, 1.0) {
+            [0, 0, 0]
+        } else {
+            [255, 255, 255]
+        }
+    }
+
+    #[test]
+    fn the_halo_contrasts_with_the_text_not_with_a_fixed_assumption() {
+        // A white outline around white text is not a weaker treatment, it is
+        // an eraser — which is exactly what a light backdrop got before the
+        // halo color followed the text color.
+        assert_eq!(halo_rgb_for(WHITE_TEXT), [0, 0, 0]);
+        assert_eq!(halo_rgb_for(BLACK_TEXT), [255, 255, 255]);
+    }
+
+    #[test]
+    fn the_halo_crossover_follows_the_wcag_curve_not_the_midpoint() {
+        // Mid-gray text (luminance 0.5) reads far better against black than
+        // against white, so the crossover sits well below 0.5 — picking it by
+        // luminance midpoint would give half the gray range the wrong halo.
+        assert_eq!(halo_rgb_for(0.5), [0, 0, 0]);
+        assert_eq!(halo_rgb_for(0.25), [0, 0, 0]);
+        assert_eq!(halo_rgb_for(0.1), [255, 255, 255]);
     }
 
     #[test]

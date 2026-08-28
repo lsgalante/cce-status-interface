@@ -204,6 +204,15 @@ closes that loop with the compositor, which CAN see:
 3. `tick` eases `halo_now` toward that demand over ~120ms. Stepping straight
    to it makes the outline strobe as the desktop pans under the segment.
 
+The halo is drawn in whichever of black/white the TEXT reads against
+(`halo_rgb`, chosen by contrast ratio — the WCAG crossover is near 0.18, not
+0.5), not the fixed white the two legacy knobs use. An outline separates the
+glyphs from what is behind them, so it has to contrast with the glyphs: white
+around white text is not a weaker treatment, it is an eraser, which is exactly
+what light text over a light backdrop got before this followed the text color.
+(`text_relief` is still white-only; it is the manual knob, and it was written
+for dark text.)
+
 A window covering part of a segment is measured too — the compositor reads
 that window's own content over the overlapping strip and blends it with the
 desktop reading for the rest. `unknown` is left for content it genuinely
