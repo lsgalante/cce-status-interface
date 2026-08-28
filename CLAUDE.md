@@ -145,12 +145,20 @@ background_blur tint scaling still applies on top) and `module { text_color }`
 style — cce-ui's `Prim::Droplet`, shader mode 10; the key's PRESENCE enables
 it, its value is whitespace-separated `k=v` pairs onto `DropletSpec` — sag,
 belly, belly_w, blend, sheet_r, attach, clarity, dome, band, gleam, shine,
-rim, bow, curve, core; defaults = the oval dewdrop (no belly; attach 0.42 +
-sheet_r 0.58 fill the height so there is NO straight side; bow arcs the
-bottom; curve 2.6 = superellipse joins, so everything but the flat top is one
-continuous curve), belly>0 brings back the pendant-pool look —
-warn-and-skip on unknown keys; the expanded menu box becomes the drop growing,
-and drops inset 1px from the surface bottom for the silhouette's AA feather)
+rim, bow, curve, core, refr, ghost, shadow; defaults = the oval dewdrop (no
+belly; attach 0.42 + sheet_r 0.58 fill the height so there is NO straight
+side; bow arcs the bottom; curve 2.6 = superellipse joins, so everything but
+the flat top is one continuous curve), belly>0 brings back the pendant-pool
+look — warn-and-skip on unknown keys. Three of those knobs are not this
+side's: `refr` (rim refraction, logical px) and `ghost` (the inverted lens
+image in the belly) are read by the COMPOSITOR, whose scenefx droplet node
+bends the backdrop behind the drop — a Wayland client cannot see behind its
+own surface, so this side parses them and draws nothing. `shadow` (0-1, the
+contact shadow under the drop's lower arc) IS drawn here, and it is why the
+drop box does not fill the surface: the box is inset by 1px for the
+silhouette's AA feather plus `DropletSpec::shadow_gap()` for the shadow's
+falloff (`main.rs`, three call sites — left, right, and the expanded menu
+box, which becomes the drop growing))
 and `module { text_raise }` (lifts module text above vertical center, logical
 px, bar-side only — every module funnels through `centered_text_y`) and
 `module { text_scrim }` (0-1 resting opacity of a
