@@ -720,6 +720,7 @@ impl StatusModule for TrayModule {
                     Some(font_family.to_string()),
                     None,
                     None,
+                    Some(tw),
                 ));
             }
         }

@@ -164,6 +164,23 @@ fn halo_demand(text_luma: f32, (luma, spread): (u8, u8)) -> f32 {
         .max(contrast_deficit(text_luma, hi))
 }
 
+/// The color a treatment behind or around `rgb` text should be drawn in:
+/// whichever of black/white that text reads against.
+///
+/// Shared by the halo and the scrim, and applied PER RUN rather than from the
+/// configured module color, because a module may paint a run in something
+/// else entirely — the volume module's muted state uses the shared
+/// `disabled_color`, which on this DE is black. A black pool behind black
+/// text is the same mistake as a white halo around white text.
+fn treatment_rgb(rgb: [u8; 3]) -> [f32; 3] {
+    let luma = relative_luminance([rgb[0] as f32 / 255.0, rgb[1] as f32 / 255.0, rgb[2] as f32 / 255.0, 1.0]);
+    if contrast_ratio(luma, 0.0) >= contrast_ratio(luma, 1.0) {
+        [0.0, 0.0, 0.0]
+    } else {
+        [1.0, 1.0, 1.0]
+    }
+}
+
 /// The scrim's opacity: it rests at the configured `base` and deepens toward
 /// opaque as the measured backdrop demands more. `demand` is the same eased
 /// value the halo would have used, which is already zero when
@@ -173,12 +190,23 @@ fn scrim_alpha(base: f32, demand: f32) -> f32 {
     (base + (1.0 - base) * demand.clamp(0.0, 1.0)).clamp(0.0, 1.0)
 }
 
-/// How far the scrim fades out, logical px. Defaults to a quarter of the box
-/// height so the gradient scales with the bar, and is capped at half of each
-/// axis: the feather is drawn outside the solid core, so a larger one would
-/// leave the core inverted and the pool would vanish.
-fn scrim_feather(w: f32, h: f32, configured: Option<f32>) -> f32 {
-    configured.unwrap_or(h * 0.25).max(0.0).min(w / 2.0).min(h / 2.0)
+/// The pool for one text run: its solid core, and how far that core fades out.
+///
+/// The core is the run's own box grown by a hair — enough that the glyphs sit
+/// on solid ground rather than in the gradient — and the feather is drawn
+/// OUTSIDE it, so the visible pool is `core` plus `feather` in every
+/// direction. The default feather scales with the type rather than the bar,
+/// because what it has to cover is the text.
+fn text_scrim_geometry(x: f32, y: f32, run_w: f32, font_size: f32, configured: Option<f32>) -> (cce_ui::scene::layout::Rect, f32) {
+    const PAD: f32 = 2.0;
+    let feather = configured.unwrap_or(font_size * 0.4).max(0.0);
+    let core = cce_ui::scene::layout::Rect {
+        x: x - PAD,
+        y: y - PAD,
+        width: (run_w + PAD * 2.0).max(0.0),
+        height: (font_size + PAD * 2.0).max(0.0),
+    };
+    (core, feather)
 }
 
 /// The in-surface right-click menu: instead of spawning a popup process, the
@@ -355,11 +383,6 @@ struct StatusApp {
     /// Feather distance for that pool, logical px; None derives it from the
     /// box height.
     text_scrim_feather: Option<f32>,
-    /// The color the halo is drawn in — black or white, whichever the TEXT
-    /// reads against. A halo exists to separate the glyphs from what is
-    /// behind them, so it has to contrast with the glyphs; a white outline
-    /// around white text is not a weaker treatment, it is an eraser.
-    halo_rgb: [u8; 3],
     /// The halo strength actually being painted, eased toward the backdrop's
     /// demand in `tick`. Stepping straight to the target makes the outline
     /// snap on and off as the desktop pans under a segment, which reads as a
@@ -473,14 +496,6 @@ impl StatusApp {
         let spacing = read_status_module_spacing_from_config();
         let normal_color = read_normal_color_from_config().unwrap_or(color::TEXT_FG);
         self.text_luma = relative_luminance(normal_color);
-        // Whichever of black/white the text itself reads against — compared
-        // by contrast ratio rather than a luminance midpoint, because the
-        // WCAG curve does not put the crossover at 0.5.
-        self.halo_rgb = if contrast_ratio(self.text_luma, 0.0) >= contrast_ratio(self.text_luma, 1.0) {
-            [0, 0, 0]
-        } else {
-            [255, 255, 255]
-        };
         let sw_logical = if is_vertical { self.height as f32 } else { self.width as f32 };
         let bar_h = if is_vertical { self.width as f32 } else { read_status_height_from_config() };
 
@@ -763,6 +778,8 @@ impl StatusApp {
                     Some(font_family.clone()),
                     None,
                     None,
+                    // No scrim: the tooltip already sits on its own box.
+                    None,
                 ));
             }
         }
@@ -871,6 +888,8 @@ impl StatusApp {
                         Some(font_family.clone()),
                         None,
                         None,
+                        // Menu text sits on the expanded box; no scrim.
+                        None,
                     ));
 
                     let rows = menu.rows().to_vec();
@@ -909,6 +928,7 @@ impl StatusApp {
                                 iy + (h - font_size) / 2.0,
                                 if row.enabled { text_u8 } else { dim_u8 },
                                 Some(font_family.clone()),
+                                None,
                                 None,
                                 None,
                             ));
@@ -1175,7 +1195,12 @@ pub(crate) fn parse_ccectl_windows(output: &str) -> Vec<CcectlWindow> {
 }
 
 /// The frame's text as prim data: (text, size, x, y, color_u8, font, bounds, box-layout).
-pub(crate) type TextPrim = (String, f32, f32, f32, [u8; 3], Option<String>, Option<[f32; 4]>, Option<cce_ui::scene::paint::TextLayout>);
+/// The last field is the run's MEASURED width in logical px, when the emitter
+/// knew it — `draw_label` always does, since the label was built for its
+/// width. It is what lets the text scrim hug the run instead of the whole
+/// module box; `None` simply gets no scrim, which is right for the menu and
+/// tooltip text that sits on an opaque box already.
+pub(crate) type TextPrim = (String, f32, f32, f32, [u8; 3], Option<String>, Option<[f32; 4]>, Option<cce_ui::scene::paint::TextLayout>, Option<f32>);
 
 /// Emit a measured `StyledLabel` as a text-prim tuple, returning its width (like the legacy
 /// `StyledLabel::draw`). The label was built for its width; `into_prim` carries the source
@@ -1183,7 +1208,7 @@ pub(crate) type TextPrim = (String, f32, f32, f32, [u8; 3], Option<String>, Opti
 pub(crate) fn draw_label(prims: &mut Vec<TextPrim>, label: cce_ui::widget::StyledLabel, x: f32, y: f32) -> f32 {
     let w = label.w;
     let p = label.into_prim(x, y);
-    prims.push((p.text, p.size, p.x, p.y, p.color, p.font, None, p.layout));
+    prims.push((p.text, p.size, p.x, p.y, p.color, p.font, None, p.layout, Some(w)));
     w
 }
 
@@ -1276,7 +1301,6 @@ impl cce_ui::engine::Application for StatusApp {
             text_luma: 0.0,
             text_scrim: 0.0,
             text_scrim_feather: None,
-            halo_rgb: [255, 255, 255],
             halo_now: 0.0,
             text_prims: Vec::new(),
             scale_factor: 1.0,
@@ -1593,33 +1617,45 @@ impl cce_ui::engine::Application for StatusApp {
             }
         }
 
-        // The dark pool, painted over each module box and under everything
-        // the module draws into it. `Prim::Glow` is a feathered aura — solid
-        // through the core rect, falling off to nothing across `reach` — so
-        // the core is inset by exactly the feather and the gradient lands on
-        // the box edge instead of spilling past it.
+        // The dark pool: one per text run, hugging the run rather than the
+        // module box, so a module's own marks (the volume strikethrough, the
+        // battery bolt) keep the box's own ground instead of sitting in a
+        // pool meant for glyphs. `Prim::Glow` is a feathered aura — solid
+        // through its core rect, falling off to nothing across `reach`.
+        //
+        // Clipped to the box it belongs to. A run's pool is wider than the
+        // run and, on a 27px bar with 14px text, taller than the room above
+        // and below it; without the clip the feather would wash past the
+        // droplet's silhouette and hang in the air beside it.
         if self.text_scrim > 0.0 {
             // Rests at the configured opacity and deepens with the measured
             // demand; `halo_now` is already zero when text_contrast is off,
             // so without that knob this is a constant.
             let alpha = scrim_alpha(self.text_scrim, self.halo_now);
-            let mut pool = |x: f32, y: f32, w: f32, h: f32, radius: f32| {
-                let feather = scrim_feather(w, h, self.text_scrim_feather);
-                let rect = Rect {
-                    x: x + feather,
-                    y: y + feather,
-                    width: (w - feather * 2.0).max(0.0),
-                    height: (h - feather * 2.0).max(0.0),
-                };
-                if rect.width > 0.0 && rect.height > 0.0 {
-                    pc.glow(rect, (radius - feather).max(0.0), feather, [0.0, 0.0, 0.0, alpha]);
-                }
+            let feather_cfg = self.text_scrim_feather;
+            let runs = &self.text_prims;
+            let pools_in = |pc: &mut cce_ui::scene::paint::PaintCtx, bx: f32, by: f32, bw: f32, bh: f32, radius: f32| {
+                let box_rect = Rect { x: bx, y: by, width: bw, height: bh };
+                pc.clip_rounded(box_rect, radius, |pc| {
+                    for (_, tsize, x, y, color, _, _, _, run_w) in runs {
+                        let Some(rw) = *run_w else { continue };
+                        // Runs belong to the box they sit in; a segment with
+                        // an expanded menu has text in both.
+                        let (cx, cy) = (x + rw * 0.5, y + tsize * 0.5);
+                        if cx < bx || cx > bx + bw || cy < by || cy > by + bh {
+                            continue;
+                        }
+                        let (core, feather) = text_scrim_geometry(*x, *y, rw, *tsize, feather_cfg);
+                        let c = treatment_rgb(*color);
+                        pc.glow(core, core.height * 0.5, feather, [c[0], c[1], c[2], alpha]);
+                    }
+                });
             };
             for &(x, y, w, h, _) in &self.droplet_boxes {
-                pool(x, y, w, h, h * 0.5);
+                pools_in(&mut pc, x, y, w, h, h * 0.5);
             }
             for rb in &self.rounded_boxes {
-                pool(rb.x, rb.y, rb.w, rb.h, rb.radius);
+                pools_in(&mut pc, rb.x, rb.y, rb.w, rb.h, rb.radius);
             }
         }
 
@@ -1629,7 +1665,7 @@ impl cce_ui::engine::Application for StatusApp {
             pc.quad(Rect { x: r.x, y: r.y, width: r.w, height: r.h }, r.color);
         }
 
-        for (text, tsize, x, y, color, font, bounds, layout) in &self.text_prims {
+        for (text, tsize, x, y, color, font, bounds, layout, _run_w) in &self.text_prims {
             match layout {
                 Some(l) => pc.text_boxed(text.clone(), *x, *y, *tsize, *color, font.clone(), *bounds, cce_ui::scene::paint::TextAttrs::default(), *l),
                 None => {
@@ -1650,7 +1686,9 @@ impl cce_ui::engine::Application for StatusApp {
                         // Full halo: four diagonal white copies — a true
                         // outline, readable over any backdrop.
                         for (dx, dy) in [(-0.75, -0.75), (0.75, -0.75), (-0.75, 0.75), (0.75, 0.75)] {
-                            pc.text_faded(text.clone(), *x + dx, *y + dy, *tsize, self.halo_rgb, halo, font.clone(), *bounds);
+                            let hc = treatment_rgb(*color);
+                            let hrgb = [(hc[0] * 255.0) as u8, (hc[1] * 255.0) as u8, (hc[2] * 255.0) as u8];
+                            pc.text_faded(text.clone(), *x + dx, *y + dy, *tsize, hrgb, halo, font.clone(), *bounds);
                         }
                     } else if self.text_scrim <= 0.0 && self.text_contrast <= 0.0 && self.text_relief > 0.0 {
                         // Letterpress underlay: a translucent white copy offset
@@ -2189,32 +2227,38 @@ mod tests {
         assert_eq!(halo_demand(BLACK_TEXT, (50, 100)), 1.0);
     }
 
-    /// The same choice `rebuild_layout` makes, factored for the test.
-    fn halo_rgb_for(text_luma: f32) -> [u8; 3] {
-        if contrast_ratio(text_luma, 0.0) >= contrast_ratio(text_luma, 1.0) {
-            [0, 0, 0]
-        } else {
-            [255, 255, 255]
-        }
-    }
+    const BLACK: [f32; 3] = [0.0, 0.0, 0.0];
+    const WHITE: [f32; 3] = [1.0, 1.0, 1.0];
 
     #[test]
-    fn the_halo_contrasts_with_the_text_not_with_a_fixed_assumption() {
+    fn a_treatment_contrasts_with_the_text_not_with_a_fixed_assumption() {
         // A white outline around white text is not a weaker treatment, it is
-        // an eraser — which is exactly what a light backdrop got before the
-        // halo color followed the text color.
-        assert_eq!(halo_rgb_for(WHITE_TEXT), [0, 0, 0]);
-        assert_eq!(halo_rgb_for(BLACK_TEXT), [255, 255, 255]);
+        // an eraser — which is exactly what a light backdrop got before this
+        // followed the text color. The same holds for a black pool behind
+        // black text.
+        assert_eq!(treatment_rgb([255, 255, 255]), BLACK);
+        assert_eq!(treatment_rgb([0, 0, 0]), WHITE);
     }
 
     #[test]
-    fn the_halo_crossover_follows_the_wcag_curve_not_the_midpoint() {
-        // Mid-gray text (luminance 0.5) reads far better against black than
-        // against white, so the crossover sits well below 0.5 — picking it by
-        // luminance midpoint would give half the gray range the wrong halo.
-        assert_eq!(halo_rgb_for(0.5), [0, 0, 0]);
-        assert_eq!(halo_rgb_for(0.25), [0, 0, 0]);
-        assert_eq!(halo_rgb_for(0.1), [255, 255, 255]);
+    fn the_treatment_is_chosen_per_run_so_an_odd_colored_module_is_safe() {
+        // The volume module paints its muted state in the shared
+        // disabled_color, which on this DE is black, while every other run is
+        // the configured white. One bar, both answers.
+        assert_eq!(treatment_rgb([255, 255, 255]), BLACK);
+        assert_eq!(treatment_rgb([0, 0, 0]), WHITE);
+        // A mid accent color still resolves rather than landing in between.
+        assert!(matches!(treatment_rgb([125, 222, 143]), BLACK | WHITE));
+    }
+
+    #[test]
+    fn the_treatment_crossover_follows_the_wcag_curve_not_the_midpoint() {
+        // Mid-gray (sRGB 128) is luminance ~0.22, which reads better against
+        // black than white — so the crossover sits well below the halfway
+        // byte, and picking it by midpoint would give a swathe of grays the
+        // wrong treatment.
+        assert_eq!(treatment_rgb([128, 128, 128]), BLACK);
+        assert_eq!(treatment_rgb([80, 80, 80]), WHITE);
     }
 
     #[test]
@@ -2236,18 +2280,37 @@ mod tests {
     }
 
     #[test]
-    fn the_feather_defaults_to_a_quarter_of_the_box_height() {
-        assert_eq!(scrim_feather(200.0, 28.0, None), 7.0);
+    fn the_pool_hugs_the_run_not_the_box() {
+        // A 60px run inside a 300px module box: the pool has to be sized off
+        // the run, or it is the box treatment again under a new name.
+        let (core, feather) = text_scrim_geometry(100.0, 7.0, 60.0, 14.0, None);
+        assert_eq!(core.x, 98.0);
+        assert_eq!(core.width, 64.0);
+        assert!(core.width + feather * 2.0 < 300.0);
     }
 
     #[test]
-    fn the_feather_cannot_swallow_the_core_it_surrounds() {
-        // Drawn OUTSIDE the solid core, so a feather past half of either axis
-        // would invert the core and the pool would disappear entirely —
-        // exactly where a narrow module (a lone icon) lands.
-        assert_eq!(scrim_feather(10.0, 28.0, Some(40.0)), 5.0);
-        assert_eq!(scrim_feather(200.0, 28.0, Some(40.0)), 14.0);
-        assert_eq!(scrim_feather(200.0, 28.0, Some(-3.0)), 0.0);
+    fn the_default_feather_scales_with_the_type_not_the_bar() {
+        // What the pool has to cover is the text, so a bigger font gets a
+        // bigger falloff at the same bar height.
+        let (_, small) = text_scrim_geometry(0.0, 0.0, 50.0, 14.0, None);
+        let (_, large) = text_scrim_geometry(0.0, 0.0, 50.0, 28.0, None);
+        assert!(large > small, "{} !> {}", large, small);
+        assert_eq!(small, 5.6);
+    }
+
+    #[test]
+    fn the_core_leaves_the_glyphs_on_solid_ground() {
+        // The run's own box, grown a little: glyph edges must not land in the
+        // gradient, which is where a scrim starts looking like a smudge.
+        let (core, _) = text_scrim_geometry(10.0, 5.0, 40.0, 14.0, None);
+        assert!(core.y < 5.0 && core.height > 14.0);
+    }
+
+    #[test]
+    fn a_configured_feather_is_honored_and_never_negative() {
+        assert_eq!(text_scrim_geometry(0.0, 0.0, 40.0, 14.0, Some(9.0)).1, 9.0);
+        assert_eq!(text_scrim_geometry(0.0, 0.0, 40.0, 14.0, Some(-3.0)).1, 0.0);
     }
 
     #[test]

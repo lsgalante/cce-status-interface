@@ -157,8 +157,8 @@ px, bar-side only — every module funnels through `centered_text_y`) and
 white copy 0.75px down-right beneath each non-boxed text run — engraved text,
 guaranteed contrast on dark backdrops) and `module { text_halo }` (full white
 outline 0-1: FOUR diagonal white copies around each run; beats text_relief
-when set) and `module { text_scrim }` (0-1 opacity of a dark
-feathered pool behind each module's content; beats the halo when set) and
+when set) and `module { text_scrim }` (0-1 opacity of a
+feathered pool hugging each text run; beats the halo when set) and
 `module { text_scrim_feather }` (that pool's falloff in logical px, default a
 quarter of the box height) and `module { text_contrast }` (adaptive contrast 0-1, default 0 =
 off — when set it SUPERSEDES both fixed knobs above and drives the halo from
@@ -208,23 +208,29 @@ closes that loop with the compositor, which CAN see:
    to it makes the outline strobe as the desktop pans under the segment.
 
 `module { text_scrim }` is the alternative treatment, and supersedes the halo
-when set: a dark feathered pool (`cce_ui`'s `Prim::Glow` — solid through a
-core rect, falling off to nothing across `text_scrim_feather` px, tessellated
-as per-vertex-alpha rings so there is no banding) painted over each module box
-and under everything the module draws into it. Where the halo rims every
-letterform, this darkens the ground they sit on. It rests at the configured
-opacity and `text_contrast` deepens it from there, so it is a constant when
-that knob is off. The core is inset by exactly the feather, which is why the
-gradient lands on the box edge rather than spilling past it.
+when set: a feathered pool (`cce_ui`'s `Prim::Glow` — solid through a core
+rect, falling off to nothing across `text_scrim_feather` px, tessellated as
+per-vertex-alpha rings so there is no banding) drawn per TEXT RUN, hugging the
+run rather than the module box. Where the halo rims every letterform, this
+darkens the ground they sit on. It rests at the configured opacity and
+`text_contrast` deepens it from there, so it is a constant when that knob is
+off.
 
-The halo is drawn in whichever of black/white the TEXT reads against
-(`halo_rgb`, chosen by contrast ratio — the WCAG crossover is near 0.18, not
-0.5), not the fixed white the two legacy knobs use. An outline separates the
-glyphs from what is behind them, so it has to contrast with the glyphs: white
-around white text is not a weaker treatment, it is an eraser, which is exactly
-what light text over a light backdrop got before this followed the text color.
-(`text_relief` is still white-only; it is the manual knob, and it was written
-for dark text.)
+The run's measured width rides `TextPrim`'s last field, which is what makes
+the hug possible; a run with no width (menu and tooltip text, already on an
+opaque box) simply gets no pool. Each pool is clipped to its module box
+(`clip_rounded`): a pool is wider than its run and, on a 27px bar with 14px
+text, taller than the room above and below it, so without the clip the feather
+would wash past the droplet's silhouette and hang in the air beside it.
+
+Both treatments take their color from `treatment_rgb` — whichever of
+black/white the run reads against, by contrast ratio (the WCAG crossover is
+near 0.18, not 0.5). Applied PER RUN, not from the configured module color: a
+module may paint a run in something else entirely, and the volume module's
+muted state uses the shared `disabled_color`, which on this DE is black. A
+white halo around white text, or a black pool behind black text, is not a
+weaker treatment — it is an eraser. (`text_relief` is still white-only; it is
+the manual knob, and it was written for dark text.)
 
 A window covering part of a segment is measured too — the compositor reads
 that window's own content over the overlapping strip and blends it with the
