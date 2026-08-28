@@ -205,14 +205,13 @@ pub(crate) fn read_text_contrast_from_config() -> f32 {
 
 /// `module { text_scrim }` — opacity 0-1 of a dark feathered pool drawn
 /// inside each module box, beneath everything the module paints (0 = off,
-/// the default). Where the halo outlines the glyphs, this darkens the ground
-/// they sit on, which is the treatment that survives a busy backdrop without
-/// putting a rim on every letterform.
+/// the default). It darkens the ground the glyphs sit on rather than
+/// decorating the letterforms, which is what survives a busy backdrop
+/// without putting a rim on every letterform.
 ///
-/// It SUPERSEDES the halo when set — two contrast treatments at once is one
-/// too many — and `module { text_contrast }` still applies on top: the scrim
-/// rests at this opacity and deepens toward opaque as the measured backdrop
-/// demands more.
+/// The DE's one text-contrast treatment, and `module { text_contrast }`
+/// applies on top: the scrim rests at this opacity and deepens toward
+/// opaque as the measured backdrop demands more.
 pub(crate) fn read_text_scrim_from_config() -> f32 {
     cfg_f32("/module/text_scrim").unwrap_or(0.0).clamp(0.0, 1.0)
 }

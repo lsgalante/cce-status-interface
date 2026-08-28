@@ -167,11 +167,10 @@ fn contrast_demand(text_luma: f32, (luma, spread): (u8, u8)) -> f32 {
 /// The color a treatment behind or around `rgb` text should be drawn in:
 /// whichever of black/white that text reads against.
 ///
-/// Shared by the halo and the scrim, and applied PER RUN rather than from the
-/// configured module color, because a module may paint a run in something
-/// else entirely — the volume module's muted state uses the shared
-/// `disabled_color`, which on this DE is black. A black pool behind black
-/// text is the same mistake as a white halo around white text.
+/// Used by the scrim, and applied PER RUN rather than from the configured
+/// module color, because a module may paint a run in something else entirely
+/// — the volume module's muted state uses the shared `disabled_color`. A
+/// black pool behind black text is not a weaker treatment, it is an eraser.
 fn treatment_rgb(rgb: [u8; 3]) -> [f32; 3] {
     let luma = relative_luminance([rgb[0] as f32 / 255.0, rgb[1] as f32 / 255.0, rgb[2] as f32 / 255.0, 1.0]);
     if contrast_ratio(luma, 0.0) >= contrast_ratio(luma, 1.0) {
@@ -182,10 +181,10 @@ fn treatment_rgb(rgb: [u8; 3]) -> [f32; 3] {
 }
 
 /// The scrim's opacity: it rests at the configured `base` and deepens toward
-/// opaque as the measured backdrop demands more. `demand` is the same eased
-/// value the halo would have used, which is already zero when
-/// `module { text_contrast }` is off — so without that knob the scrim is a
-/// constant, which is the point of having it.
+/// opaque as the measured backdrop demands more. `demand` is the eased
+/// `contrast_now`, which is already zero when `module { text_contrast }` is
+/// off — so without that knob the scrim is a constant, which is the point of
+/// having it.
 fn scrim_alpha(base: f32, demand: f32) -> f32 {
     (base + (1.0 - base) * demand.clamp(0.0, 1.0)).clamp(0.0, 1.0)
 }
@@ -387,7 +386,7 @@ struct StatusApp {
     /// frame and the color changes about never.
     text_luma: f32,
     /// Dark feathered pool behind each module's content (0 = off) — see
-    /// `read_text_scrim_from_config`. Supersedes the halo when set.
+    /// `read_text_scrim_from_config`. The DE's one text-contrast treatment.
     text_scrim: f32,
     /// Feather distance for that pool, logical px; None derives it from the
     /// box height.
@@ -2188,14 +2187,14 @@ mod tests {
     const WHITE_TEXT: f32 = 1.0;
 
     #[test]
-    fn dark_text_on_a_light_uniform_backdrop_wants_no_halo() {
+    fn dark_text_on_a_light_uniform_backdrop_wants_no_scrim() {
         // The case that must stay untouched: the bar already reads fine, so
         // an adaptive scheme that decorates it anyway is worse than nothing.
         assert_eq!(contrast_demand(BLACK_TEXT, (100, 0)), 0.0);
     }
 
     #[test]
-    fn dark_text_on_a_dark_uniform_backdrop_wants_a_full_halo() {
+    fn dark_text_on_a_dark_uniform_backdrop_wants_a_full_scrim() {
         // Black text over a black grid cell — invisible, and the whole
         // reason for the feature.
         assert_eq!(contrast_demand(BLACK_TEXT, (0, 0)), 1.0);
@@ -2210,7 +2209,7 @@ mod tests {
     }
 
     #[test]
-    fn a_comfortable_mean_over_a_split_backdrop_still_wants_a_halo() {
+    fn a_comfortable_mean_over_a_split_backdrop_still_wants_a_scrim() {
         // Half black cell, half light gap: the mean alone says "mid-gray,
         // fine" while the text is invisible over one half. Checking the
         // spread's ends is what catches it.
@@ -2243,8 +2242,11 @@ mod tests {
     #[test]
     fn the_treatment_is_chosen_per_run_so_an_odd_colored_module_is_safe() {
         // The volume module paints its muted state in the shared
-        // disabled_color, which on this DE is black, while every other run is
-        // the configured white. One bar, both answers.
+        // disabled_color while every other run is the configured white, and
+        // the two need not land on the same answer. They happen to today —
+        // disabled_color is a light red, picked so the muted run keeps the
+        // same dark pool as its neighbors — so the endpoints below stand in
+        // for a palette that could part them again.
         assert_eq!(treatment_rgb([255, 255, 255]), BLACK);
         assert_eq!(treatment_rgb([0, 0, 0]), WHITE);
         // A mid accent color still resolves rather than landing in between.
@@ -2265,7 +2267,7 @@ mod tests {
     fn the_scrim_is_constant_without_the_adaptive_knob() {
         // text_contrast off leaves `demand` at zero, and the scrim is then
         // exactly what was configured — a fixed dark ground, which is the
-        // whole reason to prefer it to the halo.
+        // whole reason it can stand alone as a treatment.
         assert_eq!(scrim_alpha(0.55, 0.0), 0.55);
         assert_eq!(scrim_alpha(0.0, 0.0), 0.0);
     }
@@ -2349,7 +2351,7 @@ mod tests {
     #[test]
     fn parse_backdrop_rejects_out_of_range_but_tolerates_extra_fields() {
         // Out of protocol is unknown, not clamped — clamping a bad luma to
-        // 100 would read as "bright and uniform" and switch the halo off.
+        // 100 would read as "bright and uniform" and switch the scrim off.
         assert_eq!(crate::listeners::parse_backdrop("200 200"), (50, 100));
         assert_eq!(crate::listeners::parse_backdrop("101 0"), (50, 100));
         // Room for the compositor to grow the line without the bar

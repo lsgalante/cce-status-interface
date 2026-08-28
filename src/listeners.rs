@@ -79,9 +79,9 @@ pub(crate) async fn spawn_status_listener(sub: String, sender: calloop::channel:
 ///
 /// Anything unreadable — the literal "unknown", a truncated line, a future
 /// compositor's extra fields — reports the worst case: mid luminance and full
-/// spread, which drives the outline. Guessing "uniform and bright" from a
+/// spread, which drives the scrim. Guessing "uniform and bright" from a
 /// line we failed to understand would silently turn the treatment OFF, and
-/// unreadable text is a worse failure than an unnecessary halo.
+/// unreadable text is a worse failure than an unnecessary scrim.
 pub(crate) fn parse_backdrop(line: &str) -> (u8, u8) {
     const UNKNOWN: (u8, u8) = (50, 100);
     let mut parts = line.split_whitespace();

@@ -18,7 +18,7 @@ and the `cce-ui` toolkit this app is built on. This crate is deliberately small:
 
 ```sh
 cargo build --release                 # standalone build (or `-p cce-status-interface` from the workspace root)
-cargo test                            # the tests live in main.rs (e.g. test_status_config)
+cargo test                            # 40 tests: main.rs (contrast, parsers), config.rs, tray.rs
 make install                          # installs ../target/release/cce-status-interface to ~/.local/bin
 ```
 
@@ -48,7 +48,10 @@ The compositor places each segment by its Wayland `app_id`, computed in
 prefix is used instead — keep both spellings in mind when matching app_ids. A module's
 side comes from the config (`get_module_side`, which also maps snap positions like
 `top-left`/`bottom-right` to left/right); default is `window` → left, everything else →
-right.
+right. **`light_source` is the exception**: it short-circuits ahead of all of
+that and takes its side from `/window_manager/light_source_position` — the
+angle points at a side — so a `layout { status_bar light_source=… }` entry is
+read and then ignored, which looks like the key not working.
 
 ## Rendering
 
@@ -76,9 +79,16 @@ in `new()` — which tasks run depends on the selected module, so a clock proces
 listen to tray D-Bus, etc.:
 
 - **Compositor status feed** (`spawn_status_listener`): connects to
-  `/tmp/cce-status[-interface]-{WAYLAND_DISPLAY}.sock`, subscribes to `layout`,
-  `title`, `modifiers`, `dismiss` (line-oriented, auto-reconnects every 1s).
-  (The old `viewport` topic is gone with the viewport-tag feature.)
+  `/tmp/cce-status[-interface]-{WAYLAND_DISPLAY}.sock` and subscribes, one task
+  per topic, line-oriented — `layout` and `title` only in the process that owns
+  the window module, `dismiss` and `backdrop` in every one. Reconnects back off
+  1s doubling to 30s, reset the moment a connection delivers a line: a
+  compositor that does not know a topic drops the subscription on sight, so a
+  flat retry made a bar running ahead of its compositor reconnect once a second
+  from every module process, forever. The compositor also offers `modifiers`
+  (`status_server.rs`), but nothing here subscribes to it and the match over
+  topics ends in `unreachable!()` — adding a subscription means adding its arm
+  first. (The old `viewport` topic is gone with the viewport-tag feature.)
 - **System stats** (`spawn_system_stats`): `/proc/stat`, `/proc/meminfo`,
   `/sys/class/power_supply/BAT*`, `/sys/class/backlight`, and `pactl` for volume/mute.
 - **Tray** (`spawn_status_tray`): a full StatusNotifierItem/Watcher host over `zbus`,
@@ -193,9 +203,9 @@ Color space (one rule, enforced in `config.rs`): **text colors stay raw sRGB**
 (`text_color_from` — cosmic-text consumes sRGB `[u8; 3]`), **quad/box colors
 are linearized** (`quad_color_from` via `cce_ui::color::parse_hex_rgba_linear`,
 for the Vulkan pipeline). No local gamma math — the old scattered `.powf(2.2)`
-is gone; `test_text_colors_stay_srgb_and_quad_colors_are_linearized` is the
-spec. Config changes are picked up by polling the file mtime in `tick()`, so
-there is no reload event to wire up.
+is gone; `text_colors_stay_srgb_and_quad_colors_are_linearized`, in
+`config.rs`, is the spec. Config changes are picked up by polling the file
+mtime in `tick()`, so there is no reload event to wire up.
 
 ## Adaptive text contrast
 
@@ -254,7 +264,7 @@ cannot read (no committed buffer, an unsupported read format).
 
 Failures resolve toward legible in every direction: an unparseable or absent
 line reads as `(50, 100)` — mid luminance, full spread — which drives the
-outline rather than switching it off.
+scrim rather than switching it off.
 
 ## Interactions worth knowing before touching input code
 
