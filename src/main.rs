@@ -1631,16 +1631,16 @@ impl cce_ui::engine::Application for StatusApp {
             }
         }
 
-        // The pool, one per module box — it fills the bubble rather than
+        // The pool, one per module box, filling the bubble rather than
         // hugging the run inside it, so a segment reads as one darkened
-        // lozenge instead of a pill within a pill. `Prim::Glow` is a
-        // feathered aura, solid through its core rect and falling off to
-        // nothing across `reach`, so insetting the core by exactly the
-        // feather lands the gradient's outer edge on the bubble's own edge.
+        // lozenge instead of a pill within a pill.
         //
-        // Still clipped to the box: the inset makes spill unlikely, not
-        // impossible, and a droplet's silhouette is narrower than its box at
-        // the corners.
+        // Two shapes, because "the bubble" is two different things: a droplet
+        // module gets a pool of the droplet's own silhouette (below), while a
+        // plain rounded box gets `Prim::Glow` — a feathered aura, solid
+        // through its core rect and falling off across `reach`, so insetting
+        // the core by exactly the feather lands the gradient's outer edge on
+        // the box's own edge.
         if self.text_scrim > 0.0 {
             // Rests at the configured opacity and deepens with the measured
             // demand; `halo_now` is already zero when text_contrast is off,
@@ -1670,9 +1670,22 @@ impl cce_ui::engine::Application for StatusApp {
                     pc.glow(core, (radius - feather).max(0.0), feather, [c[0], c[1], c[2], alpha]);
                 });
             };
-            for &(x, y, w, h, _) in &self.droplet_boxes {
-                pool_in(&mut pc, x, y, w, h, h * 0.5);
+            // A droplet bubble gets a pool of its OWN silhouette, not a
+            // rounded-rect stand-in: cce-ui's `Prim::DropletScrim` runs the
+            // droplet's shader path with the same spec, filled flat and
+            // feathered inward, so the vignette's edge is the drop's edge by
+            // construction rather than by approximation.
+            if let Some(spec) = self.droplet {
+                for &(x, y, w, h, _) in &self.droplet_boxes {
+                    let rect = Rect { x, y, width: w, height: h };
+                    let Some(color) = dominant_run_color(runs, x, y, w, h) else { continue };
+                    let c = treatment_rgb(color);
+                    let feather = scrim_feather(w, h, feather_cfg);
+                    pc.droplet_scrim(rect, [c[0], c[1], c[2], alpha], spec, feather);
+                }
             }
+            // Everything else is genuinely a rounded rect, so a rounded-rect
+            // pool IS its exact shape.
             for rb in &self.rounded_boxes {
                 pool_in(&mut pc, rb.x, rb.y, rb.w, rb.h, rb.radius);
             }

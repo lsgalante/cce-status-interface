@@ -215,11 +215,15 @@ the halo rims every letterform, this darkens the ground they sit on. It rests
 at the configured opacity and `text_contrast` deepens it from there, so it is
 a constant when that knob is off.
 
-One pool per bubble, not per text run: the core is inset by exactly the
-feather, so the gradient's outer edge lands on the bubble's own edge and a
-segment reads as one darkened lozenge rather than a pill inside a pill. It is
-still clipped to the box (`clip_rounded`) — the inset makes spill unlikely,
-not impossible.
+One pool per bubble, not per text run, so a segment reads as one darkened
+lozenge rather than a pill inside a pill. Its shape is the bubble's ACTUAL
+shape, which means two paths: a droplet module gets `Prim::DropletScrim`
+(cce-ui shader mode 12 — the droplet's own SDF under the same `DropletSpec`,
+filled flat and feathered inward, so the vignette's edge is the drop's edge by
+construction), while a plain rounded box gets `Prim::Glow` with its core inset
+by exactly the feather, which lands the gradient's outer edge on the box edge.
+The rounded-rect pool is clipped to its box; the droplet one needs no clip,
+since the shader cannot draw outside the silhouette it is evaluating.
 
 A box with no measured text gets no pool at all (the tray is icons; there is
 nothing to ground). That, and the pool's color, come from
