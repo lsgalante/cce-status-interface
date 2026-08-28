@@ -329,10 +329,10 @@ impl StatusModule for VolumeModule {
         font_size: f32,
         normal_color: [f32; 4],
         bar_h: f32,
-        scale_factor: f64,
+        _scale_factor: f64,
         text_prims: &mut Vec<crate::TextPrim>,
         _rects: &mut Vec<RectWidget>,
-        overlay_rects: &mut Vec<RectWidget>,
+        _overlay_rects: &mut Vec<RectWidget>,
         _tray_items: &HashMap<String, TrayItem>,
         _tray_item_bounds: &mut Vec<TrayIconBounds>,
         _box_bg_color: Option<[f32; 4]>,
@@ -348,20 +348,8 @@ impl StatusModule for VolumeModule {
                 } else {
                     normal_color
                 };
-                let label = Label::new_with_family(font_system, &s.volume, font_size, color_val, font_family)
-                    .with_strikethrough(is_muted);
-                let draw_x = x + padding;
-                let start_y = centered_text_y(bar_h, font_size);
-                if let Some((sx, sy, sw_rect, sh_rect, scol)) = label.strikethrough_rect(draw_x, start_y, scale_factor as f32) {
-                    overlay_rects.push(RectWidget {
-                        x: sx,
-                        y: sy,
-                        w: sw_rect,
-                        h: sh_rect,
-                        color: color::to_linear(scol),
-                    });
-                }
-                crate::draw_label(text_prims, label, draw_x, start_y);
+                let label = Label::new_with_family(font_system, &s.volume, font_size, color_val, font_family);
+                crate::draw_label(text_prims, label, x + padding, centered_text_y(bar_h, font_size));
             }
         }
     }
