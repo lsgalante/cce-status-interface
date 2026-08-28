@@ -191,32 +191,14 @@ pub(crate) fn read_text_raise_from_config() -> f32 {
     cfg_f32("/module/text_raise").unwrap_or(0.0)
 }
 
-/// `module { text_relief }` — letterpress underlay strength (0 = off, 1 =
-/// opaque): each module text run gets a white copy offset ~0.75px down-right
-/// BENEATH the glyphs, so dark text keeps a lit edge on dark backdrops (the
-/// engraved-text treatment, matching the DE's relief language). Bar-side only.
-pub(crate) fn read_text_relief_from_config() -> f32 {
-    cfg_f32("/module/text_relief").unwrap_or(0.0).clamp(0.0, 1.0)
-}
-
-/// `module { text_halo }` — full white outline strength (0 = off, 1 = opaque):
-/// four translucent white copies at the diagonal offsets ±0.75px around each
-/// module text run, a true halo readable over any backdrop. When set it
-/// replaces the single-offset `text_relief` underlay.
-pub(crate) fn read_text_halo_from_config() -> f32 {
-    cfg_f32("/module/text_halo").unwrap_or(0.0).clamp(0.0, 1.0)
-}
-
 /// `module { text_contrast }` — adaptive contrast strength (0 = off, the
-/// default; 1 = full). When set, the compositor's per-segment `backdrop`
-/// measurement drives the halo instead of `text_halo`'s fixed strength: the
-/// outline appears only over a backdrop the configured text color cannot
-/// carry, and its strength tracks how badly it is losing. Bar-side only.
+/// default; 1 = full). The compositor's per-segment `backdrop` measurement
+/// drives the scrim through it: the ground darkens only as far as a backdrop
+/// the configured text color cannot carry demands, and its strength tracks
+/// how badly the text is losing. Bar-side only.
 ///
-/// This is the knob that makes `text_relief`/`text_halo` unnecessary rather
-/// than a constant tax — those stay as the manual override for a session
-/// with no backdrop feed (an older compositor), which is why they are not
-/// deprecated by it.
+/// On its own it makes the scrim appear only when the backdrop earns it;
+/// alongside `module { text_scrim }` it deepens that resting ground.
 pub(crate) fn read_text_contrast_from_config() -> f32 {
     cfg_f32("/module/text_contrast").unwrap_or(0.0).clamp(0.0, 1.0)
 }

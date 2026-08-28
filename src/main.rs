@@ -145,7 +145,7 @@ fn contrast_deficit(text: f32, bg: f32) -> f32 {
     ((AA - contrast_ratio(text, bg)) / (AA - 1.0)).clamp(0.0, 1.0)
 }
 
-/// How much outline text of luminance `text_luma` needs over a backdrop
+/// How much help text of luminance `text_luma` needs over a backdrop
 /// measured as `(luma, spread)`, 0 (none) to 1 (as much as the knob allows).
 ///
 /// Contrast is checked at BOTH ends of the spread as well as at the mean, and
@@ -154,7 +154,7 @@ fn contrast_deficit(text: f32, bg: f32) -> f32 {
 /// unreadable over one of the two halves. Checking only the mean is the
 /// mistake that would make an adaptive scheme look broken exactly where the
 /// fixed one already worked.
-fn halo_demand(text_luma: f32, (luma, spread): (u8, u8)) -> f32 {
+fn contrast_demand(text_luma: f32, (luma, spread): (u8, u8)) -> f32 {
     let mid = luma as f32 / 100.0;
     let half = (spread as f32 / 100.0) / 2.0;
     let lo = (mid - half).clamp(0.0, 1.0);
@@ -372,15 +372,10 @@ struct StatusApp {
     /// first so module content sits on the drop.
     droplet_boxes: Vec<(f32, f32, f32, f32, [f32; 4])>,
     droplet: Option<cce_ui::scene::paint::DropletSpec>,
-    /// Letterpress underlay strength for module text (0 = off) — see
-    /// `read_text_relief_from_config`.
-    text_relief: f32,
-    /// Full white outline strength (0 = off); beats `text_relief` when set —
-    /// see `read_text_halo_from_config`.
-    text_halo: f32,
     /// Adaptive-contrast strength (0 = off) — see
-    /// `read_text_contrast_from_config`. When on it supersedes the two fixed
-    /// knobs above, driving the halo from the measured backdrop instead.
+    /// `read_text_contrast_from_config`. Deepens the scrim as the measured
+    /// backdrop demands more; on its own (no `text_scrim`) it makes the scrim
+    /// appear only when it is needed.
     text_contrast: f32,
     /// The compositor's last `backdrop` push for this segment: (luma,
     /// spread), both 0-100. Starts at the worst case, so a segment that
@@ -397,11 +392,11 @@ struct StatusApp {
     /// Feather distance for that pool, logical px; None derives it from the
     /// box height.
     text_scrim_feather: Option<f32>,
-    /// The halo strength actually being painted, eased toward the backdrop's
-    /// demand in `tick`. Stepping straight to the target makes the outline
-    /// snap on and off as the desktop pans under a segment, which reads as a
-    /// flicker rather than as an adaptation.
-    halo_now: f32,
+    /// The contrast demand actually in effect, eased toward the backdrop's
+    /// in `tick`. Stepping straight to the target makes the scrim pulse as
+    /// the desktop pans under a segment, which reads as a flicker rather than
+    /// as an adaptation.
+    contrast_now: f32,
     text_prims: Vec<TextPrim>,
 
     scale_factor: f64,
@@ -454,7 +449,7 @@ impl StatusApp {
         status_app_id(selected)
     }
 
-    /// The halo strength this segment's measured backdrop calls for, 0-1.
+    /// The contrast help this segment's measured backdrop calls for, 0-1.
     ///
     /// The compositor reports a mean luminance and a spread. Contrast is
     /// checked at BOTH ends of that spread as well as at the mean, and the
@@ -463,11 +458,11 @@ impl StatusApp {
     /// is still unreadable over one of the two halves. Checking only the mean
     /// is the mistake that makes an adaptive scheme look broken exactly where
     /// a fixed one already worked.
-    fn backdrop_halo_target(&self) -> f32 {
+    fn backdrop_contrast_demand(&self) -> f32 {
         if self.text_contrast <= 0.0 {
             return 0.0;
         }
-        halo_demand(self.text_luma, self.backdrop) * self.text_contrast
+        contrast_demand(self.text_luma, self.backdrop) * self.text_contrast
     }
 
     fn is_vertical(&self) -> bool {
@@ -530,8 +525,6 @@ impl StatusApp {
         self.box_bevel_depth = read_status_box_bevel_depth_from_config();
         self.droplet = read_droplet_from_config();
         self.droplet_boxes.clear();
-        self.text_relief = read_text_relief_from_config();
-        self.text_halo = read_text_halo_from_config();
         self.text_contrast = read_text_contrast_from_config();
         self.text_scrim = read_text_scrim_from_config();
         self.text_scrim_feather = read_text_scrim_feather_from_config();
@@ -1308,14 +1301,12 @@ impl cce_ui::engine::Application for StatusApp {
             rounded_boxes: Vec::new(),
             droplet_boxes: Vec::new(),
             droplet: None,
-            text_relief: 0.0,
-            text_halo: 0.0,
             text_contrast: 0.0,
             backdrop: (50, 100),
             text_luma: 0.0,
             text_scrim: 0.0,
             text_scrim_feather: None,
-            halo_now: 0.0,
+            contrast_now: 0.0,
             text_prims: Vec::new(),
             scale_factor: 1.0,
             width: if selected_module.is_some() { 120 } else { 1920 },
@@ -1497,20 +1488,20 @@ impl cce_ui::engine::Application for StatusApp {
     }
 
     fn tick(&mut self, dt: f32, needs_rebuild: &mut bool) {
-        // Ease the halo toward what the backdrop currently demands. The
-        // measurement itself is quantized and only pushed on change, so this
-        // is the only thing standing between a camera pan and the outline
-        // strobing on the cell edges it crosses.
+        // Ease toward what the backdrop currently demands. The measurement
+        // itself is quantized and only pushed on change, so this is the only
+        // thing standing between a camera pan and the scrim pulsing on the
+        // cell edges it crosses.
         if self.text_contrast > 0.0 {
-            const HALO_EASE_S: f32 = 0.12;
-            let target = self.backdrop_halo_target();
-            if (target - self.halo_now).abs() > 0.002 {
-                let step = (dt / HALO_EASE_S).clamp(0.0, 1.0);
-                self.halo_now += (target - self.halo_now) * step;
+            const CONTRAST_EASE_S: f32 = 0.12;
+            let target = self.backdrop_contrast_demand();
+            if (target - self.contrast_now).abs() > 0.002 {
+                let step = (dt / CONTRAST_EASE_S).clamp(0.0, 1.0);
+                self.contrast_now += (target - self.contrast_now) * step;
                 *needs_rebuild = true;
                 self.needs_rebuild = true;
-            } else if self.halo_now != target {
-                self.halo_now = target;
+            } else if self.contrast_now != target {
+                self.contrast_now = target;
                 *needs_rebuild = true;
                 self.needs_rebuild = true;
             }
@@ -1641,11 +1632,13 @@ impl cce_ui::engine::Application for StatusApp {
         // through its core rect and falling off across `reach`, so insetting
         // the core by exactly the feather lands the gradient's outer edge on
         // the box's own edge.
-        if self.text_scrim > 0.0 {
+        if self.text_scrim > 0.0 || self.text_contrast > 0.0 {
             // Rests at the configured opacity and deepens with the measured
-            // demand; `halo_now` is already zero when text_contrast is off,
-            // so without that knob this is a constant.
-            let alpha = scrim_alpha(self.text_scrim, self.halo_now);
+            // demand. Either knob alone is meaningful: `text_scrim` with no
+            // `text_contrast` is a constant ground (the demand stays zero),
+            // and `text_contrast` with no `text_scrim` is a ground that
+            // appears only when the backdrop earns it.
+            let alpha = scrim_alpha(self.text_scrim, self.contrast_now);
             let feather_cfg = self.text_scrim_feather;
             let runs = &self.text_prims;
             let pool_in = |pc: &mut cce_ui::scene::paint::PaintCtx, bx: f32, by: f32, bw: f32, bh: f32, radius: f32| {
@@ -1700,36 +1693,11 @@ impl cce_ui::engine::Application for StatusApp {
         for (text, tsize, x, y, color, font, bounds, layout, _run_w) in &self.text_prims {
             match layout {
                 Some(l) => pc.text_boxed(text.clone(), *x, *y, *tsize, *color, font.clone(), *bounds, cce_ui::scene::paint::TextAttrs::default(), *l),
-                None => {
-                    // With `module { text_contrast }` on, the measured
-                    // backdrop drives the outline and the fixed knobs step
-                    // aside; with it off, they rule exactly as before.
-                    // The scrim, when configured, IS the treatment — an
-                    // outline on top of a darkened ground is two answers to
-                    // one question.
-                    let halo = if self.text_scrim > 0.0 {
-                        0.0
-                    } else if self.text_contrast > 0.0 {
-                        self.halo_now
-                    } else {
-                        self.text_halo
-                    };
-                    if halo > 0.0 {
-                        // Full halo: four diagonal white copies — a true
-                        // outline, readable over any backdrop.
-                        for (dx, dy) in [(-0.75, -0.75), (0.75, -0.75), (-0.75, 0.75), (0.75, 0.75)] {
-                            let hc = treatment_rgb(*color);
-                            let hrgb = [(hc[0] * 255.0) as u8, (hc[1] * 255.0) as u8, (hc[2] * 255.0) as u8];
-                            pc.text_faded(text.clone(), *x + dx, *y + dy, *tsize, hrgb, halo, font.clone(), *bounds);
-                        }
-                    } else if self.text_scrim <= 0.0 && self.text_contrast <= 0.0 && self.text_relief > 0.0 {
-                        // Letterpress underlay: a translucent white copy offset
-                        // down-right BENEATH the glyphs — dark text keeps a lit
-                        // edge on dark backdrops (the engraved-text treatment).
-                        pc.text_faded(text.clone(), *x + 0.75, *y + 0.75, *tsize, [255, 255, 255], self.text_relief, font.clone(), *bounds);
-                    }
-                    pc.text_with(text.clone(), *x, *y, *tsize, *color, font.clone(), *bounds)
-                }
+                // Glyphs are drawn plain. Contrast is the scrim's job now —
+                // it darkens the ground rather than decorating the
+                // letterforms, and the two together were always one treatment
+                // too many.
+                None => pc.text_with(text.clone(), *x, *y, *tsize, *color, font.clone(), *bounds),
             }
         }
 
@@ -2223,22 +2191,22 @@ mod tests {
     fn dark_text_on_a_light_uniform_backdrop_wants_no_halo() {
         // The case that must stay untouched: the bar already reads fine, so
         // an adaptive scheme that decorates it anyway is worse than nothing.
-        assert_eq!(halo_demand(BLACK_TEXT, (100, 0)), 0.0);
+        assert_eq!(contrast_demand(BLACK_TEXT, (100, 0)), 0.0);
     }
 
     #[test]
     fn dark_text_on_a_dark_uniform_backdrop_wants_a_full_halo() {
         // Black text over a black grid cell — invisible, and the whole
         // reason for the feature.
-        assert_eq!(halo_demand(BLACK_TEXT, (0, 0)), 1.0);
+        assert_eq!(contrast_demand(BLACK_TEXT, (0, 0)), 1.0);
     }
 
     #[test]
     fn light_text_reverses_the_verdict() {
         // The decision is about the CONFIGURED color, not a hardcoded
         // assumption that module text is dark.
-        assert_eq!(halo_demand(WHITE_TEXT, (0, 0)), 0.0);
-        assert_eq!(halo_demand(WHITE_TEXT, (100, 0)), 1.0);
+        assert_eq!(contrast_demand(WHITE_TEXT, (0, 0)), 0.0);
+        assert_eq!(contrast_demand(WHITE_TEXT, (100, 0)), 1.0);
     }
 
     #[test]
@@ -2247,7 +2215,7 @@ mod tests {
         // fine" while the text is invisible over one half. Checking the
         // spread's ends is what catches it.
         let mean_only = contrast_deficit(BLACK_TEXT, 0.5);
-        let with_spread = halo_demand(BLACK_TEXT, (50, 100));
+        let with_spread = contrast_demand(BLACK_TEXT, (50, 100));
         assert!(with_spread > mean_only, "{} !> {}", with_spread, mean_only);
         assert_eq!(with_spread, 1.0);
     }
@@ -2256,7 +2224,7 @@ mod tests {
     fn an_unknown_backdrop_is_treated_as_the_worst_case() {
         // What a segment reports before it has heard from the compositor,
         // and what an occluding window resolves to: assume unreadable.
-        assert_eq!(halo_demand(BLACK_TEXT, (50, 100)), 1.0);
+        assert_eq!(contrast_demand(BLACK_TEXT, (50, 100)), 1.0);
     }
 
     const BLACK: [f32; 3] = [0.0, 0.0, 0.0];
@@ -2375,7 +2343,7 @@ mod tests {
         for line in ["unknown", "", "42", "nonsense here", "42 spread"] {
             assert_eq!(crate::listeners::parse_backdrop(line), (50, 100), "line {:?}", line);
         }
-        assert_eq!(halo_demand(BLACK_TEXT, crate::listeners::parse_backdrop("unknown")), 1.0);
+        assert_eq!(contrast_demand(BLACK_TEXT, crate::listeners::parse_backdrop("unknown")), 1.0);
     }
 
     #[test]

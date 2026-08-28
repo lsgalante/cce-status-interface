@@ -153,19 +153,18 @@ warn-and-skip on unknown keys; the expanded menu box becomes the drop growing,
 and drops inset 1px from the surface bottom for the silhouette's AA feather)
 and `module { text_raise }` (lifts module text above vertical center, logical
 px, bar-side only — every module funnels through `centered_text_y`) and
-`module { text_relief }` (letterpress underlay strength 0-1: a translucent
-white copy 0.75px down-right beneath each non-boxed text run — engraved text,
-guaranteed contrast on dark backdrops) and `module { text_halo }` (full white
-outline 0-1: FOUR diagonal white copies around each run; beats text_relief
-when set) and `module { text_scrim }` (0-1 opacity of a
-feathered pool filling each module box; beats the halo when set) and
-`module { text_scrim_feather }` (that pool's falloff in logical px, default a
-quarter of the box height) and `module { text_contrast }` (adaptive contrast 0-1, default 0 =
-off — when set it SUPERSEDES both fixed knobs above and drives the halo from
-the compositor's `backdrop` measurement instead, so the outline appears only
-over a backdrop the configured text color cannot carry; `text_relief`/
-`text_halo` remain as the manual override for a session whose compositor
-predates the topic). Everything is read through
+`module { text_scrim }` (0-1 resting opacity of a
+feathered pool filling each module box, the DE's one text-contrast treatment)
+and `module { text_scrim_feather }` (that pool's falloff in logical px,
+default a quarter of the box height) and `module { text_contrast }` (adaptive
+contrast 0-1, default 0 = off — the compositor's `backdrop` measurement
+deepens the pool through it, so the ground darkens only as far as a backdrop
+the configured text color cannot carry demands; on its own, with no
+`text_scrim`, it makes the pool appear ONLY when the backdrop earns it).
+(The glyph-decorating treatments this replaced — `text_relief`'s letterpress
+underlay and `text_halo`'s four-copy outline — were deleted 2026-08-28 once
+the scrim superseded both; don't reintroduce a per-letterform treatment
+without a reason the ground cannot serve.) Everything is read through
 `cce_ui::config::cached_config()`; KDL is converted to JSON
 (`cce_ui::config::parse_kdl_to_json`) and looked up by **explicit JSON
 pointer only**: every key names its canonical nesting
@@ -199,21 +198,21 @@ closes that loop with the compositor, which CAN see:
 
 1. `cce-fx` measures each segment's backdrop per frame (`backdrop.rs`) and
    pushes `<luma> <spread>` on the status socket's `backdrop` topic.
-2. `halo_demand()` checks the configured text color's WCAG contrast against
-   that backdrop at three points — the mean AND both ends of the spread — and
-   takes the worst. Checking only the mean is the trap: a segment half on a
-   black grid cell and half on a light gap averages to a comfortable mid-gray
-   while the text is invisible over one half.
-3. `tick` eases `halo_now` toward that demand over ~120ms. Stepping straight
-   to it makes the outline strobe as the desktop pans under the segment.
+2. `contrast_demand()` checks the configured text color's WCAG contrast
+   against that backdrop at three points — the mean AND both ends of the
+   spread — and takes the worst. Checking only the mean is the trap: a segment
+   half on a black grid cell and half on a light gap averages to a comfortable
+   mid-gray while the text is invisible over one half.
+3. `tick` eases `contrast_now` toward that demand over ~120ms. Stepping
+   straight to it makes the scrim pulse as the desktop pans under the segment.
 
-`module { text_scrim }` is the alternative treatment, and supersedes the halo
-when set: a feathered pool (`cce_ui`'s `Prim::Glow` — solid through a core
-rect, falling off to nothing across `text_scrim_feather` px, tessellated as
-per-vertex-alpha rings so there is no banding) filling each module box. Where
-the halo rims every letterform, this darkens the ground they sit on. It rests
-at the configured opacity and `text_contrast` deepens it from there, so it is
-a constant when that knob is off.
+`module { text_scrim }` is the treatment itself: a feathered pool (`cce_ui`'s
+`Prim::Glow` — solid through a core rect, falling off to nothing across
+`text_scrim_feather` px, tessellated as per-vertex-alpha rings so there is no
+banding) filling each module box. It darkens the ground the glyphs sit on
+rather than decorating the letterforms. It rests at the configured opacity and
+`text_contrast` deepens it from there, so it is a constant when that knob is
+off — and either knob alone is meaningful.
 
 One pool per bubble, not per text run, so a segment reads as one darkened
 lozenge rather than a pill inside a pill. Its shape is the bubble's ACTUAL
@@ -231,14 +230,14 @@ nothing to ground). That, and the pool's color, come from
 rides `TextPrim`'s last field. Width is the tiebreak because a module mixing
 colors is led by its longest label.
 
-Both treatments take their color from `treatment_rgb` — whichever of
-black/white the run reads against, by contrast ratio (the WCAG crossover is
-near 0.18, not 0.5). Applied PER RUN, not from the configured module color: a
+The pool takes its color from `treatment_rgb` — whichever of black/white the
+run reads against, by contrast ratio (the WCAG crossover is near 0.18, not
+0.5). Chosen from the run's OWN color, not the configured module color: a
 module may paint a run in something else entirely, and the volume module's
-muted state uses the shared `disabled_color`, which on this DE is black. A
-white halo around white text, or a black pool behind black text, is not a
-weaker treatment — it is an eraser. (`text_relief` is still white-only; it is
-the manual knob, and it was written for dark text.)
+muted state uses the shared `disabled_color`. A black pool behind black text
+is not a weaker treatment — it is an eraser. (That `disabled_color` is a light
+red as of 2026-08-28, chosen so the muted run keeps the same dark pool as
+every other bubble instead of inverting to a light one.)
 
 A window covering part of a segment is measured too — the compositor reads
 that window's own content over the overlapping strip and blends it with the
