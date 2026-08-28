@@ -157,7 +157,10 @@ px, bar-side only — every module funnels through `centered_text_y`) and
 white copy 0.75px down-right beneath each non-boxed text run — engraved text,
 guaranteed contrast on dark backdrops) and `module { text_halo }` (full white
 outline 0-1: FOUR diagonal white copies around each run; beats text_relief
-when set) and `module { text_contrast }` (adaptive contrast 0-1, default 0 =
+when set) and `module { text_scrim }` (0-1 opacity of a dark
+feathered pool behind each module's content; beats the halo when set) and
+`module { text_scrim_feather }` (that pool's falloff in logical px, default a
+quarter of the box height) and `module { text_contrast }` (adaptive contrast 0-1, default 0 =
 off — when set it SUPERSEDES both fixed knobs above and drives the halo from
 the compositor's `backdrop` measurement instead, so the outline appears only
 over a backdrop the configured text color cannot carry; `text_relief`/
@@ -203,6 +206,16 @@ closes that loop with the compositor, which CAN see:
    while the text is invisible over one half.
 3. `tick` eases `halo_now` toward that demand over ~120ms. Stepping straight
    to it makes the outline strobe as the desktop pans under the segment.
+
+`module { text_scrim }` is the alternative treatment, and supersedes the halo
+when set: a dark feathered pool (`cce_ui`'s `Prim::Glow` — solid through a
+core rect, falling off to nothing across `text_scrim_feather` px, tessellated
+as per-vertex-alpha rings so there is no banding) painted over each module box
+and under everything the module draws into it. Where the halo rims every
+letterform, this darkens the ground they sit on. It rests at the configured
+opacity and `text_contrast` deepens it from there, so it is a constant when
+that knob is off. The core is inset by exactly the feather, which is why the
+gradient lands on the box edge rather than spilling past it.
 
 The halo is drawn in whichever of black/white the TEXT reads against
 (`halo_rgb`, chosen by contrast ratio — the WCAG crossover is near 0.18, not

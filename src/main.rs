@@ -164,6 +164,23 @@ fn halo_demand(text_luma: f32, (luma, spread): (u8, u8)) -> f32 {
         .max(contrast_deficit(text_luma, hi))
 }
 
+/// The scrim's opacity: it rests at the configured `base` and deepens toward
+/// opaque as the measured backdrop demands more. `demand` is the same eased
+/// value the halo would have used, which is already zero when
+/// `module { text_contrast }` is off — so without that knob the scrim is a
+/// constant, which is the point of having it.
+fn scrim_alpha(base: f32, demand: f32) -> f32 {
+    (base + (1.0 - base) * demand.clamp(0.0, 1.0)).clamp(0.0, 1.0)
+}
+
+/// How far the scrim fades out, logical px. Defaults to a quarter of the box
+/// height so the gradient scales with the bar, and is capped at half of each
+/// axis: the feather is drawn outside the solid core, so a larger one would
+/// leave the core inverted and the pool would vanish.
+fn scrim_feather(w: f32, h: f32, configured: Option<f32>) -> f32 {
+    configured.unwrap_or(h * 0.25).max(0.0).min(w / 2.0).min(h / 2.0)
+}
+
 /// The in-surface right-click menu: instead of spawning a popup process, the
 /// module's own surface EXPANDS below the bar strip to contain the menu. The
 /// compositor treats a status segment thicker than the bar as expanded — it
@@ -332,6 +349,12 @@ struct StatusApp {
     /// at config-reload time because the contrast decision needs it every
     /// frame and the color changes about never.
     text_luma: f32,
+    /// Dark feathered pool behind each module's content (0 = off) — see
+    /// `read_text_scrim_from_config`. Supersedes the halo when set.
+    text_scrim: f32,
+    /// Feather distance for that pool, logical px; None derives it from the
+    /// box height.
+    text_scrim_feather: Option<f32>,
     /// The color the halo is drawn in — black or white, whichever the TEXT
     /// reads against. A halo exists to separate the glyphs from what is
     /// behind them, so it has to contrast with the glyphs; a white outline
@@ -481,6 +504,8 @@ impl StatusApp {
         self.text_relief = read_text_relief_from_config();
         self.text_halo = read_text_halo_from_config();
         self.text_contrast = read_text_contrast_from_config();
+        self.text_scrim = read_text_scrim_from_config();
+        self.text_scrim_feather = read_text_scrim_feather_from_config();
 
         self.status_bar.set_rect(0.0, 0.0, self.width as f32, self.height as f32);
         // The surface itself is transparent: every StatusApp is a single
@@ -1249,6 +1274,8 @@ impl cce_ui::engine::Application for StatusApp {
             text_contrast: 0.0,
             backdrop: (50, 100),
             text_luma: 0.0,
+            text_scrim: 0.0,
+            text_scrim_feather: None,
             halo_rgb: [255, 255, 255],
             halo_now: 0.0,
             text_prims: Vec::new(),
@@ -1566,6 +1593,36 @@ impl cce_ui::engine::Application for StatusApp {
             }
         }
 
+        // The dark pool, painted over each module box and under everything
+        // the module draws into it. `Prim::Glow` is a feathered aura — solid
+        // through the core rect, falling off to nothing across `reach` — so
+        // the core is inset by exactly the feather and the gradient lands on
+        // the box edge instead of spilling past it.
+        if self.text_scrim > 0.0 {
+            // Rests at the configured opacity and deepens with the measured
+            // demand; `halo_now` is already zero when text_contrast is off,
+            // so without that knob this is a constant.
+            let alpha = scrim_alpha(self.text_scrim, self.halo_now);
+            let mut pool = |x: f32, y: f32, w: f32, h: f32, radius: f32| {
+                let feather = scrim_feather(w, h, self.text_scrim_feather);
+                let rect = Rect {
+                    x: x + feather,
+                    y: y + feather,
+                    width: (w - feather * 2.0).max(0.0),
+                    height: (h - feather * 2.0).max(0.0),
+                };
+                if rect.width > 0.0 && rect.height > 0.0 {
+                    pc.glow(rect, (radius - feather).max(0.0), feather, [0.0, 0.0, 0.0, alpha]);
+                }
+            };
+            for &(x, y, w, h, _) in &self.droplet_boxes {
+                pool(x, y, w, h, h * 0.5);
+            }
+            for rb in &self.rounded_boxes {
+                pool(rb.x, rb.y, rb.w, rb.h, rb.radius);
+            }
+        }
+
         let (sb_x, sb_y, sb_w, sb_h) = self.status_bar.rect();
         pc.quad(Rect { x: sb_x, y: sb_y, width: sb_w, height: sb_h }, self.status_bar.color());
         for r in &self.rects {
@@ -1579,14 +1636,23 @@ impl cce_ui::engine::Application for StatusApp {
                     // With `module { text_contrast }` on, the measured
                     // backdrop drives the outline and the fixed knobs step
                     // aside; with it off, they rule exactly as before.
-                    let halo = if self.text_contrast > 0.0 { self.halo_now } else { self.text_halo };
+                    // The scrim, when configured, IS the treatment — an
+                    // outline on top of a darkened ground is two answers to
+                    // one question.
+                    let halo = if self.text_scrim > 0.0 {
+                        0.0
+                    } else if self.text_contrast > 0.0 {
+                        self.halo_now
+                    } else {
+                        self.text_halo
+                    };
                     if halo > 0.0 {
                         // Full halo: four diagonal white copies — a true
                         // outline, readable over any backdrop.
                         for (dx, dy) in [(-0.75, -0.75), (0.75, -0.75), (-0.75, 0.75), (0.75, 0.75)] {
                             pc.text_faded(text.clone(), *x + dx, *y + dy, *tsize, self.halo_rgb, halo, font.clone(), *bounds);
                         }
-                    } else if self.text_contrast <= 0.0 && self.text_relief > 0.0 {
+                    } else if self.text_scrim <= 0.0 && self.text_contrast <= 0.0 && self.text_relief > 0.0 {
                         // Letterpress underlay: a translucent white copy offset
                         // down-right BENEATH the glyphs — dark text keeps a lit
                         // edge on dark backdrops (the engraved-text treatment).
@@ -2149,6 +2215,39 @@ mod tests {
         assert_eq!(halo_rgb_for(0.5), [0, 0, 0]);
         assert_eq!(halo_rgb_for(0.25), [0, 0, 0]);
         assert_eq!(halo_rgb_for(0.1), [255, 255, 255]);
+    }
+
+    #[test]
+    fn the_scrim_is_constant_without_the_adaptive_knob() {
+        // text_contrast off leaves `demand` at zero, and the scrim is then
+        // exactly what was configured — a fixed dark ground, which is the
+        // whole reason to prefer it to the halo.
+        assert_eq!(scrim_alpha(0.55, 0.0), 0.55);
+        assert_eq!(scrim_alpha(0.0, 0.0), 0.0);
+    }
+
+    #[test]
+    fn the_scrim_deepens_with_demand_and_never_thins() {
+        // Adaptive contrast can only ever darken the ground further; a
+        // backdrop that needs help must not be able to lighten it.
+        assert!(scrim_alpha(0.55, 0.5) > 0.55);
+        assert_eq!(scrim_alpha(0.55, 1.0), 1.0);
+        assert!(scrim_alpha(0.55, 1.0) >= scrim_alpha(0.55, 0.0));
+    }
+
+    #[test]
+    fn the_feather_defaults_to_a_quarter_of_the_box_height() {
+        assert_eq!(scrim_feather(200.0, 28.0, None), 7.0);
+    }
+
+    #[test]
+    fn the_feather_cannot_swallow_the_core_it_surrounds() {
+        // Drawn OUTSIDE the solid core, so a feather past half of either axis
+        // would invert the core and the pool would disappear entirely —
+        // exactly where a narrow module (a lone icon) lands.
+        assert_eq!(scrim_feather(10.0, 28.0, Some(40.0)), 5.0);
+        assert_eq!(scrim_feather(200.0, 28.0, Some(40.0)), 14.0);
+        assert_eq!(scrim_feather(200.0, 28.0, Some(-3.0)), 0.0);
     }
 
     #[test]

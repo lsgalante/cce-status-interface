@@ -221,6 +221,31 @@ pub(crate) fn read_text_contrast_from_config() -> f32 {
     cfg_f32("/module/text_contrast").unwrap_or(0.0).clamp(0.0, 1.0)
 }
 
+/// `module { text_scrim }` — opacity 0-1 of a dark feathered pool drawn
+/// inside each module box, beneath everything the module paints (0 = off,
+/// the default). Where the halo outlines the glyphs, this darkens the ground
+/// they sit on, which is the treatment that survives a busy backdrop without
+/// putting a rim on every letterform.
+///
+/// It SUPERSEDES the halo when set — two contrast treatments at once is one
+/// too many — and `module { text_contrast }` still applies on top: the scrim
+/// rests at this opacity and deepens toward opaque as the measured backdrop
+/// demands more.
+pub(crate) fn read_text_scrim_from_config() -> f32 {
+    cfg_f32("/module/text_scrim").unwrap_or(0.0).clamp(0.0, 1.0)
+}
+
+/// `module { text_scrim_feather }` — how far, in logical px, the scrim fades
+/// out from its solid core (default: a quarter of the box's height, which
+/// keeps the whole gradient inside the box at any bar height).
+///
+/// The feather is drawn OUTSIDE the core rect, so the core is inset by this
+/// much: feather and inset are the same number, and the pool reaches the
+/// box's edge exactly.
+pub(crate) fn read_text_scrim_feather_from_config() -> Option<f32> {
+    cfg_f32("/module/text_scrim_feather").map(|v| v.max(0.0))
+}
+
 pub(crate) fn read_status_box_corner_radius_from_config() -> f32 {
     // App-native ONLY (~/.config/cce/cce-status-interface/config.kdl,
     // merged over the shared config by cce-ui): `module { corner_radius }`.
