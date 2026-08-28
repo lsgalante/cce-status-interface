@@ -164,6 +164,48 @@ fn contrast_demand(text_luma: f32, (luma, spread): (u8, u8)) -> f32 {
         .max(contrast_deficit(text_luma, hi))
 }
 
+/// A droplet spec whose shape knobs resolve against `reference_h` instead of
+/// the box they are given, for a box that is actually `box_h` tall.
+///
+/// `DropletSpec`'s shape knobs are fractions OF THE BOX HEIGHT, which is what
+/// makes one spec survive a change to `module { height }` — the drop looks the
+/// same on a 24px bar and a 40px one. The expanded context menu breaks that
+/// assumption: it keeps the module's width and grows ten times taller, so the
+/// same fractions resolve to a bottom radius that hits the half-width clamp
+/// (a literal semicircle under a 10-row window picker) and a top taper eating
+/// 145px of a 345px box, while the rows are laid out as a plain rectangle
+/// inside it and overhang the silhouette at both ends.
+///
+/// Scaling every height-fraction knob by `reference_h / box_h` makes them
+/// resolve to the SAME pixel values they would at `reference_h`, so the drop
+/// keeps exactly the silhouette it has collapsed and the body extends straight
+/// down. At the start of the expansion animation the factor is 1 and this is
+/// the identity, so there is nothing to pop.
+///
+/// Only the knobs documented as fractions of height are touched. `belly_w` is
+/// a fraction of the remaining half-width, and the rest (`clarity`, `dome`,
+/// `gleam`, `shine`, `rim`, `curve`, `core`, `refr`, `ghost`, `shadow`) are
+/// strengths or exponents with no length in them.
+fn spec_at_reference_height(
+    spec: cce_ui::scene::paint::DropletSpec,
+    reference_h: f32,
+    box_h: f32,
+) -> cce_ui::scene::paint::DropletSpec {
+    if box_h <= reference_h || reference_h <= 0.0 {
+        return spec;
+    }
+    let k = reference_h / box_h;
+    let mut out = spec;
+    out.sag *= k;
+    out.belly *= k;
+    out.blend *= k;
+    out.sheet_r *= k;
+    out.attach *= k;
+    out.band *= k;
+    out.bow *= k;
+    out
+}
+
 /// The color a treatment behind or around `rgb` text should be drawn in:
 /// whichever of black/white that text reads against.
 ///
@@ -367,9 +409,14 @@ struct StatusApp {
     overlay_rects: Vec<RectWidget>,
     rounded_boxes: Vec<RoundedBox>,
     /// Module boxes drawn as water droplets instead of `rounded_boxes` entries
-    /// when `module { droplet }` is configured — (x, y, w, h, color), painted
-    /// first so module content sits on the drop.
-    droplet_boxes: Vec<(f32, f32, f32, f32, [f32; 4])>,
+    /// when `module { droplet }` is configured — (x, y, w, h, color, spec),
+    /// painted first so module content sits on the drop.
+    ///
+    /// The spec rides each box rather than being read from `self.droplet` at
+    /// paint time because the expanded menu box needs a DIFFERENT one — see
+    /// `spec_at_reference_height` — and the scrim has to be handed the same
+    /// spec the drop was drawn with or the two silhouettes disagree.
+    droplet_boxes: Vec<(f32, f32, f32, f32, [f32; 4], cce_ui::scene::paint::DropletSpec)>,
     droplet: Option<cce_ui::scene::paint::DropletSpec>,
     /// Adaptive-contrast strength (0 = off) — see
     /// `read_text_contrast_from_config`. Deepens the scrim as the measured
@@ -567,7 +614,7 @@ impl StatusApp {
                             // belly silhouette's AA feather, plus the
                             // contact shadow's reserved gap.
                             let inset = 1.0 + spec.shadow_gap(bar_h);
-                            self.droplet_boxes.push((left_x, 0.0, w, bar_h - inset, color));
+                            self.droplet_boxes.push((left_x, 0.0, w, bar_h - inset, color, spec));
                         } else {
                             self.rounded_boxes.push(RoundedBox {
                                 x: left_x,
@@ -651,7 +698,7 @@ impl StatusApp {
                         if let Some(spec) = self.droplet {
                             // Same bottom inset as the left loop.
                             let inset = 1.0 + spec.shadow_gap(bar_h);
-                            self.droplet_boxes.push((right_x, 0.0, w, bar_h - inset, color));
+                            self.droplet_boxes.push((right_x, 0.0, w, bar_h - inset, color, spec));
                         } else {
                             self.rounded_boxes.push(RoundedBox {
                                 x: right_x,
@@ -853,13 +900,19 @@ impl StatusApp {
                     // grows into the menu. Inserted at the front so the
                     // module's strip content (tray icons, labels)
                     // renders on top of its band. In droplet style the drop
-                    // itself grows: the belly follows the expanding bottom
-                    // edge, which is the metaball merge the smin silhouette
-                    // gives for free.
+                    // grows DOWNWARD without growing its curvature: the knobs
+                    // are re-resolved against the collapsed height, so the
+                    // taper and the bottom corners stay the size they are on
+                    // the bar and the sides run straight between them. Letting
+                    // them scale with the box is what stopped the backdrop
+                    // conforming to the rows it is behind.
                     let menu_color = box_bg_color.unwrap_or([0.055, 0.055, 0.075, 0.97]);
                     if let Some(spec) = self.droplet {
                         let inset = 1.0 + spec.shadow_gap(bar_h);
-                        self.droplet_boxes.push((plate_x, 0.0, anim_w, bar_h + reveal_h - inset, menu_color));
+                        let collapsed_h = bar_h - inset;
+                        let box_h = bar_h + reveal_h - inset;
+                        let menu_spec = spec_at_reference_height(spec, collapsed_h, box_h);
+                        self.droplet_boxes.push((plate_x, 0.0, anim_w, box_h, menu_color, menu_spec));
                     } else {
                         self.rounded_boxes.insert(0, RoundedBox {
                             x: plate_x,
@@ -1555,10 +1608,8 @@ impl cce_ui::engine::Application for StatusApp {
 
         // Droplet-style module boxes paint first, so any remaining rounded
         // boxes (module-internal chips) and all content sit on the drops.
-        if let Some(spec) = self.droplet {
-            for &(x, y, w, h, color) in &self.droplet_boxes {
-                pc.droplet(Rect { x, y, width: w, height: h }, color, spec);
-            }
+        for &(x, y, w, h, color, spec) in &self.droplet_boxes {
+            pc.droplet(Rect { x, y, width: w, height: h }, color, spec);
         }
 
         for rb in &self.rounded_boxes {
@@ -1667,14 +1718,12 @@ impl cce_ui::engine::Application for StatusApp {
             // droplet's shader path with the same spec, filled flat and
             // feathered inward, so the vignette's edge is the drop's edge by
             // construction rather than by approximation.
-            if let Some(spec) = self.droplet {
-                for &(x, y, w, h, _) in &self.droplet_boxes {
-                    let rect = Rect { x, y, width: w, height: h };
-                    let Some(color) = dominant_run_color(runs, x, y, w, h) else { continue };
-                    let c = treatment_rgb(color);
-                    let feather = scrim_feather(w, h, feather_cfg);
-                    pc.droplet_scrim(rect, [c[0], c[1], c[2], alpha], spec, feather);
-                }
+            for &(x, y, w, h, _, spec) in &self.droplet_boxes {
+                let rect = Rect { x, y, width: w, height: h };
+                let Some(color) = dominant_run_color(runs, x, y, w, h) else { continue };
+                let c = treatment_rgb(color);
+                let feather = scrim_feather(w, h, feather_cfg);
+                pc.droplet_scrim(rect, [c[0], c[1], c[2], alpha], spec, feather);
             }
             // Everything else is genuinely a rounded rect, so a rounded-rect
             // pool IS its exact shape.
@@ -2261,6 +2310,71 @@ mod tests {
         // wrong treatment.
         assert_eq!(treatment_rgb([128, 128, 128]), BLACK);
         assert_eq!(treatment_rgb([80, 80, 80]), WHITE);
+    }
+
+    // ------------------------------------------------------------------
+    // The expanded menu's drop: the module box grows downward, and the
+    // silhouette must not grow with it.
+    // ------------------------------------------------------------------
+
+    /// The collapsed drop on a 27px bar, and a 10-row window picker.
+    const COLLAPSED: (f32, f32) = (90.0, 21.0);
+    const PICKER: (f32, f32) = (320.0, 339.0);
+
+    #[test]
+    fn an_expanded_drop_keeps_the_silhouette_it_had_collapsed() {
+        // The whole point: same taper, same bottom corners, same bow, in
+        // PIXELS, on a box sixteen times taller. Asserted through
+        // resolve_silhouette rather than on the knobs, because that is the
+        // function whose answer the shader actually draws.
+        let spec = cce_ui::scene::paint::DropletSpec::default();
+        let (sr0, ar0, bow0) = spec.resolve_silhouette(COLLAPSED.0, COLLAPSED.1);
+        let grown = spec_at_reference_height(spec, COLLAPSED.1, PICKER.1);
+        let (sr1, ar1, bow1) = grown.resolve_silhouette(PICKER.0, PICKER.1);
+        for (a, b, what) in [(sr0, sr1, "sheet_r"), (ar0, ar1, "attach"), (bow0, bow1, "bow")] {
+            assert!((a - b).abs() < 0.5, "{} drifted: {} vs {}", what, a, b);
+        }
+    }
+
+    #[test]
+    fn the_unscaled_spec_is_what_made_the_backdrop_miss_its_rows() {
+        // The regression this guards. Left alone, the height fractions put
+        // the picker's bottom radius on the half-width clamp — a literal
+        // semicircle — with the rows laid out as a rectangle inside it.
+        let spec = cce_ui::scene::paint::DropletSpec::default();
+        let (sr, ar, _) = spec.resolve_silhouette(PICKER.0, PICKER.1);
+        assert_eq!(sr, PICKER.0 / 2.0, "expected the half-width clamp");
+        assert!(ar > PICKER.1 * 0.4, "expected the taper to eat the box");
+    }
+
+    #[test]
+    fn a_box_no_taller_than_the_reference_is_left_exactly_alone() {
+        // Every collapsed module box takes this path, and the expansion
+        // animation starts here — so it has to be the identity, or the drop
+        // pops on the first frame of opening.
+        let spec = cce_ui::scene::paint::DropletSpec::default();
+        assert_eq!(spec_at_reference_height(spec, COLLAPSED.1, COLLAPSED.1), spec);
+        assert_eq!(spec_at_reference_height(spec, COLLAPSED.1, COLLAPSED.1 - 5.0), spec);
+        assert_eq!(spec_at_reference_height(spec, 0.0, PICKER.1), spec);
+    }
+
+    #[test]
+    fn only_the_knobs_measured_in_height_are_rescaled() {
+        // The material and the exponents have no length in them: rescaling
+        // `curve` would change the corner family, `shadow` the contact cue.
+        let spec = cce_ui::scene::paint::DropletSpec::default();
+        let grown = spec_at_reference_height(spec, COLLAPSED.1, PICKER.1);
+        assert_eq!(grown.curve, spec.curve);
+        assert_eq!(grown.core, spec.core);
+        assert_eq!(grown.clarity, spec.clarity);
+        assert_eq!(grown.dome, spec.dome);
+        assert_eq!(grown.gleam, spec.gleam);
+        assert_eq!(grown.shine, spec.shine);
+        assert_eq!(grown.rim, spec.rim);
+        assert_eq!(grown.shadow, spec.shadow);
+        // belly_w is a fraction of the remaining half-WIDTH, not of height.
+        assert_eq!(grown.belly_w, spec.belly_w);
+        assert!(grown.sheet_r < spec.sheet_r);
     }
 
     #[test]
