@@ -158,7 +158,7 @@ white copy 0.75px down-right beneath each non-boxed text run — engraved text,
 guaranteed contrast on dark backdrops) and `module { text_halo }` (full white
 outline 0-1: FOUR diagonal white copies around each run; beats text_relief
 when set) and `module { text_scrim }` (0-1 opacity of a
-feathered pool hugging each text run; beats the halo when set) and
+feathered pool filling each module box; beats the halo when set) and
 `module { text_scrim_feather }` (that pool's falloff in logical px, default a
 quarter of the box height) and `module { text_contrast }` (adaptive contrast 0-1, default 0 =
 off — when set it SUPERSEDES both fixed knobs above and drives the halo from
@@ -210,18 +210,22 @@ closes that loop with the compositor, which CAN see:
 `module { text_scrim }` is the alternative treatment, and supersedes the halo
 when set: a feathered pool (`cce_ui`'s `Prim::Glow` — solid through a core
 rect, falling off to nothing across `text_scrim_feather` px, tessellated as
-per-vertex-alpha rings so there is no banding) drawn per TEXT RUN, hugging the
-run rather than the module box. Where the halo rims every letterform, this
-darkens the ground they sit on. It rests at the configured opacity and
-`text_contrast` deepens it from there, so it is a constant when that knob is
-off.
+per-vertex-alpha rings so there is no banding) filling each module box. Where
+the halo rims every letterform, this darkens the ground they sit on. It rests
+at the configured opacity and `text_contrast` deepens it from there, so it is
+a constant when that knob is off.
 
-The run's measured width rides `TextPrim`'s last field, which is what makes
-the hug possible; a run with no width (menu and tooltip text, already on an
-opaque box) simply gets no pool. Each pool is clipped to its module box
-(`clip_rounded`): a pool is wider than its run and, on a 27px bar with 14px
-text, taller than the room above and below it, so without the clip the feather
-would wash past the droplet's silhouette and hang in the air beside it.
+One pool per bubble, not per text run: the core is inset by exactly the
+feather, so the gradient's outer edge lands on the bubble's own edge and a
+segment reads as one darkened lozenge rather than a pill inside a pill. It is
+still clipped to the box (`clip_rounded`) — the inset makes spill unlikely,
+not impossible.
+
+A box with no measured text gets no pool at all (the tray is icons; there is
+nothing to ground). That, and the pool's color, come from
+`dominant_run_color` — the widest run inside the box, using the width that
+rides `TextPrim`'s last field. Width is the tiebreak because a module mixing
+colors is led by its longest label.
 
 Both treatments take their color from `treatment_rgb` — whichever of
 black/white the run reads against, by contrast ratio (the WCAG crossover is

@@ -190,23 +190,37 @@ fn scrim_alpha(base: f32, demand: f32) -> f32 {
     (base + (1.0 - base) * demand.clamp(0.0, 1.0)).clamp(0.0, 1.0)
 }
 
-/// The pool for one text run: its solid core, and how far that core fades out.
+/// How far the pool fades out, logical px. Defaults to a quarter of the
+/// bubble's height so the gradient scales with the bar, and is capped at half
+/// of each axis: the feather is drawn OUTSIDE the solid core, so the core is
+/// inset by this much, and a larger one would invert it and the pool would
+/// vanish — exactly where a narrow module (a lone icon) lands.
+fn scrim_feather(w: f32, h: f32, configured: Option<f32>) -> f32 {
+    configured.unwrap_or(h * 0.25).max(0.0).min(w / 2.0).min(h / 2.0)
+}
+
+/// The color of the widest measured text run inside a box, which is the run a
+/// box-sized pool is really there to protect. None when the box holds no
+/// measured run at all.
 ///
-/// The core is the run's own box grown by a hair — enough that the glyphs sit
-/// on solid ground rather than in the gradient — and the feather is drawn
-/// OUTSIDE it, so the visible pool is `core` plus `feather` in every
-/// direction. The default feather scales with the type rather than the bar,
-/// because what it has to cover is the text.
-fn text_scrim_geometry(x: f32, y: f32, run_w: f32, font_size: f32, configured: Option<f32>) -> (cce_ui::scene::layout::Rect, f32) {
-    const PAD: f32 = 2.0;
-    let feather = configured.unwrap_or(font_size * 0.4).max(0.0);
-    let core = cce_ui::scene::layout::Rect {
-        x: x - PAD,
-        y: y - PAD,
-        width: (run_w + PAD * 2.0).max(0.0),
-        height: (font_size + PAD * 2.0).max(0.0),
-    };
-    (core, feather)
+/// Width is the tiebreak rather than, say, the first run, because a module
+/// that mixes colors (a value in an accent beside its label) is led by its
+/// longest label, and that is the one whose legibility carries the segment.
+fn dominant_run_color(runs: &[TextPrim], bx: f32, by: f32, bw: f32, bh: f32) -> Option<[u8; 3]> {
+    let mut best: Option<(f32, [u8; 3])> = None;
+    for (_, tsize, x, y, color, _, _, _, run_w) in runs {
+        let Some(rw) = *run_w else { continue };
+        // Runs belong to the box they sit in; a segment with an expanded menu
+        // has text in both.
+        let (cx, cy) = (x + rw * 0.5, y + tsize * 0.5);
+        if cx < bx || cx > bx + bw || cy < by || cy > by + bh {
+            continue;
+        }
+        if best.map_or(true, |(w, _)| rw > w) {
+            best = Some((rw, *color));
+        }
+    }
+    best.map(|(_, c)| c)
 }
 
 /// The in-surface right-click menu: instead of spawning a popup process, the
@@ -1617,16 +1631,16 @@ impl cce_ui::engine::Application for StatusApp {
             }
         }
 
-        // The dark pool: one per text run, hugging the run rather than the
-        // module box, so a module's own marks (the volume strikethrough, the
-        // battery bolt) keep the box's own ground instead of sitting in a
-        // pool meant for glyphs. `Prim::Glow` is a feathered aura — solid
-        // through its core rect, falling off to nothing across `reach`.
+        // The pool, one per module box — it fills the bubble rather than
+        // hugging the run inside it, so a segment reads as one darkened
+        // lozenge instead of a pill within a pill. `Prim::Glow` is a
+        // feathered aura, solid through its core rect and falling off to
+        // nothing across `reach`, so insetting the core by exactly the
+        // feather lands the gradient's outer edge on the bubble's own edge.
         //
-        // Clipped to the box it belongs to. A run's pool is wider than the
-        // run and, on a 27px bar with 14px text, taller than the room above
-        // and below it; without the clip the feather would wash past the
-        // droplet's silhouette and hang in the air beside it.
+        // Still clipped to the box: the inset makes spill unlikely, not
+        // impossible, and a droplet's silhouette is narrower than its box at
+        // the corners.
         if self.text_scrim > 0.0 {
             // Rests at the configured opacity and deepens with the measured
             // demand; `halo_now` is already zero when text_contrast is off,
@@ -1634,28 +1648,33 @@ impl cce_ui::engine::Application for StatusApp {
             let alpha = scrim_alpha(self.text_scrim, self.halo_now);
             let feather_cfg = self.text_scrim_feather;
             let runs = &self.text_prims;
-            let pools_in = |pc: &mut cce_ui::scene::paint::PaintCtx, bx: f32, by: f32, bw: f32, bh: f32, radius: f32| {
+            let pool_in = |pc: &mut cce_ui::scene::paint::PaintCtx, bx: f32, by: f32, bw: f32, bh: f32, radius: f32| {
+                // Colored for the text it is protecting — the widest run
+                // inside this box, since a box with mixed colors is being
+                // led by its longest label. A box holding no measured run
+                // (a tray of icons) gets no pool: there is no text to ground.
+                let Some(color) = dominant_run_color(runs, bx, by, bw, bh) else { return };
+                let feather = scrim_feather(bw, bh, feather_cfg);
+                let core = Rect {
+                    x: bx + feather,
+                    y: by + feather,
+                    width: (bw - feather * 2.0).max(0.0),
+                    height: (bh - feather * 2.0).max(0.0),
+                };
+                if core.width <= 0.0 || core.height <= 0.0 {
+                    return;
+                }
+                let c = treatment_rgb(color);
                 let box_rect = Rect { x: bx, y: by, width: bw, height: bh };
                 pc.clip_rounded(box_rect, radius, |pc| {
-                    for (_, tsize, x, y, color, _, _, _, run_w) in runs {
-                        let Some(rw) = *run_w else { continue };
-                        // Runs belong to the box they sit in; a segment with
-                        // an expanded menu has text in both.
-                        let (cx, cy) = (x + rw * 0.5, y + tsize * 0.5);
-                        if cx < bx || cx > bx + bw || cy < by || cy > by + bh {
-                            continue;
-                        }
-                        let (core, feather) = text_scrim_geometry(*x, *y, rw, *tsize, feather_cfg);
-                        let c = treatment_rgb(*color);
-                        pc.glow(core, core.height * 0.5, feather, [c[0], c[1], c[2], alpha]);
-                    }
+                    pc.glow(core, (radius - feather).max(0.0), feather, [c[0], c[1], c[2], alpha]);
                 });
             };
             for &(x, y, w, h, _) in &self.droplet_boxes {
-                pools_in(&mut pc, x, y, w, h, h * 0.5);
+                pool_in(&mut pc, x, y, w, h, h * 0.5);
             }
             for rb in &self.rounded_boxes {
-                pools_in(&mut pc, rb.x, rb.y, rb.w, rb.h, rb.radius);
+                pool_in(&mut pc, rb.x, rb.y, rb.w, rb.h, rb.radius);
             }
         }
 
@@ -2280,37 +2299,46 @@ mod tests {
     }
 
     #[test]
-    fn the_pool_hugs_the_run_not_the_box() {
-        // A 60px run inside a 300px module box: the pool has to be sized off
-        // the run, or it is the box treatment again under a new name.
-        let (core, feather) = text_scrim_geometry(100.0, 7.0, 60.0, 14.0, None);
-        assert_eq!(core.x, 98.0);
-        assert_eq!(core.width, 64.0);
-        assert!(core.width + feather * 2.0 < 300.0);
+    fn the_feather_defaults_to_a_quarter_of_the_bubble_height() {
+        assert_eq!(scrim_feather(200.0, 28.0, None), 7.0);
+        assert_eq!(scrim_feather(200.0, 28.0, Some(9.0)), 9.0);
+        assert_eq!(scrim_feather(200.0, 28.0, Some(-3.0)), 0.0);
     }
 
     #[test]
-    fn the_default_feather_scales_with_the_type_not_the_bar() {
-        // What the pool has to cover is the text, so a bigger font gets a
-        // bigger falloff at the same bar height.
-        let (_, small) = text_scrim_geometry(0.0, 0.0, 50.0, 14.0, None);
-        let (_, large) = text_scrim_geometry(0.0, 0.0, 50.0, 28.0, None);
-        assert!(large > small, "{} !> {}", large, small);
-        assert_eq!(small, 5.6);
+    fn the_feather_cannot_swallow_the_core_it_surrounds() {
+        // Drawn OUTSIDE the core, so the core is inset by it; a feather past
+        // half of either axis would invert the core and the pool would
+        // disappear — exactly where a narrow module (a lone icon) lands.
+        assert_eq!(scrim_feather(10.0, 28.0, Some(40.0)), 5.0);
+        assert_eq!(scrim_feather(200.0, 28.0, Some(40.0)), 14.0);
+    }
+
+    fn run(x: f32, y: f32, w: f32, color: [u8; 3]) -> TextPrim {
+        ("x".to_string(), 14.0, x, y, color, None, None, None, Some(w))
     }
 
     #[test]
-    fn the_core_leaves_the_glyphs_on_solid_ground() {
-        // The run's own box, grown a little: glyph edges must not land in the
-        // gradient, which is where a scrim starts looking like a smudge.
-        let (core, _) = text_scrim_geometry(10.0, 5.0, 40.0, 14.0, None);
-        assert!(core.y < 5.0 && core.height > 14.0);
+    fn the_pool_takes_its_color_from_the_widest_run_it_covers() {
+        let runs = vec![run(20.0, 7.0, 30.0, [255, 255, 255]), run(60.0, 7.0, 90.0, [0, 0, 0])];
+        assert_eq!(dominant_run_color(&runs, 10.0, 0.0, 200.0, 27.0), Some([0, 0, 0]));
     }
 
     #[test]
-    fn a_configured_feather_is_honored_and_never_negative() {
-        assert_eq!(text_scrim_geometry(0.0, 0.0, 40.0, 14.0, Some(9.0)).1, 9.0);
-        assert_eq!(text_scrim_geometry(0.0, 0.0, 40.0, 14.0, Some(-3.0)).1, 0.0);
+    fn a_run_in_another_box_does_not_color_this_pool() {
+        // An expanded segment has text in the strip AND in the menu below it;
+        // the strip's pool must not be colored by a menu row.
+        let runs = vec![run(20.0, 7.0, 30.0, [255, 255, 255]), run(20.0, 60.0, 90.0, [0, 0, 0])];
+        assert_eq!(dominant_run_color(&runs, 10.0, 0.0, 200.0, 27.0), Some([255, 255, 255]));
+    }
+
+    #[test]
+    fn a_box_with_no_measured_text_gets_no_pool() {
+        // The tray is icons; there is no text to ground, and a pool there
+        // would just be a smudge behind the icons.
+        let runs: Vec<TextPrim> = vec![("i".to_string(), 14.0, 20.0, 7.0, [255, 255, 255], None, None, None, None)];
+        assert_eq!(dominant_run_color(&runs, 10.0, 0.0, 200.0, 27.0), None);
+        assert_eq!(dominant_run_color(&[], 10.0, 0.0, 200.0, 27.0), None);
     }
 
     #[test]
