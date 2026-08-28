@@ -143,7 +143,8 @@ multi-module surface — applied on `ccectl reload`) and `module { height }` (th
 bar height; read by BOTH sides — bar surfaces live via the mtime poll, the
 compositor's segment height + reserved strip on `ccectl reload` — falls back to
 the shared `layout { bar_height }`) and `module { padding }` (text inset inside
-each module box, bar-side only, falls back to the shared `status_padding`) and
+each module box, bar-side only, falls back to the shared
+`/style/status/padding`) and
 `module { font_size }` (module text size, bar-side only; beats even the size
 embedded in the shared font string, which remains the fallback) and
 `module { font }` (module text family; an embedded size ranks below
@@ -151,7 +152,7 @@ module { font_size } in the size chain) and `module { background_color }` (the
 module box fill, rgba; linearized like every quad color, and the
 background_blur tint scaling still applies on top) and `module { text_color }`
 (module text, raw-sRGB like every text color, falls back to the shared
-`status_normal_color`) and `module { droplet }` (the water-droplet module
+`/style/status/normal_color`) and `module { droplet }` (the water-droplet module
 style — cce-ui's `Prim::Droplet`, shader mode 10; the key's PRESENCE enables
 it, its value is whitespace-separated `k=v` pairs onto `DropletSpec` — sag,
 belly, belly_w, blend, sheet_r, attach, clarity, dome, band, gleam, shine,
@@ -191,11 +192,16 @@ pointer only**: every key names its canonical nesting
 per-module sides, …), and a key parked anywhere else simply does not resolve.
 (The legacy fuzzy `json_find_key` — snake_case split across nesting, then
 depth-first search — was deleted 2026-08-18 after its fallback warnings went
-quiet; don't reintroduce it.) Shared keys used here: `bar_height`, `status_font`
-(also via fontconfig alias `status-interface`), `status_font_size`,
-`status_padding`, `status_module_spacing`, `status_normal_color`,
-`status_background_color`, `status_background_blur`, `status_box_bevel`(`_depth`),
-`light_source_position`, and the per-module side entries. (The whole-bar
+quiet; don't reintroduce it.) Shared keys used here, written as the pointers
+they are actually looked up by — the flat snake_case spellings this list used
+to carry (`status_padding`, `status_font`, …) appear nowhere in the config or
+the code: `/layout/bar_height`, `/style/status/font` (also via fontconfig alias
+`status-interface`), `/style/status/font_size`, `/style/status/padding`,
+`/style/status/module_spacing`, `/style/status/normal_color`,
+`/style/status/disabled_color`, `/style/status/background_color`,
+`/style/status/background_blur`, `/style/status/box_bevel`(`_depth`),
+`/window_manager/light_source_position`, and `/layout/status_bar/<module>` for
+the per-module sides. (The whole-bar
 background chain is gone: a `StatusApp` is always a single `--module` segment,
 so the surface bg is permanently transparent and only module boxes paint.)
 
