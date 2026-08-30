@@ -128,9 +128,10 @@ pub struct WindowModule;
 impl StatusModule for WindowModule {
     fn name(&self) -> &'static str { "window" }
 
-    fn has_custom_background(&self, title: &str) -> bool {
-        title.is_empty() || title == "(none)"
-    }
+    // No has_custom_background override: the "(none)" chip is an ordinary
+    // bubble (it used to draw its own square-topped box in render, which
+    // ignored the droplet style), and the empty-title state has width 0, so
+    // no box is ever drawn for it anyway.
 
     fn width(
         &self,
@@ -205,9 +206,9 @@ impl StatusModule for WindowModule {
         _overlay_rects: &mut Vec<RectWidget>,
         _tray_items: &HashMap<String, TrayItem>,
         _tray_item_bounds: &mut Vec<TrayIconBounds>,
-        box_bg_color: Option<[f32; 4]>,
-        status_box_radius: f32,
-        rounded_boxes: &mut Vec<RoundedBox>,
+        _box_bg_color: Option<[f32; 4]>,
+        _status_box_radius: f32,
+        _rounded_boxes: &mut Vec<RoundedBox>,
         padding: f32,
     ) {
         let has_title = !title.is_empty() && title != "(none)";
@@ -217,23 +218,11 @@ impl StatusModule for WindowModule {
         } else if title == "(none)" {
             // Dim chip signalling that no window has keyboard focus — the
             // state where typing goes nowhere. Half-alpha text, not
-            // clickable.
+            // clickable; the bubble behind it is the standard one drawn by
+            // rebuild_layout, same as every module.
             let mut dim = normal_color;
             dim[3] *= 0.5;
             let label = Label::new_with_family(font_system, NO_FOCUS_TEXT, font_size, dim, font_family);
-            let box_w = label.w + 2.0 * padding;
-            if let Some(color) = box_bg_color {
-                rounded_boxes.push(RoundedBox {
-                    x,
-                    y: 0.0,
-                    w: box_w,
-                    h: bar_h,
-                    radius: status_box_radius,
-                    color,
-                    corners: (false, false, true, true),
-                    border: None,
-                });
-            }
             crate::draw_label(text_prims, label, x + padding, centered_text_y(bar_h, font_size));
         }
     }
