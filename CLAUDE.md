@@ -148,7 +148,10 @@ click → `MenuReady` rows of `Ccectl(["focus-window", id])`) is an in-surface
 menu too. Menu width sizes to
 the longest row label. Expanded segments stack in the compositor's popups
 layer (cce-fx@74a0f75) so click-away-close works across the whole surface,
-including the strip band over neighboring segments.
+including the strip band over neighboring segments. Plain Escape closes open
+menus too — compositor-side like click-away (cce-fx@7db8c03), arriving here as
+the same `dismiss` push; this app never sees the key itself, since status
+segments hold no keyboard focus.
 
 ## Config
 
