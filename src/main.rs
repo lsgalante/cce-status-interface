@@ -345,6 +345,11 @@ pub(crate) fn make_text_buffer(fs: &mut FontSystem, text: &str, size: f32, font_
     let metrics = Metrics::new(physical_size, physical_size * 1.4);
     let mut buf = Buffer::new(fs, metrics);
     let mut attrs = Attrs::new();
+    // Same shaping rule as cce-ui's buffer path (ASCII in a mono face →
+    // Basic, no ligatures), so this measurement agrees with what the engine
+    // draws — an fi ligature applied on one side only would skew widths by a
+    // full advance cell.
+    let mut shaping = cce_ui::cosmic_text::Shaping::Advanced;
     if let Some(ref font_name) = family_name {
         let family = match font_name.as_str() {
             "monospace" => cce_ui::cosmic_text::Family::Name(cce_ui::layout::get_system_monospace_font()),
@@ -353,8 +358,9 @@ pub(crate) fn make_text_buffer(fs: &mut FontSystem, text: &str, size: f32, font_
             name => cce_ui::cosmic_text::Family::Name(name),
         };
         attrs = attrs.family(family);
+        shaping = cce_ui::engine::shaping_for(fs, text, &family);
     }
-    buf.set_text(fs, text, attrs, cce_ui::cosmic_text::Shaping::Advanced);
+    buf.set_text(fs, text, attrs, shaping);
     buf.shape_until_scroll(fs, true);
     buf
 }
@@ -2713,4 +2719,3 @@ mod tests {
         assert!(parse_ccectl_windows("{not json").is_empty());
     }
 }
-
