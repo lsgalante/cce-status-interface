@@ -201,8 +201,24 @@ fn spec_at_reference_height(
     out.blend *= k;
     out.sheet_r *= k;
     out.attach *= k;
-    out.band *= k;
     out.bow *= k;
+    out.band *= k;
+    // The dome and its gleam FADE OUT as the box grows past the bar strip:
+    // dome shading follows the rounded-rect SDF gradient, and on a box with
+    // long straight sides that field creases along the corner diagonals —
+    // full strength draws a blocky lit picture-frame (band pinned) or
+    // envelope folds across the body (band grown); both were tried and read
+    // as broken lighting rather than water. A tall panel is not a bead: the
+    // expanded menu settles into a flat glass sheet that keeps the drop's
+    // OTHER water terms — the thin-edge clarity falloff, the fresnel rim
+    // crest along the lower arc, the core tint, the contact shadow — which
+    // are all silhouette-hugging and crease-free. The ramp is continuous in
+    // k — full lighting collapsed, gone once the box passes twice the bar
+    // height — so the fade rides the expansion animation with nothing to
+    // pop, and a real menu (k ≈ 0.1–0.2) lands at exactly zero.
+    let lit = ((k - 0.5) * 2.0).clamp(0.0, 1.0);
+    out.dome *= lit;
+    out.gleam *= lit;
     out
 }
 
@@ -480,6 +496,10 @@ struct StatusApp {
     /// The collapsed bubble actually drawn this rebuild (x, w), slot coords —
     /// what the in-surface menu expansion grows out of and contracts back to.
     collapsed_box: Option<(f32, f32)>,
+    /// The hovered menu row's highlight pill (x, y, w, h), set by the menu
+    /// branch of `rebuild_layout` and drawn in `display_list` AFTER the scrim
+    /// (so the pool does not darken it) and before the text.
+    menu_hover_rect: Option<(f32, f32, f32, f32)>,
     input_regions: Vec<(i32, i32, i32, i32)>,
     module_bounds: Vec<ModuleBounds>,
     left_modules: Vec<Box<dyn StatusModule>>,
@@ -583,6 +603,7 @@ impl StatusApp {
         self.module_bounds.clear();
         self.tray_item_bounds.clear();
         self.collapsed_box = None;
+        self.menu_hover_rect = None;
 
         let left_modules = std::mem::take(&mut self.left_modules);
         let right_modules = std::mem::take(&mut self.right_modules);
@@ -1032,13 +1053,13 @@ impl StatusApp {
                             });
                         } else {
                             if hovered == Some(i) && row.enabled {
-                                self.rects.push(RectWidget {
-                                    x: anim_x + 2.0,
-                                    y: iy,
-                                    w: anim_w - 4.0,
-                                    h: h,
-                                    color: [0.23, 0.35, 0.50, 0.55],
-                                });
+                                // A rounded pill inset from the panel edge,
+                                // drawn post-scrim in display_list — a
+                                // square-cornered full-width rect butting
+                                // into the rounded silhouette was the last
+                                // blocky element of the expanded menu.
+                                self.menu_hover_rect =
+                                    Some((anim_x + 6.0, iy + 1.0, anim_w - 12.0, h - 2.0));
                             }
                             self.text_prims.push((
                                 row.label.clone(),
@@ -1429,6 +1450,7 @@ impl cce_ui::engine::Application for StatusApp {
             context_menu: None,
             menu_anim: 0.0,
             menu_closing: false,
+            menu_hover_rect: None,
             bubble_w_now: 0.0,
             bubble_w_target: 0.0,
             collapsed_box: None,
@@ -1818,6 +1840,17 @@ impl cce_ui::engine::Application for StatusApp {
         pc.quad(Rect { x: sb_x, y: sb_y, width: sb_w, height: sb_h }, self.status_bar.color());
         for r in &self.rects {
             pc.quad(Rect { x: r.x, y: r.y, width: r.w, height: r.h }, r.color);
+        }
+
+        // The hovered menu row's pill: post-scrim so the pool cannot darken
+        // it, pre-text so the label sits on it.
+        if let Some((hx, hy, hw, hh)) = self.menu_hover_rect {
+            pc.rounded_rect(
+                Rect { x: hx, y: hy, width: hw, height: hh },
+                (hh / 2.0).min(8.0),
+                (true, true, true, true),
+                [0.23, 0.35, 0.50, 0.55],
+            );
         }
 
         for (text, tsize, x, y, color, font, bounds, layout, _run_w) in &self.text_prims {
@@ -2449,14 +2482,36 @@ mod tests {
         assert_eq!(grown.curve, spec.curve);
         assert_eq!(grown.core, spec.core);
         assert_eq!(grown.clarity, spec.clarity);
-        assert_eq!(grown.dome, spec.dome);
-        assert_eq!(grown.gleam, spec.gleam);
         assert_eq!(grown.shine, spec.shine);
         assert_eq!(grown.rim, spec.rim);
         assert_eq!(grown.shadow, spec.shadow);
         // belly_w is a fraction of the remaining half-WIDTH, not of height.
         assert_eq!(grown.belly_w, spec.belly_w);
         assert!(grown.sheet_r < spec.sheet_r);
+    }
+
+    #[test]
+    fn the_expanded_panel_is_a_flat_sheet_with_the_water_terms_kept() {
+        // The dome and its gleam fade OUT as the box grows: at full strength
+        // the SDF-gradient dome draws a blocky lit frame (band pinned) or
+        // envelope folds (band grown) on a long-sided panel — both tried,
+        // both read as broken lighting. A real menu (k well under 0.5) lands
+        // at exactly zero: flat glass, keeping clarity, rim, core, shadow.
+        let spec = cce_ui::scene::paint::DropletSpec::default();
+        let grown = spec_at_reference_height(spec, COLLAPSED.1, PICKER.1);
+        assert_eq!(grown.dome, 0.0);
+        assert_eq!(grown.gleam, 0.0);
+        assert_eq!(grown.clarity, spec.clarity);
+        assert_eq!(grown.rim, spec.rim);
+
+        // The fade is CONTINUOUS in the growth factor — the expansion
+        // animation passes through every k on its way down, so a step
+        // anywhere would pop mid-flight. Just past the reference it is
+        // near-identity; by twice the reference it has reached zero.
+        let barely = spec_at_reference_height(spec, COLLAPSED.1, COLLAPSED.1 + 0.5);
+        assert!((barely.dome - spec.dome).abs() < 0.1);
+        let doubled = spec_at_reference_height(spec, COLLAPSED.1, COLLAPSED.1 * 2.0);
+        assert_eq!(doubled.dome, 0.0);
     }
 
     #[test]

@@ -134,6 +134,14 @@ fetch_tray_menu_pages` into `MenuPage`/`MenuRow` pages riding a
 DBusMenu "clicked" via `send_tray_menu_event`). The compositor treats a status
 segment thicker than the bar as expanded: frozen slot, no size enforcement,
 raised above overlapped windows; the bar must reset its own height on close.
+In droplet style the expanded panel is a FLAT glass sheet: `spec_at_reference_height`
+fades `dome` and `gleam` to zero (continuously in the growth factor, gone by
+twice the bar height) because the SDF-gradient dome creases on a long-sided
+box — full strength drew a blocky lit picture-frame with the band pinned, and
+envelope folds across the body with the band grown; both were tried. The panel
+keeps the silhouette-hugging water terms (clarity, rim crest, core, contact
+shadow), and the hovered row's highlight is a rounded pill inset from the
+panel edge (`menu_hover_rect`, drawn post-scrim), not a full-width rect.
 
 **No cce-cloud popups remain in this app**: the window picker (window-module
 click → `MenuReady` rows of `Ccectl(["focus-window", id])`) is an in-surface
