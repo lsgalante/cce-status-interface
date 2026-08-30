@@ -717,7 +717,11 @@ impl StatusModule for TrayModule {
         for (i, item) in sorted_tray.iter().enumerate() {
             let icon_size = 16.0;
             let icon_x = x + padding + (i as f32) * (icon_size + 8.0);
-            let icon_y = (bar_h - icon_size) / 2.0;
+            // The same `module { text_raise }` lift every text run gets via
+            // `centered_text_y` — without it the icons sit at geometric
+            // center while neighboring modules' text rides `text_raise`
+            // higher, and the tray reads as low.
+            let icon_y = (bar_h - icon_size) / 2.0 - crate::config::read_text_raise_from_config();
 
             tray_item_bounds.push(TrayIconBounds {
                 id: item.id.clone(),
@@ -836,7 +840,10 @@ impl StatusModule for TrayModule {
                 let scale = cce_ui::scale::scale_factor();
                 let tw = buf.layout_runs().next().map(|r| r.line_w).unwrap_or(0.0) / scale;
                 let tx = icon_x + (icon_size - tw) / 2.0;
-                let ty = icon_y + centered_text_y(icon_size, font_size);
+                // Plain centering within the icon box: the box itself already
+                // carries the `text_raise` lift, and `centered_text_y` here
+                // would apply it a second time.
+                let ty = icon_y + (icon_size - font_size) / 2.0;
                 text_prims.push((
                     symbol.to_string(),
                     font_size,
