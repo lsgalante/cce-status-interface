@@ -68,6 +68,18 @@ The app implements `cce_ui::engine::Application` on the **`display_list()` paint
    `rebuild_layout()` when size/scale changed or `needs_rebuild` is set).
    `overlay_quads()` remains a separate on-top pass (used for drag feedback).
 
+**Module boxes hug their content.** `StatusModule::width()` is the STABLE slot
+width — widest-plausible templates for the stat modules, 24px title buckets for
+the window module — and it alone sizes the surface, which is what keeps the
+compositor's configure-echo jitter out of the loop; `content_width()` (default:
+`width()`) measures the live text, and the drawn bubble takes that width,
+centered in the slot, so the padding on each side of the text is
+`module { padding }` rather than padding-plus-template-surplus. The drawn width
+is eased over ~120ms in `tick` (`bubble_w_now`/`bubble_w_target` — one pair of
+fields, sound because a `StatusApp` hosts exactly one module), and the
+in-surface menu expansion grows out of `collapsed_box` — the bubble actually
+drawn — not out of the slot, so the box-grows-into-the-menu continuity holds.
+
 Orientation is dynamic: `is_vertical()` compares the surface size against the
 configured bar thickness; every module renders along one axis using `bar_h`/`coord`
 accordingly.

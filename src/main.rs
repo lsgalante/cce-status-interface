@@ -459,6 +459,21 @@ struct StatusApp {
     /// True while the menu is animating shut; `context_menu` is dropped
     /// only when the contraction lands back at the strip.
     menu_closing: bool,
+    /// The drawn bubble's width, eased in `tick` toward `bubble_w_target`
+    /// (the module's live `content_width`). The slot and the surface hold the
+    /// stable `width()` — templates and title quantization keep the
+    /// compositor from ever seeing a resize — while the bubble inside hugs
+    /// the content, centered on the difference, so side padding stays the
+    /// configured padding. Easing is what keeps a flapping window title from
+    /// snapping the bubble edge on every change. 0 = not yet measured (the
+    /// first rebuild snaps straight to the target). Single-module by
+    /// construction: a `StatusApp` always hosts exactly one module, so one
+    /// pair of fields covers "the" bubble.
+    bubble_w_now: f32,
+    bubble_w_target: f32,
+    /// The collapsed bubble actually drawn this rebuild (x, w), slot coords —
+    /// what the in-surface menu expansion grows out of and contracts back to.
+    collapsed_box: Option<(f32, f32)>,
     input_regions: Vec<(i32, i32, i32, i32)>,
     module_bounds: Vec<ModuleBounds>,
     left_modules: Vec<Box<dyn StatusModule>>,
@@ -561,6 +576,7 @@ impl StatusApp {
         self.input_regions.clear();
         self.module_bounds.clear();
         self.tray_item_bounds.clear();
+        self.collapsed_box = None;
 
         let left_modules = std::mem::take(&mut self.left_modules);
         let right_modules = std::mem::take(&mut self.right_modules);
@@ -604,6 +620,23 @@ impl StatusApp {
                 }
                 is_first_left = false;
 
+                // The bubble hugs the LIVE content, centered in the stable
+                // slot: `width()` keeps the surface from resizing (the
+                // configure-echo jitter), while the drawn box shrinks so the
+                // padding on each side of the text is the configured padding
+                // rather than padding-plus-template-surplus. The drawn width
+                // is `bubble_w_now`, eased toward the live measure in `tick`.
+                let cw = module
+                    .content_width(&self.stats, &self.title, &mut self.font_system, &font_family, font_size, &self.tray_items, padding)
+                    .min(w);
+                self.bubble_w_target = cw;
+                if self.bubble_w_now <= 0.0 {
+                    self.bubble_w_now = cw;
+                }
+                let bw = self.bubble_w_now.min(w);
+                let bx = left_x + (w - bw) / 2.0;
+                self.collapsed_box = Some((bx, bw));
+
                 // With the in-surface menu open the module box is replaced by
                 // the unified expanded box drawn in the menu branch below —
                 // the module box GROWS into the menu, it doesn't sit atop it.
@@ -614,12 +647,12 @@ impl StatusApp {
                             // belly silhouette's AA feather, plus the
                             // contact shadow's reserved gap.
                             let inset = 1.0 + spec.shadow_gap(bar_h);
-                            self.droplet_boxes.push((left_x, 0.0, w, bar_h - inset, color, spec));
+                            self.droplet_boxes.push((bx, 0.0, bw, bar_h - inset, color, spec));
                         } else {
                             self.rounded_boxes.push(RoundedBox {
-                                x: left_x,
+                                x: bx,
                                 y: 0.0,
-                                w,
+                                w: bw,
                                 h: bar_h,
                                 radius: status_box_radius,
                                 color,
@@ -631,8 +664,8 @@ impl StatusApp {
                 }
 
                 module.render(
-                    left_x,
-                    w,
+                    bx,
+                    bw,
                     &self.stats,
                     &self.title,
                     &mut self.font_system,
@@ -691,6 +724,19 @@ impl StatusApp {
                 });
                 self.input_regions.push((right_x.round() as i32, 0, w.round() as i32, bar_h.round() as i32));
 
+                // See the left loop: the bubble hugs the eased live content
+                // width, centered in the stable slot.
+                let cw = module
+                    .content_width(&self.stats, &self.title, &mut self.font_system, &font_family, font_size, &self.tray_items, padding)
+                    .min(w);
+                self.bubble_w_target = cw;
+                if self.bubble_w_now <= 0.0 {
+                    self.bubble_w_now = cw;
+                }
+                let bw = self.bubble_w_now.min(w);
+                let bx = right_x + (w - bw) / 2.0;
+                self.collapsed_box = Some((bx, bw));
+
                 // See the left loop: an open in-surface menu swaps the module
                 // box for the unified expanded box.
                 if !module.has_custom_background(&self.title) && self.context_menu.is_none() {
@@ -698,12 +744,12 @@ impl StatusApp {
                         if let Some(spec) = self.droplet {
                             // Same bottom inset as the left loop.
                             let inset = 1.0 + spec.shadow_gap(bar_h);
-                            self.droplet_boxes.push((right_x, 0.0, w, bar_h - inset, color, spec));
+                            self.droplet_boxes.push((bx, 0.0, bw, bar_h - inset, color, spec));
                         } else {
                             self.rounded_boxes.push(RoundedBox {
-                                x: right_x,
+                                x: bx,
                                 y: 0.0,
-                                w,
+                                w: bw,
                                 h: bar_h,
                                 radius: status_box_radius,
                                 color,
@@ -715,8 +761,8 @@ impl StatusApp {
                 }
 
                 module.render(
-                    right_x,
-                    w,
+                    bx,
+                    bw,
                     &self.stats,
                     &self.title,
                     &mut self.font_system,
@@ -889,10 +935,18 @@ impl StatusApp {
                         let a = self.menu_anim.clamp(0.0, 1.0);
                         1.0 - (1.0 - a) * (1.0 - a) * (1.0 - a)
                     };
-                    let anim_w = module_box_w + (menu_w - module_box_w) * t;
+                    // The expansion grows out of the bubble actually drawn on
+                    // the strip — which may sit inset in its slot, hugging
+                    // the live content — not out of the slot itself, so the
+                    // "module box grows into the menu" continuity holds with
+                    // content-hugging bubbles. Contraction reverses back to
+                    // the same collapsed box.
+                    let (start_x, start_w) = self.collapsed_box.unwrap_or((plate_x, module_box_w));
+                    let anim_w = start_w + (menu_w - start_w) * t;
+                    let anim_x = start_x + (plate_x - start_x) * t;
                     let reveal_h = menu_h * t;
-                    menu.rect = (plate_x, bar_h, anim_w, reveal_h);
-                    self.width = self.width.max((anim_w + 2.0 * plate_x).round() as u32);
+                    menu.rect = (anim_x, bar_h, anim_w, reveal_h);
+                    self.width = self.width.max((anim_x + anim_w + plate_x).round() as u32);
                     self.height = (bar_h + reveal_h).round() as u32;
 
                     // ONE continuous box in the module's own fill, spanning
@@ -912,10 +966,10 @@ impl StatusApp {
                         let collapsed_h = bar_h - inset;
                         let box_h = bar_h + reveal_h - inset;
                         let menu_spec = spec_at_reference_height(spec, collapsed_h, box_h);
-                        self.droplet_boxes.push((plate_x, 0.0, anim_w, box_h, menu_color, menu_spec));
+                        self.droplet_boxes.push((anim_x, 0.0, anim_w, box_h, menu_color, menu_spec));
                     } else {
                         self.rounded_boxes.insert(0, RoundedBox {
-                            x: plate_x,
+                            x: anim_x,
                             y: 0.0,
                             w: anim_w,
                             h: bar_h + reveal_h,
@@ -973,7 +1027,7 @@ impl StatusApp {
                         } else {
                             if hovered == Some(i) && row.enabled {
                                 self.rects.push(RectWidget {
-                                    x: plate_x + 2.0,
+                                    x: anim_x + 2.0,
                                     y: iy,
                                     w: anim_w - 4.0,
                                     h: h,
@@ -1369,6 +1423,9 @@ impl cce_ui::engine::Application for StatusApp {
             context_menu: None,
             menu_anim: 0.0,
             menu_closing: false,
+            bubble_w_now: 0.0,
+            bubble_w_target: 0.0,
+            collapsed_box: None,
             input_regions: Vec::new(),
             module_bounds: Vec::new(),
             left_modules,
@@ -1554,6 +1611,25 @@ impl cce_ui::engine::Application for StatusApp {
                 self.needs_rebuild = true;
             } else if self.contrast_now != target {
                 self.contrast_now = target;
+                *needs_rebuild = true;
+                self.needs_rebuild = true;
+            }
+        }
+
+        // Ease the drawn bubble toward its live-content width — the same
+        // treatment the scrim gets: stepping straight there would snap the
+        // bubble edges on every stat update or title change, and a flapping
+        // browser title would make the box twitch instead of breathe.
+        {
+            const BUBBLE_EASE_S: f32 = 0.12;
+            let target = self.bubble_w_target;
+            if (target - self.bubble_w_now).abs() > 0.5 {
+                let step = (dt / BUBBLE_EASE_S).clamp(0.0, 1.0);
+                self.bubble_w_now += (target - self.bubble_w_now) * step;
+                *needs_rebuild = true;
+                self.needs_rebuild = true;
+            } else if self.bubble_w_now != target && target > 0.0 {
+                self.bubble_w_now = target;
                 *needs_rebuild = true;
                 self.needs_rebuild = true;
             }

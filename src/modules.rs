@@ -32,6 +32,27 @@ pub trait StatusModule {
         padding: f32,
     ) -> f32;
 
+    /// Width of the module's LIVE content plus padding — what the drawn
+    /// bubble hugs. `width()` stays the stable LAYOUT width (widest-plausible
+    /// templates, title quantization) that sizes the slot and the surface, so
+    /// the compositor never sees a resize; this one may be narrower, and the
+    /// bubble is centered in the slot on the difference so the padding on
+    /// each side of the content is the configured padding rather than
+    /// padding-plus-template-surplus. Defaults to `width()` for modules whose
+    /// slot already is their content (clock, tray, light_source).
+    fn content_width(
+        &self,
+        stats: &Option<SystemStats>,
+        title: &str,
+        font_system: &mut FontSystem,
+        font_family: &str,
+        font_size: f32,
+        tray_items: &HashMap<String, TrayItem>,
+        padding: f32,
+    ) -> f32 {
+        self.width(stats, title, font_system, font_family, font_size, tray_items, padding)
+    }
+
     fn render(
         &self,
         x: f32,
@@ -75,8 +96,32 @@ fn stable_text_width(
     live.max(tmpl) + 2.0 * padding
 }
 
+/// The live half of `stable_text_width`: the text as it is right now, plus
+/// padding — the content measure `content_width` implementations return.
+fn live_text_width(
+    font_system: &mut FontSystem,
+    text: &str,
+    font_size: f32,
+    font_family: &str,
+    padding: f32,
+) -> f32 {
+    Label::new_with_family(font_system, text, font_size, [0.0, 0.0, 0.0, 1.0], font_family).w
+        + 2.0 * padding
+}
+
 /// Chip text shown by the window module while nothing holds keyboard focus.
 const NO_FOCUS_TEXT: &str = "no focus";
+
+/// The window module's title as displayed: ellipsized past 40 chars. One
+/// place, because `width`, `content_width` and `render` must all measure the
+/// same string.
+fn display_title(title: &str) -> String {
+    if title.chars().count() > 40 {
+        title.chars().take(37).collect::<String>() + "..."
+    } else {
+        title.to_string()
+    }
+}
 
 pub struct WindowModule;
 
@@ -99,12 +144,7 @@ impl StatusModule for WindowModule {
     ) -> f32 {
         let has_title = !title.is_empty() && title != "(none)";
         if has_title {
-            let mut display_title = title.to_string();
-            if display_title.chars().count() > 40 {
-                display_title = display_title.chars().take(37).collect::<String>() + "...";
-            }
-            let label = Label::new_with_family(font_system, &display_title, font_size, [0.0, 0.0, 0.0, 1.0], font_family);
-            let total_w = label.w;
+            let total_w = live_text_width(font_system, &display_title(title), font_size, font_family, padding);
 
             // Title-mode width quantized UP to a coarse step: titles change
             // constantly (dirty markers, browser tabs, terminal cwd), and
@@ -112,19 +152,39 @@ impl StatusModule for WindowModule {
             // shoving the neighboring module sideways each time (the
             // light_source flicker) and, at 372↔456px alternation rates,
             // feeding the compositor's configure echo loop. Within a bucket a
-            // title change costs nothing.
+            // title change costs nothing. (The drawn bubble hugs the exact
+            // title via `content_width`; the bucket sizes only the surface.)
             const TITLE_WIDTH_STEP: f32 = 24.0;
-            ((total_w + 2.0 * padding) / TITLE_WIDTH_STEP).ceil() * TITLE_WIDTH_STEP
+            (total_w / TITLE_WIDTH_STEP).ceil() * TITLE_WIDTH_STEP
         } else {
             // "(none)" is the compositor explicitly reporting Focus::None
             // (keystrokes go nowhere); an empty title is just the feed not
             // having connected yet, which must not flash the indicator.
             if title == "(none)" {
-                let label = Label::new_with_family(font_system, NO_FOCUS_TEXT, font_size, [0.0, 0.0, 0.0, 1.0], font_family);
-                label.w + 2.0 * padding
+                live_text_width(font_system, NO_FOCUS_TEXT, font_size, font_family, padding)
             } else {
                 0.0
             }
+        }
+    }
+
+    fn content_width(
+        &self,
+        _stats: &Option<SystemStats>,
+        title: &str,
+        font_system: &mut FontSystem,
+        font_family: &str,
+        font_size: f32,
+        _tray_items: &HashMap<String, TrayItem>,
+        padding: f32,
+    ) -> f32 {
+        let has_title = !title.is_empty() && title != "(none)";
+        if has_title {
+            live_text_width(font_system, &display_title(title), font_size, font_family, padding)
+        } else if title == "(none)" {
+            live_text_width(font_system, NO_FOCUS_TEXT, font_size, font_family, padding)
+        } else {
+            0.0
         }
     }
 
@@ -152,11 +212,7 @@ impl StatusModule for WindowModule {
     ) {
         let has_title = !title.is_empty() && title != "(none)";
         if has_title {
-            let mut display_title = title.to_string();
-            if display_title.chars().count() > 40 {
-                display_title = display_title.chars().take(37).collect::<String>() + "...";
-            }
-            let label = Label::new_with_family(font_system, &display_title, font_size, normal_color, font_family);
+            let label = Label::new_with_family(font_system, &display_title(title), font_size, normal_color, font_family);
             crate::draw_label(text_prims, label, x + padding, centered_text_y(bar_h, font_size));
         } else if title == "(none)" {
             // Dim chip signalling that no window has keyboard focus — the
@@ -238,6 +294,15 @@ impl StatusModule for ClockModule {
 
 pub struct BatteryModule;
 
+impl BatteryModule {
+    fn live_text<'a>(stats: &'a Option<SystemStats>) -> &'a str {
+        match stats {
+            Some(s) if !s.battery.is_empty() => &s.battery,
+            _ => "Bat 100%",
+        }
+    }
+}
+
 impl StatusModule for BatteryModule {
     fn name(&self) -> &'static str { "battery" }
 
@@ -251,12 +316,20 @@ impl StatusModule for BatteryModule {
         _tray_items: &HashMap<String, TrayItem>,
         padding: f32,
     ) -> f32 {
-        let text = if let Some(ref s) = stats {
-            if !s.battery.is_empty() { &s.battery } else { "Bat 100%" }
-        } else {
-            "Bat 100%"
-        };
-        stable_text_width(font_system, text, "Bat 100%", font_size, font_family, padding)
+        stable_text_width(font_system, Self::live_text(stats), "Bat 100%", font_size, font_family, padding)
+    }
+
+    fn content_width(
+        &self,
+        stats: &Option<SystemStats>,
+        _title: &str,
+        font_system: &mut FontSystem,
+        font_family: &str,
+        font_size: f32,
+        _tray_items: &HashMap<String, TrayItem>,
+        padding: f32,
+    ) -> f32 {
+        live_text_width(font_system, Self::live_text(stats), font_size, font_family, padding)
     }
 
     fn render(
@@ -297,6 +370,15 @@ impl StatusModule for BatteryModule {
 
 pub struct VolumeModule;
 
+impl VolumeModule {
+    fn live_text<'a>(stats: &'a Option<SystemStats>) -> &'a str {
+        match stats {
+            Some(s) if !s.volume.is_empty() => &s.volume,
+            _ => "Vol 100%",
+        }
+    }
+}
+
 impl StatusModule for VolumeModule {
     fn name(&self) -> &'static str { "volume" }
 
@@ -310,12 +392,20 @@ impl StatusModule for VolumeModule {
         _tray_items: &HashMap<String, TrayItem>,
         padding: f32,
     ) -> f32 {
-        let text = if let Some(ref s) = stats {
-            if !s.volume.is_empty() { &s.volume } else { "Vol 100%" }
-        } else {
-            "Vol 100%"
-        };
-        stable_text_width(font_system, text, "Vol 100%", font_size, font_family, padding)
+        stable_text_width(font_system, Self::live_text(stats), "Vol 100%", font_size, font_family, padding)
+    }
+
+    fn content_width(
+        &self,
+        stats: &Option<SystemStats>,
+        _title: &str,
+        font_system: &mut FontSystem,
+        font_family: &str,
+        font_size: f32,
+        _tray_items: &HashMap<String, TrayItem>,
+        padding: f32,
+    ) -> f32 {
+        live_text_width(font_system, Self::live_text(stats), font_size, font_family, padding)
     }
 
     fn render(
@@ -357,6 +447,15 @@ impl StatusModule for VolumeModule {
 
 pub struct BrightnessModule;
 
+impl BrightnessModule {
+    fn live_text<'a>(stats: &'a Option<SystemStats>) -> &'a str {
+        match stats {
+            Some(s) if !s.brightness.is_empty() => &s.brightness,
+            _ => "Bri 100%",
+        }
+    }
+}
+
 impl StatusModule for BrightnessModule {
     fn name(&self) -> &'static str { "brightness" }
 
@@ -370,12 +469,20 @@ impl StatusModule for BrightnessModule {
         _tray_items: &HashMap<String, TrayItem>,
         padding: f32,
     ) -> f32 {
-        let text = if let Some(ref s) = stats {
-            if !s.brightness.is_empty() { &s.brightness } else { "Bri 100%" }
-        } else {
-            "Bri 100%"
-        };
-        stable_text_width(font_system, text, "Bri 100%", font_size, font_family, padding)
+        stable_text_width(font_system, Self::live_text(stats), "Bri 100%", font_size, font_family, padding)
+    }
+
+    fn content_width(
+        &self,
+        stats: &Option<SystemStats>,
+        _title: &str,
+        font_system: &mut FontSystem,
+        font_family: &str,
+        font_size: f32,
+        _tray_items: &HashMap<String, TrayItem>,
+        padding: f32,
+    ) -> f32 {
+        live_text_width(font_system, Self::live_text(stats), font_size, font_family, padding)
     }
 
     fn render(
@@ -411,6 +518,15 @@ impl StatusModule for BrightnessModule {
 
 pub struct MemoryModule;
 
+impl MemoryModule {
+    fn live_text<'a>(stats: &'a Option<SystemStats>) -> &'a str {
+        match stats {
+            Some(s) if !s.memory.is_empty() => &s.memory,
+            _ => "Mem 0/0G",
+        }
+    }
+}
+
 impl StatusModule for MemoryModule {
     fn name(&self) -> &'static str { "memory" }
 
@@ -424,11 +540,7 @@ impl StatusModule for MemoryModule {
         _tray_items: &HashMap<String, TrayItem>,
         padding: f32,
     ) -> f32 {
-        let text = if let Some(ref s) = stats {
-            if !s.memory.is_empty() { &s.memory } else { "Mem 0/0G" }
-        } else {
-            "Mem 0/0G"
-        };
+        let text = Self::live_text(stats);
         // "Mem 17/62G" → "Mem 62/62G": used pinned to the total, the
         // widest this machine's readout gets.
         let template = text
@@ -438,6 +550,19 @@ impl StatusModule for MemoryModule {
             .map(|total| format!("Mem {total}/{total}G"))
             .unwrap_or_else(|| text.to_string());
         stable_text_width(font_system, text, &template, font_size, font_family, padding)
+    }
+
+    fn content_width(
+        &self,
+        stats: &Option<SystemStats>,
+        _title: &str,
+        font_system: &mut FontSystem,
+        font_family: &str,
+        font_size: f32,
+        _tray_items: &HashMap<String, TrayItem>,
+        padding: f32,
+    ) -> f32 {
+        live_text_width(font_system, Self::live_text(stats), font_size, font_family, padding)
     }
 
     fn render(
@@ -471,6 +596,15 @@ impl StatusModule for MemoryModule {
 
 pub struct CpuModule;
 
+impl CpuModule {
+    fn live_text<'a>(stats: &'a Option<SystemStats>) -> &'a str {
+        match stats {
+            Some(s) if !s.cpu.is_empty() => &s.cpu,
+            _ => "Cpu 0%",
+        }
+    }
+}
+
 impl StatusModule for CpuModule {
     fn name(&self) -> &'static str { "cpu" }
 
@@ -484,12 +618,20 @@ impl StatusModule for CpuModule {
         _tray_items: &HashMap<String, TrayItem>,
         padding: f32,
     ) -> f32 {
-        let text = if let Some(ref s) = stats {
-            if !s.cpu.is_empty() { &s.cpu } else { "Cpu 0%" }
-        } else {
-            "Cpu 0%"
-        };
-        stable_text_width(font_system, text, "Cpu 100%", font_size, font_family, padding)
+        stable_text_width(font_system, Self::live_text(stats), "Cpu 100%", font_size, font_family, padding)
+    }
+
+    fn content_width(
+        &self,
+        stats: &Option<SystemStats>,
+        _title: &str,
+        font_system: &mut FontSystem,
+        font_family: &str,
+        font_size: f32,
+        _tray_items: &HashMap<String, TrayItem>,
+        padding: f32,
+    ) -> f32 {
+        live_text_width(font_system, Self::live_text(stats), font_size, font_family, padding)
     }
 
     fn render(
