@@ -2122,17 +2122,64 @@ impl cce_ui::engine::Application for StatusApp {
                         });
                     }
                     // The window module's strip shows only the title; the
-                    // focused window's mode lives here in its menu.
+                    // focused window's mode lives here in its menu — as a
+                    // dropdown when the mode is one a user may set, opening
+                    // a submenu page whose rows run `ccectl set-mode <mode>`
+                    // on the focused window (status segments never take seat
+                    // focus, so "focused" is still the real window).
+                    let mut extra_pages: Vec<MenuPage> = Vec::new();
                     if mb.name == "window" && !self.layout.is_empty() {
-                        rows.insert(0, MenuRow {
-                            label: self.layout.clone(),
-                            enabled: true,
-                            separator: false,
-                            action: MenuRowAction::Inert,
-                        });
+                        const MODES: [&str; 3] = ["Floating", "Tiled", "Fullscreen"];
+                        if MODES.contains(&self.layout.as_str()) {
+                            // Page 0 is the root built below; the mode page is
+                            // the only extra, so it is always page 1.
+                            rows.insert(0, MenuRow {
+                                label: format!("{} >", self.layout),
+                                enabled: true,
+                                separator: false,
+                                action: MenuRowAction::Submenu(1),
+                            });
+                            let mut mode_rows = vec![MenuRow {
+                                label: "< Back".to_string(),
+                                enabled: true,
+                                separator: false,
+                                action: MenuRowAction::Back(0),
+                            }];
+                            for mode in MODES {
+                                let current = mode == self.layout;
+                                mode_rows.push(MenuRow {
+                                    label: format!(
+                                        "{} {}",
+                                        if current { "[x]" } else { "[ ]" },
+                                        mode
+                                    ),
+                                    // The current mode is a marker, not a
+                                    // target — disabled rows never match a
+                                    // click.
+                                    enabled: !current,
+                                    separator: false,
+                                    action: MenuRowAction::Ccectl(vec![
+                                        "set-mode".to_string(),
+                                        mode.to_lowercase(),
+                                    ]),
+                                });
+                            }
+                            extra_pages.push(MenuPage { title: "Mode".to_string(), rows: mode_rows });
+                        } else {
+                            // Internal roles (Popup/Overlay/Status/Utility)
+                            // and the no-focus "---" stay a plain readout.
+                            rows.insert(0, MenuRow {
+                                label: self.layout.clone(),
+                                enabled: true,
+                                separator: false,
+                                action: MenuRowAction::Inert,
+                            });
+                        }
                     }
+                    let mut pages = vec![MenuPage { title: mb.name.clone(), rows }];
+                    pages.extend(extra_pages);
                     self.context_menu = Some(ModuleContextMenu {
-                        pages: vec![MenuPage { title: mb.name.clone(), rows }],
+                        pages,
                         page: 0,
                         tray_target: None,
                         min_w: 190.0,
