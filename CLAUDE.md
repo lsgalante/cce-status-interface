@@ -271,10 +271,15 @@ by exactly the feather, which lands the gradient's outer edge on the box edge.
 The rounded-rect pool is clipped to its box; the droplet one needs no clip,
 since the shader cannot draw outside the silhouette it is evaluating.
 
-A box with no measured text gets no pool at all (the tray is icons; there is
-nothing to ground). That, and the pool's color, come from
-`dominant_run_color` — the widest run inside the box, using the width that
-rides `TextPrim`'s last field. Width is the tiebreak because a module mixing
+The pool's color comes from `dominant_run_color` — the widest run inside the
+box, using the width that rides `TextPrim`'s last field — with
+`dominant_icon_color` as the fallback for a box that holds tray icons and no
+run: the icons read as light glyphs (dark pixmaps are recolored toward white),
+so the tray is grounded as a white run would be, with a black pool. Before
+2026-09-05 a box with no measured run got no pool, which left the tray the
+one bare bubble in the strip — visibly lighter than its neighbors, and the
+one segment the backdrop feed could not deepen. A box holding neither text
+nor icons still gets no pool. Width is the tiebreak because a module mixing
 colors is led by its longest label.
 
 The pool takes its color from `treatment_rgb` — whichever of black/white the

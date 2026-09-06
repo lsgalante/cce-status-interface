@@ -280,6 +280,24 @@ fn dominant_run_color(runs: &[TextPrim], bx: f32, by: f32, bw: f32, bh: f32) -> 
     best.map(|(_, c)| c)
 }
 
+/// The pool color for a box that holds tray icons rather than text. The
+/// tray is the one module whose content is not a measured run, and the
+/// text-keyed lookup finding nothing used to leave its bubble bare — the
+/// only one in the strip painted without the pool, visibly lighter than its
+/// neighbors and the only one that never answered the backdrop. The icons
+/// read as light glyphs (a dark pixmap is recolored toward white in
+/// `TrayModule::render`), so the box gets what a white run would get: a
+/// black pool. None when no icon sits in the box.
+fn dominant_icon_color(icons: &[TrayIconBounds], bx: f32, by: f32, bw: f32, bh: f32) -> Option<[u8; 3]> {
+    icons
+        .iter()
+        .any(|b| {
+            let (cx, cy) = (b.x + b.w * 0.5, b.y + b.h * 0.5);
+            cx >= bx && cx <= bx + bw && cy >= by && cy <= by + bh
+        })
+        .then_some([255, 255, 255])
+}
+
 /// The in-surface right-click menu: instead of spawning a popup process, the
 /// module's own surface EXPANDS below the bar strip to contain the menu. The
 /// compositor treats a status segment thicker than the bar as expanded — it
@@ -1795,12 +1813,18 @@ impl cce_ui::engine::Application for StatusApp {
             let alpha = scrim_alpha(self.text_scrim, self.contrast_now);
             let feather_cfg = self.text_scrim_feather;
             let runs = &self.text_prims;
+            let icons = &self.tray_item_bounds;
             let pool_in = |pc: &mut cce_ui::scene::paint::PaintCtx, bx: f32, by: f32, bw: f32, bh: f32, radius: f32| {
                 // Colored for the text it is protecting — the widest run
                 // inside this box, since a box with mixed colors is being
                 // led by its longest label. A box holding no measured run
-                // (a tray of icons) gets no pool: there is no text to ground.
-                let Some(color) = dominant_run_color(runs, bx, by, bw, bh) else { return };
+                // but tray icons is grounded for those (light glyphs, so a
+                // black pool); a box holding neither gets no pool at all.
+                let Some(color) = dominant_run_color(runs, bx, by, bw, bh)
+                    .or_else(|| dominant_icon_color(icons, bx, by, bw, bh))
+                else {
+                    return;
+                };
                 let feather = scrim_feather(bw, bh, feather_cfg);
                 let core = Rect {
                     x: bx + feather,
@@ -1824,7 +1848,11 @@ impl cce_ui::engine::Application for StatusApp {
             // construction rather than by approximation.
             for &(x, y, w, h, _, spec) in &self.droplet_boxes {
                 let rect = Rect { x, y, width: w, height: h };
-                let Some(color) = dominant_run_color(runs, x, y, w, h) else { continue };
+                let Some(color) = dominant_run_color(runs, x, y, w, h)
+                    .or_else(|| dominant_icon_color(icons, x, y, w, h))
+                else {
+                    continue;
+                };
                 let c = treatment_rgb(color);
                 let feather = scrim_feather(w, h, feather_cfg);
                 pc.droplet_scrim(rect, [c[0], c[1], c[2], alpha], spec, feather);
@@ -2620,6 +2648,22 @@ mod tests {
         let runs: Vec<TextPrim> = vec![("i".to_string(), 14.0, 20.0, 7.0, [255, 255, 255], None, None, None, None)];
         assert_eq!(dominant_run_color(&runs, 10.0, 0.0, 200.0, 27.0), None);
         assert_eq!(dominant_run_color(&[], 10.0, 0.0, 200.0, 27.0), None);
+    }
+
+    #[test]
+    fn a_box_of_tray_icons_gets_the_pool_a_white_run_would() {
+        // The tray draws icons, not measured runs, so the text-keyed lookup
+        // finds nothing; the icon fallback grounds the box as light glyphs.
+        let icon = |x: f32| TrayIconBounds {
+            id: "i".into(), x, y: 5.5, w: 16.0, h: 16.0, title: None, dbus_id: None,
+        };
+        let icons = [icon(18.0), icon(42.0)];
+        assert_eq!(dominant_icon_color(&icons, 10.0, 0.0, 80.0, 27.0), Some([255, 255, 255]));
+        assert_eq!(treatment_rgb([255, 255, 255]), [0.0, 0.0, 0.0]);
+        // An icon whose center lies outside the box does not ground it —
+        // the expanded menu box below the strip holds no icons.
+        assert_eq!(dominant_icon_color(&icons, 10.0, 27.0, 80.0, 100.0), None);
+        assert_eq!(dominant_icon_color(&[], 10.0, 0.0, 80.0, 27.0), None);
     }
 
     #[test]
