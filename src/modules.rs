@@ -326,6 +326,12 @@ impl IconReadout {
         crate::read_icon_font_size_from_config(font_size)
     }
 
+    /// A number's run width at the readout weight, logical px.
+    fn number_width(font_system: &mut FontSystem, text: &str, size: f32, font_family: &str) -> f32 {
+        let buf = crate::make_text_buffer_weighted(font_system, text, size, font_family, crate::read_icon_weight_from_config());
+        buf.layout_runs().next().map(|r| r.line_w).unwrap_or(0.0) / cce_ui::scale::scale_factor()
+    }
+
     /// Stable slot width: the glyph, the widest number and the live number
     /// — whichever is widest — plus padding. Normally the glyph wins, which
     /// is what makes the slot stable; a number wider than the glyph would
@@ -334,10 +340,8 @@ impl IconReadout {
         match self.glyph() {
             Some((_, gw, _)) => {
                 let ns = Self::number_size(font_size);
-                let tmpl = Label::new_with_family(font_system, NUMBER_TEMPLATE, ns, [0.0, 0.0, 0.0, 1.0], font_family).w;
-                let live = self.number.as_deref().map_or(0.0, |n| {
-                    Label::new_with_family(font_system, n, ns, [0.0, 0.0, 0.0, 1.0], font_family).w
-                });
+                let tmpl = Self::number_width(font_system, NUMBER_TEMPLATE, ns, font_family);
+                let live = self.number.as_deref().map_or(0.0, |n| Self::number_width(font_system, n, ns, font_family));
                 gw.max(tmpl).max(live) + 2.0 * padding
             }
             None => stable_text_width(font_system, &self.fallback, self.fallback_template, font_size, font_family, padding),
@@ -350,9 +354,7 @@ impl IconReadout {
         match self.glyph() {
             Some((_, gw, _)) => {
                 let ns = Self::number_size(font_size);
-                let live = self.number.as_deref().map_or(0.0, |n| {
-                    Label::new_with_family(font_system, n, ns, [0.0, 0.0, 0.0, 1.0], font_family).w
-                });
+                let live = self.number.as_deref().map_or(0.0, |n| Self::number_width(font_system, n, ns, font_family));
                 gw.max(live) + 2.0 * padding
             }
             None => live_text_width(font_system, &self.fallback, font_size, font_family, padding),
@@ -373,18 +375,54 @@ impl IconReadout {
         match self.glyph() {
             Some((image, gw, gh)) => {
                 let ns = Self::number_size(font_size);
-                let label = self
+                let weight = crate::read_icon_weight_from_config();
+                let number = self
                     .number
                     .as_deref()
-                    .map(|n| Label::new_with_family(font_system, n, ns, self.color, font_family));
+                    .map(|n| (n.to_string(), Self::number_width(font_system, n, ns, font_family)));
                 // Glyph and number share one center: the wider of the two
                 // spans the content, and both are centered on it. The same
                 // `module { text_raise }` lift every text run gets via
                 // `centered_text_y` is applied to the glyph too, so the pair
                 // stays concentric and level with the neighboring modules.
-                let span = gw.max(label.as_ref().map_or(0.0, |l| l.w));
+                let span = gw.max(number.as_ref().map_or(0.0, |(_, w)| *w));
                 let cx = x + padding + span / 2.0;
                 let gy = (bar_h - gh) / 2.0 - crate::config::read_text_raise_from_config();
+                let rgb = crate::icons::tint_of(self.color);
+                let mut pocket = None;
+                if let Some((text, nw)) = number {
+                    let nx = cx - nw / 2.0;
+                    let ny = centered_text_y(bar_h, ns);
+                    // The pocket hugs the digits, not the line box: in a
+                    // line box of exactly `ns`, digits run from about the
+                    // cap line at 0.1em down to the baseline near 0.85em.
+                    // Its feather reaches out from that core, so the notch
+                    // in the glyph is a little larger than the digits.
+                    let pocket_alpha = crate::read_icon_pocket_from_config();
+                    if pocket_alpha > 0.0 {
+                        let c = crate::treatment_rgb(rgb);
+                        pocket = Some(crate::Pocket {
+                            x: nx - 1.0,
+                            y: ny + ns * 0.1,
+                            w: nw + 2.0,
+                            h: ns * 0.75,
+                            feather: ns * 0.3,
+                            color: [c[0], c[1], c[2], pocket_alpha],
+                        });
+                    }
+                    text_prims.push((
+                        text,
+                        ns,
+                        nx,
+                        ny,
+                        rgb,
+                        Some(font_family.to_string()),
+                        None,
+                        None,
+                        Some(nw),
+                        weight,
+                    ));
+                }
                 icon_prims.push(crate::IconPrim {
                     image,
                     x: cx - gw / 2.0,
@@ -392,11 +430,8 @@ impl IconReadout {
                     w: gw,
                     h: gh,
                     alpha: crate::read_icon_alpha_from_config(),
+                    pocket,
                 });
-                if let Some(label) = label {
-                    let lw = label.w;
-                    crate::draw_label(text_prims, label, cx - lw / 2.0, centered_text_y(bar_h, ns));
-                }
             }
             None => {
                 let label = Label::new_with_family(font_system, &self.fallback, font_size, self.color, font_family);
@@ -845,6 +880,7 @@ impl StatusModule for TrayModule {
                     None,
                     None,
                     Some(tw),
+                    None,
                 ));
             }
         }

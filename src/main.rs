@@ -84,6 +84,23 @@ pub struct IconPrim {
     pub w: f32,
     pub h: f32,
     pub alpha: f32,
+    /// The dark pocket the number sits in, cut into the glyph — see `Pocket`.
+    pub pocket: Option<Pocket>,
+}
+
+/// A feathered pool under a readout's digits (`cce_ui`'s `Prim::Glow`, the
+/// same ground treatment the bubble scrim is): solid through the core rect,
+/// fading to nothing across `feather` px outside it. Drawn between the glyph
+/// and the number, so the digits sit in a notch of the number's contrast
+/// color rather than on the glyph's own tint. Logical px.
+#[derive(Debug, Clone, Copy)]
+pub struct Pocket {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    pub feather: f32,
+    pub color: [f32; 4],
 }
 
 /// The subset of [`SystemStats`] a given module actually paints, as a comparable
@@ -247,7 +264,7 @@ fn spec_at_reference_height(
 /// module color, because a module may paint a run in something else entirely
 /// — the volume module's muted state uses the shared `disabled_color`. A
 /// black pool behind black text is not a weaker treatment, it is an eraser.
-fn treatment_rgb(rgb: [u8; 3]) -> [f32; 3] {
+pub(crate) fn treatment_rgb(rgb: [u8; 3]) -> [f32; 3] {
     let luma = relative_luminance([rgb[0] as f32 / 255.0, rgb[1] as f32 / 255.0, rgb[2] as f32 / 255.0, 1.0]);
     if contrast_ratio(luma, 0.0) >= contrast_ratio(luma, 1.0) {
         [0.0, 0.0, 0.0]
@@ -283,7 +300,7 @@ fn scrim_feather(w: f32, h: f32, configured: Option<f32>) -> f32 {
 /// longest label, and that is the one whose legibility carries the segment.
 fn dominant_run_color(runs: &[TextPrim], bx: f32, by: f32, bw: f32, bh: f32) -> Option<[u8; 3]> {
     let mut best: Option<(f32, [u8; 3])> = None;
-    for (_, tsize, x, y, color, _, _, _, run_w) in runs {
+    for (_, tsize, x, y, color, _, _, _, run_w, _) in runs {
         let Some(rw) = *run_w else { continue };
         // Runs belong to the box they sit in; a segment with an expanded menu
         // has text in both.
@@ -384,6 +401,14 @@ impl ModuleContextMenu {
 }
 
 pub(crate) fn make_text_buffer(fs: &mut FontSystem, text: &str, size: f32, font_family: &str) -> Buffer {
+    make_text_buffer_weighted(fs, text, size, font_family, None)
+}
+
+/// `make_text_buffer` at an OpenType weight (`Some(700)` = bold) — the
+/// measurement the icon readouts' numbers need, since the engine shapes a
+/// weighted run with that face and its advances are the face's, not the
+/// regular's.
+pub(crate) fn make_text_buffer_weighted(fs: &mut FontSystem, text: &str, size: f32, font_family: &str, weight: Option<u16>) -> Buffer {
     let scale = cce_ui::scale::scale_factor();
     let mut font_size = size;
 
@@ -397,6 +422,9 @@ pub(crate) fn make_text_buffer(fs: &mut FontSystem, text: &str, size: f32, font_
     let metrics = Metrics::new(physical_size, physical_size * 1.4);
     let mut buf = Buffer::new(fs, metrics);
     let mut attrs = Attrs::new();
+    if let Some(w) = weight {
+        attrs = attrs.weight(cce_ui::cosmic_text::Weight(w));
+    }
     // Same shaping rule as cce-ui's buffer path (ASCII in a mono face →
     // Basic, no ligatures), so this measurement agrees with what the engine
     // draws — an fi ligature applied on one side only would skew widths by a
@@ -947,6 +975,7 @@ impl StatusApp {
                     None,
                     // No scrim: the tooltip already sits on its own box.
                     None,
+                    None,
                 ));
             }
         }
@@ -1071,6 +1100,7 @@ impl StatusApp {
                         None,
                         // Menu text sits on the expanded box; no scrim.
                         None,
+                        None,
                     ));
 
                     let rows = menu.rows().to_vec();
@@ -1109,6 +1139,7 @@ impl StatusApp {
                                 iy + (h - font_size) / 2.0,
                                 if row.enabled { text_u8 } else { dim_u8 },
                                 Some(font_family.clone()),
+                                None,
                                 None,
                                 None,
                                 None,
@@ -1162,6 +1193,13 @@ impl StatusApp {
                 ip.y = old_x;
                 ip.w = old_h;
                 ip.h = old_w;
+                if let Some(pk) = &mut ip.pocket {
+                    let (old_x, old_y, old_w, old_h) = (pk.x, pk.y, pk.w, pk.h);
+                    pk.x = old_y;
+                    pk.y = old_x;
+                    pk.w = old_h;
+                    pk.h = old_w;
+                }
             }
             // Rotate tray_item_bounds
             for tib in &mut self.tray_item_bounds {
@@ -1389,7 +1427,9 @@ pub(crate) fn parse_ccectl_windows(output: &str) -> Vec<CcectlWindow> {
 /// width. It is what lets the text scrim hug the run instead of the whole
 /// module box; `None` simply gets no scrim, which is right for the menu and
 /// tooltip text that sits on an opaque box already.
-pub(crate) type TextPrim = (String, f32, f32, f32, [u8; 3], Option<String>, Option<[f32; 4]>, Option<cce_ui::scene::paint::TextLayout>, Option<f32>);
+/// The field after that is the run's OpenType weight (`Some(700)` = bold),
+/// `None` for the face's regular; only the icon readouts' numbers set it.
+pub(crate) type TextPrim = (String, f32, f32, f32, [u8; 3], Option<String>, Option<[f32; 4]>, Option<cce_ui::scene::paint::TextLayout>, Option<f32>, Option<u16>);
 
 /// Emit a measured `StyledLabel` as a text-prim tuple, returning its width (like the legacy
 /// `StyledLabel::draw`). The label was built for its width; `into_prim` carries the source
@@ -1397,7 +1437,7 @@ pub(crate) type TextPrim = (String, f32, f32, f32, [u8; 3], Option<String>, Opti
 pub(crate) fn draw_label(prims: &mut Vec<TextPrim>, label: cce_ui::widget::StyledLabel, x: f32, y: f32) -> f32 {
     let w = label.w;
     let p = label.into_prim(x, y);
-    prims.push((p.text, p.size, p.x, p.y, p.color, p.font, None, p.layout, Some(w)));
+    prims.push((p.text, p.size, p.x, p.y, p.color, p.font, None, p.layout, Some(w), None));
     w
 }
 
@@ -1917,16 +1957,21 @@ impl cce_ui::engine::Application for StatusApp {
         // pre-text so the number lands on the glyph.
         for ip in &self.icon_prims {
             pc.image(ip.image, Rect { x: ip.x, y: ip.y, width: ip.w, height: ip.h }, ip.alpha);
+            if let Some(pk) = ip.pocket {
+                let core = Rect { x: pk.x, y: pk.y, width: pk.w, height: pk.h };
+                pc.glow(core, pk.h.min(pk.w) / 2.0, pk.feather, pk.color);
+            }
         }
 
-        for (text, tsize, x, y, color, font, bounds, layout, _run_w) in &self.text_prims {
+        for (text, tsize, x, y, color, font, bounds, layout, _run_w, weight) in &self.text_prims {
+            let attrs = cce_ui::scene::paint::TextAttrs { italic: false, weight: *weight };
             match layout {
-                Some(l) => pc.text_boxed(text.clone(), *x, *y, *tsize, *color, font.clone(), *bounds, cce_ui::scene::paint::TextAttrs::default(), *l),
+                Some(l) => pc.text_boxed(text.clone(), *x, *y, *tsize, *color, font.clone(), *bounds, attrs, *l),
                 // Glyphs are drawn plain. Contrast is the scrim's job now —
                 // it darkens the ground rather than decorating the
                 // letterforms, and the two together were always one treatment
                 // too many.
-                None => pc.text_with(text.clone(), *x, *y, *tsize, *color, font.clone(), *bounds),
+                None => pc.text_attrs(text.clone(), *x, *y, *tsize, *color, font.clone(), *bounds, attrs),
             }
         }
 
@@ -2662,7 +2707,7 @@ mod tests {
     }
 
     fn run(x: f32, y: f32, w: f32, color: [u8; 3]) -> TextPrim {
-        ("x".to_string(), 14.0, x, y, color, None, None, None, Some(w))
+        ("x".to_string(), 14.0, x, y, color, None, None, None, Some(w), None)
     }
 
     #[test]
@@ -2683,7 +2728,7 @@ mod tests {
     fn a_box_with_no_measured_text_gets_no_pool() {
         // The tray is icons; there is no text to ground, and a pool there
         // would just be a smudge behind the icons.
-        let runs: Vec<TextPrim> = vec![("i".to_string(), 14.0, 20.0, 7.0, [255, 255, 255], None, None, None, None)];
+        let runs: Vec<TextPrim> = vec![("i".to_string(), 14.0, 20.0, 7.0, [255, 255, 255], None, None, None, None, None)];
         assert_eq!(dominant_run_color(&runs, 10.0, 0.0, 200.0, 27.0), None);
         assert_eq!(dominant_run_color(&[], 10.0, 0.0, 200.0, 27.0), None);
     }

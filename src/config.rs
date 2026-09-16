@@ -209,6 +209,23 @@ pub(crate) fn read_icon_font_size_from_config(font_size: f32) -> f32 {
     cfg_f32("/module/icon_font_size").unwrap_or(font_size * 0.75).max(1.0)
 }
 
+/// `module { icon_weight }` — OpenType weight of the number on a glyph
+/// (default 700, bold; 400 = the face's regular). Stroke width is what a
+/// digit of that size has to spare, so the number is heavier than the
+/// labels around it.
+pub(crate) fn read_icon_weight_from_config() -> Option<u16> {
+    let w = cfg_f32("/module/icon_weight").unwrap_or(700.0).clamp(1.0, 1000.0) as u16;
+    Some(w)
+}
+
+/// `module { icon_pocket }` — opacity 0-1 (default 0.6) of the feathered
+/// pool under the digits, in the number's contrast color: the notch the
+/// number sits in, cut into the glyph so the digits are never read against
+/// the glyph's own tint. 0 disables it.
+pub(crate) fn read_icon_pocket_from_config() -> f32 {
+    cfg_f32("/module/icon_pocket").unwrap_or(0.6).clamp(0.0, 1.0)
+}
+
 /// `module { icon_alpha }` — opacity 0-1 of the glyph under the number
 /// (default 0.4). The glyph is tinted the number's color, so it is this
 /// ghosting alone that keeps the digits legible on it.

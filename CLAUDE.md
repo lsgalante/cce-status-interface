@@ -92,7 +92,14 @@ blanket `impl<T: IconStat> StatusModule for T` in `modules.rs` does the shared
 layout): each names a cce-icons glyph, the bare number and a color, and
 `IconReadout` draws the glyph ghosted at `module { icon_alpha }` with the
 number centered on it — no unit symbol, since the glyph IS the unit ("87" on
-the battery, not "Bat 87%"). The muted sink swaps to `volume-muted`; the
+the battery, not "Bat 87%"). The number is bold (`module { icon_weight }`,
+the one run in the bar that sets `TextPrim`'s weight field) and sits in a
+POCKET: a feathered `Prim::Glow` pool in the number's contrast color, hugging
+the digits and drawn between the glyph and the number (`IconPrim::pocket`,
+`module { icon_pocket }`). Same-hue was the problem — white digits on a white
+ghost had only the alpha gap for contrast — and the pocket is the bubble
+scrim's answer applied locally: darken the ground under the digits rather
+than outline the letterforms. The muted sink swaps to `volume-muted`; the
 battery keeps its accent color while charging or under 10% (the only
 charging cue now that the "⚡" prefix went with the text form). A module whose
 reader has nothing (no battery, no backlight, no pactl) returns `None` and
@@ -230,7 +237,9 @@ and `module { icon_size }` (glyph height for the icon readouts, logical px,
 default bar height − 6) and `module { icon_font_size }` (the number on the
 glyph, default ¾ of `module { font_size }` — "100" at the full size
 overhangs a bar-height glyph) and `module { icon_alpha }` (the glyph's
-ghosting under the number, 0-1, default 0.4) and `module { text_raise }` (lifts module text above vertical center, logical
+ghosting under the number, 0-1, default 0.4) and `module { icon_weight }`
+(OpenType weight of that number, default 700) and `module { icon_pocket }`
+(opacity 0-1 of the dark pocket under the digits, default 0.6, 0 = off) and `module { text_raise }` (lifts module text above vertical center, logical
 px, bar-side only — every module funnels through `centered_text_y`) and
 `module { text_scrim }` (0-1 resting opacity of a
 feathered pool filling each module box, the DE's one text-contrast treatment)
