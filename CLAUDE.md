@@ -11,14 +11,15 @@ and the `cce-ui` toolkit this app is built on. This crate is deliberately small:
 `src/main.rs` (the `StatusApp` application, layout/input, launcher daemon),
 `src/modules.rs` (the `StatusModule` trait and its nine implementations),
 `src/config.rs` (pointer-first config readers), `src/tray.rs` (SNI host),
-`src/cloud.rs` (menu page building), `src/stats.rs` (system stat readers),
-`src/listeners.rs` (status/switcher socket tasks).
+`src/cloud.rs` (menu page building), `src/stats.rs` (system stat readers —
+numbers, not strings; the modules do the formatting), `src/icons.rs` (tinted
+cce-icons glyph textures), `src/listeners.rs` (status/switcher socket tasks).
 
 ## Build, test, run
 
 ```sh
 cargo build --release                 # standalone build (or `-p cce-status-interface` from the workspace root)
-cargo test                            # 40 tests: main.rs (contrast, parsers), config.rs, tray.rs
+cargo test                            # 46 tests: main.rs (contrast, parsers), config.rs, tray.rs
 make install                          # installs ../target/release/cce-status-interface to ~/.local/bin
 ```
 
@@ -62,8 +63,9 @@ The app implements `cce_ui::engine::Application` on the **`display_list()` paint
    `StatusModule::width()`, then `StatusModule::render()` — filling retained buffers on
    `StatusApp`: `rects`, `rounded_boxes`, `text_prims`
    (the `TextPrim` tuple type; build them with `draw_label()` from a
-   `cce_ui::widget::StyledLabel`), plus `input_regions`, `module_bounds`,
-   `tray_item_bounds`.
+   `cce_ui::widget::StyledLabel`), `icon_prims` (`IconPrim` — a tinted
+   cce-icons glyph texture at a logical rect), plus `input_regions`,
+   `module_bounds`, `tray_item_bounds`.
 2. `display_list()` replays those buffers into a `PaintCtx` each frame (and triggers
    `rebuild_layout()` when size/scale changed or `needs_rebuild` is set).
    `overlay_quads()` remains a separate on-top pass (used for drag feedback).
@@ -84,6 +86,34 @@ Orientation is dynamic: `is_vertical()` compares the surface size against the
 configured bar thickness; every module renders along one axis using `bar_h`/`coord`
 accordingly.
 
+**The percentage modules read out as a glyph, not a label.** `cpu`,
+`brightness`, `volume` and `battery` are `IconStat` implementations (a
+blanket `impl<T: IconStat> StatusModule for T` in `modules.rs` does the shared
+layout): each names a cce-icons glyph, the bare number and a color, and
+`IconReadout` draws the glyph ghosted at `module { icon_alpha }` with the
+number centered on it — no unit symbol, since the glyph IS the unit ("87" on
+the battery, not "Bat 87%"). The muted sink swaps to `volume-muted`; the
+battery keeps its accent color while charging or under 10% (the only
+charging cue now that the "⚡" prefix went with the text form). A module whose
+reader has nothing (no battery, no backlight, no pactl) returns `None` and
+has width 0, i.e. it is hidden rather than an empty bubble; a reader that
+answers without a number (cpu with no /proc/stat, a sink with no level)
+draws the glyph alone.
+
+The glyphs come from the **cce-icons** crate via `cce_ui::icons_dir()`
+(`$CCE_ICONS_DIR`, else `~/projects/cce/cce-icons/svg`) — but NOT through
+`cce_ui::upload_icon`: a `Prim::Image` has alpha and no color, and the
+artwork is white, so `icons.rs::tinted_icon` rasterizes the SVG itself
+(`cce_ui::rasterize_svg`), multiplies it by the readout's raw-sRGB color and
+uploads it, cached per `(name, px, color)` for the life of the process. A
+glyph that fails to load falls back to the old text readout ("Cpu 45%"), so
+a bar started without the icon set is still attributable; **a shadow session
+needs `CCE_ICONS_DIR` exported into the spawn**, its HOME being elsewhere,
+exactly as it needs `CCE_FONTS_DIR`. Slot stability holds as before: the
+stable width is the wider of the glyph and the "100" template, and the glyph
+normally wins, so a value crossing a digit boundary never resizes the
+surface. `memory` is not a percentage ("Mem 10/62G") and stays a label.
+
 ## Events and IPC
 
 `update()` consumes `CustomEvent`s sent over a calloop channel from tokio tasks spawned
@@ -103,6 +133,9 @@ listen to tray D-Bus, etc.:
   first. (The old `viewport` topic is gone with the viewport-tag feature.)
 - **System stats** (`spawn_system_stats`): `/proc/stat`, `/proc/meminfo`,
   `/sys/class/power_supply/BAT*`, `/sys/class/backlight`, and `pactl` for volume/mute.
+  `SystemStats` carries numbers (`cpu_pct`, `battery: (capacity, charging)`,
+  `volume: (level, muted)`, `brightness`), each `Option` where the source can
+  be absent; only clock and memory arrive pre-formatted.
 - **Tray** (`spawn_status_tray`): a full StatusNotifierItem/Watcher host over `zbus`,
   including DBusMenu fetching. Icons arrive as pixmaps or theme names (rendered via
   `resvg`/`png`).
@@ -193,7 +226,11 @@ drop box does not fill the surface: the box is inset by 1px for the
 silhouette's AA feather plus `DropletSpec::shadow_gap()` for the shadow's
 falloff (`main.rs`, three call sites — left, right, and the expanded menu
 box, which becomes the drop growing))
-and `module { text_raise }` (lifts module text above vertical center, logical
+and `module { icon_size }` (glyph height for the icon readouts, logical px,
+default bar height − 6) and `module { icon_font_size }` (the number on the
+glyph, default ¾ of `module { font_size }` — "100" at the full size
+overhangs a bar-height glyph) and `module { icon_alpha }` (the glyph's
+ghosting under the number, 0-1, default 0.4) and `module { text_raise }` (lifts module text above vertical center, logical
 px, bar-side only — every module funnels through `centered_text_y`) and
 `module { text_scrim }` (0-1 resting opacity of a
 feathered pool filling each module box, the DE's one text-contrast treatment)

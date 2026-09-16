@@ -46,45 +46,45 @@ pub(crate) fn read_memory_usage() -> Option<String> {
     }
 }
 
-pub(crate) fn read_battery_details() -> Option<(String, i32, bool)> {
+/// The first battery's `(capacity %, charging)`; `None` on a machine
+/// without one.
+pub(crate) fn read_battery_details() -> Option<(i32, bool)> {
     for bat in &["BAT0", "BAT1"] {
         let cap_path = format!("/sys/class/power_supply/{}/capacity", bat);
         let status_path = format!("/sys/class/power_supply/{}/status", bat);
         if let Ok(cap_str) = std::fs::read_to_string(&cap_path) {
-            let cap_trimmed = cap_str.trim();
-            let cap = cap_trimmed.parse::<i32>().unwrap_or(0);
+            let cap = cap_str.trim().parse::<i32>().unwrap_or(0);
             let status = std::fs::read_to_string(&status_path).unwrap_or_default();
             let is_charging = status.trim() == "Charging";
-            let charge_symbol = if is_charging { "⚡" } else { "Bat" };
-            return Some((format!("{} {}%", charge_symbol, cap_trimmed), cap, is_charging));
+            return Some((cap, is_charging));
         }
     }
     None
 }
 
-pub(crate) fn read_brightness() -> Option<String> {
+/// The first backlight's level as a whole percentage; `None` without one.
+pub(crate) fn read_brightness() -> Option<i32> {
     let dir = std::fs::read_dir("/sys/class/backlight").ok()?;
-    for entry in dir {
-        if let Ok(entry) = entry {
-            let path = entry.path();
-            let cur_path = path.join("brightness");
-            let max_path = path.join("max_brightness");
-            if cur_path.exists() && max_path.exists() {
-                let cur_str = std::fs::read_to_string(cur_path).ok()?;
-                let max_str = std::fs::read_to_string(max_path).ok()?;
-                let cur = cur_str.trim().parse::<f32>().ok()?;
-                let max = max_str.trim().parse::<f32>().ok()?;
-                if max > 0.0 {
-                    let pct = (cur / max * 100.0).round() as i32;
-                    return Some(format!("Bri {}%", pct));
-                }
+    for entry in dir.flatten() {
+        let path = entry.path();
+        let cur_path = path.join("brightness");
+        let max_path = path.join("max_brightness");
+        if cur_path.exists() && max_path.exists() {
+            let cur_str = std::fs::read_to_string(cur_path).ok()?;
+            let max_str = std::fs::read_to_string(max_path).ok()?;
+            let cur = cur_str.trim().parse::<f32>().ok()?;
+            let max = max_str.trim().parse::<f32>().ok()?;
+            if max > 0.0 {
+                return Some((cur / max * 100.0).round() as i32);
             }
         }
     }
     None
 }
 
-pub(crate) async fn read_volume() -> Option<(String, bool)> {
+/// The default sink's `(level %, muted)`; `None` when pactl is unavailable
+/// or fails. The level is `None` when pactl answered without a percentage.
+pub(crate) async fn read_volume() -> Option<(Option<u32>, bool)> {
     let vol_output = match tokio::process::Command::new("pactl")
         .args(["get-sink-volume", "@DEFAULT_SINK@"])
         .output()
@@ -128,36 +128,20 @@ pub(crate) async fn read_volume() -> Option<(String, bool)> {
         }
     }
 
-    match (muted, pct) {
-        (true, Some(p)) => Some((format!("Vol {}%", p), true)),
-        (true, None) => Some(("Vol Muted".to_string(), true)),
-        (false, Some(p)) => Some((format!("Vol {}%", p), false)),
-        (false, None) => Some(("Vol N/A".to_string(), false)),
-    }
+    Some((pct, muted))
 }
 
 pub(crate) fn get_initial_stats() -> SystemStats {
     let clock = chrono::Local::now().format("%A, %B %d, %Y %I:%M %p").to_string();
     let memory = read_memory_usage().unwrap_or_else(|| "Mem N/A".to_string());
 
-    let (battery_str, battery_capacity, battery_charging) = if let Some((s, cap, chg)) = read_battery_details() {
-        (s, cap, chg)
-    } else {
-        ("".to_string(), 0, false)
-    };
-    let (volume, volume_muted) = pollster::block_on(read_volume()).unwrap_or_else(|| ("".to_string(), false));
-    let brightness = read_brightness().unwrap_or_default();
-
     SystemStats {
         clock,
         memory,
-        cpu: "Cpu 0%".to_string(),
-        battery: battery_str,
-        battery_capacity,
-        battery_charging,
-        volume,
-        volume_muted,
-        brightness,
+        cpu_pct: Some(0),
+        battery: read_battery_details(),
+        volume: pollster::block_on(read_volume()),
+        brightness: read_brightness(),
     }
 }
 
@@ -169,38 +153,27 @@ pub(crate) async fn spawn_system_stats(sender: calloop::channel::Sender<CustomEv
         let clock = chrono::Local::now().format("%A, %B %d, %Y %I:%M %p").to_string();
         let memory = read_memory_usage().unwrap_or_else(|| "Mem N/A".to_string());
         
-        let cpu_str = if let Some(current_cpu) = read_cpu_ticks() {
+        let cpu_pct = if let Some(current_cpu) = read_cpu_ticks() {
             let total_diff = current_cpu.0 - last_cpu.0;
             let idle_diff = current_cpu.1 - last_cpu.1;
             last_cpu = current_cpu;
             if total_diff > 0 {
                 let usage = 100.0 - (idle_diff as f32 * 100.0 / total_diff as f32);
-                format!("Cpu {:.0}%", usage)
+                Some(usage.round().clamp(0.0, 100.0) as u8)
             } else {
-                "Cpu 0%".to_string()
+                Some(0)
             }
         } else {
-            "Cpu N/A".to_string()
+            None
         };
-
-        let (battery_str, battery_capacity, battery_charging) = if let Some((s, cap, chg)) = read_battery_details() {
-            (s, cap, chg)
-        } else {
-            ("".to_string(), 0, false)
-        };
-        let (volume, volume_muted) = read_volume().await.unwrap_or_else(|| ("".to_string(), false));
-        let brightness = read_brightness().unwrap_or_default();
 
         let stats = SystemStats {
             clock,
             memory,
-            cpu: cpu_str,
-            battery: battery_str,
-            battery_capacity,
-            battery_charging,
-            volume,
-            volume_muted,
-            brightness,
+            cpu_pct,
+            battery: read_battery_details(),
+            volume: read_volume().await,
+            brightness: read_brightness(),
         };
         log::debug!("[spawn_system_stats] stats: {:?}", stats);
         let _ = sender.send(CustomEvent::SystemStatsUpdated(stats));

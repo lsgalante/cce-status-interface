@@ -1,5 +1,6 @@
 mod cloud;
 mod config;
+mod icons;
 mod listeners;
 mod modules;
 mod stats;
@@ -58,13 +59,31 @@ pub struct TrayIconBounds {
 pub struct SystemStats {
     pub clock: String,
     pub memory: String,
-    pub cpu: String,
-    pub battery: String,
-    pub battery_capacity: i32,
-    pub battery_charging: bool,
-    pub volume: String,
-    pub volume_muted: bool,
-    pub brightness: String,
+    /// CPU busy share as a whole percentage; `None` when /proc/stat is
+    /// unreadable.
+    pub cpu_pct: Option<u8>,
+    /// `(capacity %, charging)`; `None` on a machine without a battery.
+    pub battery: Option<(i32, bool)>,
+    /// `(level %, muted)`; `None` when pactl is unavailable. The level is
+    /// `None` when pactl answered but reported no percentage.
+    pub volume: Option<(Option<u32>, bool)>,
+    /// Backlight level as a whole percentage; `None` without a backlight.
+    pub brightness: Option<i32>,
+}
+
+/// A bundled cce-icons glyph placed in the bar: `image` is the tinted
+/// texture from `icons::tinted_icon`, the rect is logical px, `alpha` the
+/// ghosting under a superimposed readout. Retained like `text_prims` and
+/// replayed by `display_list`, drawn after the scrim and before the text so
+/// the number sits on the glyph.
+#[derive(Debug, Clone, Copy)]
+pub struct IconPrim {
+    pub image: u32,
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    pub alpha: f32,
 }
 
 /// The subset of [`SystemStats`] a given module actually paints, as a comparable
@@ -77,16 +96,15 @@ pub struct SystemStats {
 fn stats_signature(module: Option<&str>, s: &SystemStats) -> Option<String> {
     match module {
         Some("clock") => Some(s.clock.clone()),
-        Some("cpu") => Some(s.cpu.clone()),
+        Some("cpu") => Some(format!("{:?}", s.cpu_pct)),
         Some("memory") => Some(s.memory.clone()),
-        Some("battery") => Some(format!("{}|{}|{}", s.battery, s.battery_capacity, s.battery_charging)),
-        Some("volume") => Some(format!("{}|{}", s.volume, s.volume_muted)),
-        Some("brightness") => Some(s.brightness.clone()),
+        Some("battery") => Some(format!("{:?}", s.battery)),
+        Some("volume") => Some(format!("{:?}", s.volume)),
+        Some("brightness") => Some(format!("{:?}", s.brightness)),
         Some("window") | Some("tray") | Some("light_source") => None,
         _ => Some(format!(
-            "{}|{}|{}|{}|{}|{}|{}|{}|{}",
-            s.clock, s.memory, s.cpu, s.battery, s.battery_capacity,
-            s.battery_charging, s.volume, s.volume_muted, s.brightness
+            "{}|{}|{:?}|{:?}|{:?}|{:?}",
+            s.clock, s.memory, s.cpu_pct, s.battery, s.volume, s.brightness
         )),
     }
 }
@@ -484,6 +502,8 @@ struct StatusApp {
     /// as an adaptation.
     contrast_now: f32,
     text_prims: Vec<TextPrim>,
+    /// The glyphs the stat modules paint their readouts on — see `IconPrim`.
+    icon_prims: Vec<IconPrim>,
 
     scale_factor: f64,
     width: u32,
@@ -617,6 +637,7 @@ impl StatusApp {
         self.overlay_rects.clear();
         self.rounded_boxes.clear();
         self.text_prims.clear();
+        self.icon_prims.clear();
         self.input_regions.clear();
         self.module_bounds.clear();
         self.tray_item_bounds.clear();
@@ -720,6 +741,7 @@ impl StatusApp {
                     bar_h,
                     self.scale_factor,
                     &mut self.text_prims,
+                    &mut self.icon_prims,
                     &mut self.rects,
                     &mut self.overlay_rects,
                     &self.tray_items,
@@ -817,6 +839,7 @@ impl StatusApp {
                     bar_h,
                     self.scale_factor,
                     &mut self.text_prims,
+                    &mut self.icon_prims,
                     &mut self.rects,
                     &mut self.overlay_rects,
                     &self.tray_items,
@@ -1131,6 +1154,14 @@ impl StatusApp {
                 let old_y = tp.3;
                 tp.2 = old_y;
                 tp.3 = old_x;
+            }
+            // Rotate icon prims (square glyphs, so only the corner moves)
+            for ip in &mut self.icon_prims {
+                let (old_x, old_y, old_w, old_h) = (ip.x, ip.y, ip.w, ip.h);
+                ip.x = old_y;
+                ip.y = old_x;
+                ip.w = old_h;
+                ip.h = old_w;
             }
             // Rotate tray_item_bounds
             for tib in &mut self.tray_item_bounds {
@@ -1459,6 +1490,7 @@ impl cce_ui::engine::Application for StatusApp {
             text_scrim_feather: None,
             contrast_now: 0.0,
             text_prims: Vec::new(),
+            icon_prims: Vec::new(),
             scale_factor: 1.0,
             width: if selected_module.is_some() { 120 } else { 1920 },
             height: read_status_height_from_config() as u32,
@@ -1879,6 +1911,12 @@ impl cce_ui::engine::Application for StatusApp {
                 (true, true, true, true),
                 [0.23, 0.35, 0.50, 0.55],
             );
+        }
+
+        // Readout glyphs: post-scrim so the pool grounds them like any run,
+        // pre-text so the number lands on the glyph.
+        for ip in &self.icon_prims {
+            pc.image(ip.image, Rect { x: ip.x, y: ip.y, width: ip.w, height: ip.h }, ip.alpha);
         }
 
         for (text, tsize, x, y, color, font, bounds, layout, _run_w) in &self.text_prims {

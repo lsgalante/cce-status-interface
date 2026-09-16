@@ -191,6 +191,31 @@ pub(crate) fn read_text_raise_from_config() -> f32 {
     cfg_f32("/module/text_raise").unwrap_or(0.0)
 }
 
+/// `module { icon_size }` — the glyph height, logical px, for the modules
+/// that read out as a cce-icons glyph with their value on it (cpu,
+/// brightness, volume, battery). Default: the bar height less 6, so the
+/// glyph sits inside the bubble with a 3px breath above and below.
+pub(crate) fn read_icon_size_from_config() -> f32 {
+    cfg_f32("/module/icon_size")
+        .unwrap_or_else(|| read_status_height_from_config() - 6.0)
+        .max(4.0)
+}
+
+/// `module { icon_font_size }` — the size of the number superimposed on a
+/// glyph. Defaults to three quarters of the module font size: "100" at the
+/// full size overhangs a bar-height glyph on both sides, and the glyph is
+/// what carries the unit now, so the number can afford to be smaller.
+pub(crate) fn read_icon_font_size_from_config(font_size: f32) -> f32 {
+    cfg_f32("/module/icon_font_size").unwrap_or(font_size * 0.75).max(1.0)
+}
+
+/// `module { icon_alpha }` — opacity 0-1 of the glyph under the number
+/// (default 0.4). The glyph is tinted the number's color, so it is this
+/// ghosting alone that keeps the digits legible on it.
+pub(crate) fn read_icon_alpha_from_config() -> f32 {
+    cfg_f32("/module/icon_alpha").unwrap_or(0.4).clamp(0.0, 1.0)
+}
+
 /// `module { text_contrast }` — adaptive contrast strength (0 = off, the
 /// default; 1 = full). The compositor's per-segment `backdrop` measurement
 /// drives the scrim through it: the ground darkens only as far as a backdrop

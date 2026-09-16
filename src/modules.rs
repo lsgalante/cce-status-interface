@@ -66,6 +66,7 @@ pub trait StatusModule {
         bar_h: f32,
         scale_factor: f64,
         text_prims: &mut Vec<crate::TextPrim>,
+        icon_prims: &mut Vec<crate::IconPrim>,
         rects: &mut Vec<RectWidget>,
         overlay_rects: &mut Vec<RectWidget>,
         tray_items: &HashMap<String, TrayItem>,
@@ -202,6 +203,7 @@ impl StatusModule for WindowModule {
         bar_h: f32,
         _scale_factor: f64,
         text_prims: &mut Vec<crate::TextPrim>,
+        _icon_prims: &mut Vec<crate::IconPrim>,
         _rects: &mut Vec<RectWidget>,
         _overlay_rects: &mut Vec<RectWidget>,
         _tray_items: &HashMap<String, TrayItem>,
@@ -265,6 +267,7 @@ impl StatusModule for ClockModule {
         bar_h: f32,
         _scale_factor: f64,
         text_prims: &mut Vec<crate::TextPrim>,
+        _icon_prims: &mut Vec<crate::IconPrim>,
         _rects: &mut Vec<RectWidget>,
         _overlay_rects: &mut Vec<RectWidget>,
         _tray_items: &HashMap<String, TrayItem>,
@@ -281,19 +284,139 @@ impl StatusModule for ClockModule {
     }
 }
 
-pub struct BatteryModule;
+/// A stat module's readout as a cce-icons glyph with its value superimposed
+/// — the glyph IS the unit, so the number is bare: "87" on the battery, not
+/// "Bat 87%". The glyph is tinted the readout's color and ghosted under the
+/// number (`module { icon_alpha }`); see `icons.rs` for why the tint is done
+/// here rather than through `cce_ui::upload_icon`.
+///
+/// The pre-glyph text form rides along as the FALLBACK: `tinted_icon` returns
+/// `None` when the icon set is missing or unparsable, and a readout that
+/// silently loses its glyph would be a bare number nobody can attribute — so
+/// it degrades to the old "Cpu 45%" instead.
+pub(crate) struct IconReadout {
+    pub icon: &'static str,
+    /// The number drawn over the glyph; `None` draws the glyph alone (a
+    /// value the reader could not produce — cpu with no /proc/stat, a
+    /// sink without a level).
+    pub number: Option<String>,
+    pub color: [f32; 4],
+    pub fallback: String,
+    /// Widest-plausible fallback text, for the stable slot width.
+    pub fallback_template: &'static str,
+}
 
-impl BatteryModule {
-    fn live_text<'a>(stats: &'a Option<SystemStats>) -> &'a str {
-        match stats {
-            Some(s) if !s.battery.is_empty() => &s.battery,
-            _ => "Bat 100%",
+/// The widest number a percentage readout shows.
+const NUMBER_TEMPLATE: &str = "100";
+
+impl IconReadout {
+    /// The glyph as an uploaded texture plus its LOGICAL size, at
+    /// `module { icon_size }` on the longer side. `None` = no glyph, text
+    /// fallback.
+    fn glyph(&self) -> Option<(u32, f32, f32)> {
+        let scale = cce_ui::scale::scale_factor();
+        let px = (crate::read_icon_size_from_config() * scale).round().max(1.0) as u32;
+        let (image, w, h) = crate::icons::tinted_icon(self.icon, px, crate::icons::tint_of(self.color))?;
+        Some((image, w as f32 / scale, h as f32 / scale))
+    }
+
+    /// The number's font size — `module { icon_font_size }`, else a
+    /// fraction of the module font.
+    fn number_size(font_size: f32) -> f32 {
+        crate::read_icon_font_size_from_config(font_size)
+    }
+
+    /// Stable slot width: the glyph, the widest number and the live number
+    /// — whichever is widest — plus padding. Normally the glyph wins, which
+    /// is what makes the slot stable; a number wider than the glyph would
+    /// overhang it symmetrically, and the slot allows for that.
+    fn width(&self, font_system: &mut FontSystem, font_family: &str, font_size: f32, padding: f32) -> f32 {
+        match self.glyph() {
+            Some((_, gw, _)) => {
+                let ns = Self::number_size(font_size);
+                let tmpl = Label::new_with_family(font_system, NUMBER_TEMPLATE, ns, [0.0, 0.0, 0.0, 1.0], font_family).w;
+                let live = self.number.as_deref().map_or(0.0, |n| {
+                    Label::new_with_family(font_system, n, ns, [0.0, 0.0, 0.0, 1.0], font_family).w
+                });
+                gw.max(tmpl).max(live) + 2.0 * padding
+            }
+            None => stable_text_width(font_system, &self.fallback, self.fallback_template, font_size, font_family, padding),
+        }
+    }
+
+    /// Live content width: the glyph or the live number, whichever is wider,
+    /// plus padding.
+    fn content_width(&self, font_system: &mut FontSystem, font_family: &str, font_size: f32, padding: f32) -> f32 {
+        match self.glyph() {
+            Some((_, gw, _)) => {
+                let ns = Self::number_size(font_size);
+                let live = self.number.as_deref().map_or(0.0, |n| {
+                    Label::new_with_family(font_system, n, ns, [0.0, 0.0, 0.0, 1.0], font_family).w
+                });
+                gw.max(live) + 2.0 * padding
+            }
+            None => live_text_width(font_system, &self.fallback, font_size, font_family, padding),
+        }
+    }
+
+    fn render(
+        &self,
+        x: f32,
+        font_system: &mut FontSystem,
+        font_family: &str,
+        font_size: f32,
+        bar_h: f32,
+        text_prims: &mut Vec<crate::TextPrim>,
+        icon_prims: &mut Vec<crate::IconPrim>,
+        padding: f32,
+    ) {
+        match self.glyph() {
+            Some((image, gw, gh)) => {
+                let ns = Self::number_size(font_size);
+                let label = self
+                    .number
+                    .as_deref()
+                    .map(|n| Label::new_with_family(font_system, n, ns, self.color, font_family));
+                // Glyph and number share one center: the wider of the two
+                // spans the content, and both are centered on it. The same
+                // `module { text_raise }` lift every text run gets via
+                // `centered_text_y` is applied to the glyph too, so the pair
+                // stays concentric and level with the neighboring modules.
+                let span = gw.max(label.as_ref().map_or(0.0, |l| l.w));
+                let cx = x + padding + span / 2.0;
+                let gy = (bar_h - gh) / 2.0 - crate::config::read_text_raise_from_config();
+                icon_prims.push(crate::IconPrim {
+                    image,
+                    x: cx - gw / 2.0,
+                    y: gy,
+                    w: gw,
+                    h: gh,
+                    alpha: crate::read_icon_alpha_from_config(),
+                });
+                if let Some(label) = label {
+                    let lw = label.w;
+                    crate::draw_label(text_prims, label, cx - lw / 2.0, centered_text_y(bar_h, ns));
+                }
+            }
+            None => {
+                let label = Label::new_with_family(font_system, &self.fallback, font_size, self.color, font_family);
+                crate::draw_label(text_prims, label, x + padding, centered_text_y(bar_h, font_size));
+            }
         }
     }
 }
 
-impl StatusModule for BatteryModule {
-    fn name(&self) -> &'static str { "battery" }
+/// A module that reads out as an [`IconReadout`]: it only has to say which
+/// glyph, which number and which color, and the blanket `StatusModule` impl
+/// below does the shared layout. `None` hides the module (width 0) — a
+/// machine with no battery or backlight has nothing to read out.
+pub(crate) trait IconStat {
+    const NAME: &'static str;
+    fn readout(stats: &Option<SystemStats>, normal_color: [f32; 4]) -> Option<IconReadout>;
+}
+
+impl<T: IconStat> StatusModule for T {
+    fn name(&self) -> &'static str { T::NAME }
 
     fn width(
         &self,
@@ -305,7 +428,10 @@ impl StatusModule for BatteryModule {
         _tray_items: &HashMap<String, TrayItem>,
         padding: f32,
     ) -> f32 {
-        stable_text_width(font_system, Self::live_text(stats), "Bat 100%", font_size, font_family, padding)
+        // The color only tints the glyph, and the width is the same in any
+        // tint; the readout's own color is applied at render.
+        T::readout(stats, color::TEXT_FG)
+            .map_or(0.0, |r| r.width(font_system, font_family, font_size, padding))
     }
 
     fn content_width(
@@ -318,7 +444,8 @@ impl StatusModule for BatteryModule {
         _tray_items: &HashMap<String, TrayItem>,
         padding: f32,
     ) -> f32 {
-        live_text_width(font_system, Self::live_text(stats), font_size, font_family, padding)
+        T::readout(stats, color::TEXT_FG)
+            .map_or(0.0, |r| r.content_width(font_system, font_family, font_size, padding))
     }
 
     fn render(
@@ -334,6 +461,7 @@ impl StatusModule for BatteryModule {
         bar_h: f32,
         _scale_factor: f64,
         text_prims: &mut Vec<crate::TextPrim>,
+        icon_prims: &mut Vec<crate::IconPrim>,
         _rects: &mut Vec<RectWidget>,
         _overlay_rects: &mut Vec<RectWidget>,
         _tray_items: &HashMap<String, TrayItem>,
@@ -343,165 +471,82 @@ impl StatusModule for BatteryModule {
         _rounded_boxes: &mut Vec<RoundedBox>,
         padding: f32,
     ) {
-        if let Some(ref s) = stats {
-            if !s.battery.is_empty() {
-                let bat_color = if !s.battery_charging && s.battery_capacity > 10 {
-                    normal_color
-                } else {
-                    color::TEXT_ACCENT
-                };
-                let label = Label::new_with_family(font_system, &s.battery, font_size, bat_color, font_family);
-                crate::draw_label(text_prims, label, x + padding, centered_text_y(bar_h, font_size));
-            }
+        if let Some(r) = T::readout(stats, normal_color) {
+            r.render(x, font_system, font_family, font_size, bar_h, text_prims, icon_prims, padding);
         }
+    }
+}
+
+pub struct BatteryModule;
+
+impl IconStat for BatteryModule {
+    const NAME: &'static str = "battery";
+
+    fn readout(stats: &Option<SystemStats>, normal_color: [f32; 4]) -> Option<IconReadout> {
+        let (cap, charging) = match stats {
+            Some(s) => s.battery?,
+            None => (100, false),
+        };
+        // Accent while charging or nearly flat — the one cue left for
+        // charging now that the "⚡" prefix has gone with the text form.
+        let color = if !charging && cap > 10 { normal_color } else { color::TEXT_ACCENT };
+        Some(IconReadout {
+            icon: "battery",
+            number: Some(cap.to_string()),
+            color,
+            fallback: format!("{} {cap}%", if charging { "⚡" } else { "Bat" }),
+            fallback_template: "Bat 100%",
+        })
     }
 }
 
 pub struct VolumeModule;
 
-impl VolumeModule {
-    fn live_text<'a>(stats: &'a Option<SystemStats>) -> &'a str {
-        match stats {
-            Some(s) if !s.volume.is_empty() => &s.volume,
-            _ => "Vol 100%",
-        }
-    }
-}
+impl IconStat for VolumeModule {
+    const NAME: &'static str = "volume";
 
-impl StatusModule for VolumeModule {
-    fn name(&self) -> &'static str { "volume" }
-
-    fn width(
-        &self,
-        stats: &Option<SystemStats>,
-        _title: &str,
-        font_system: &mut FontSystem,
-        font_family: &str,
-        font_size: f32,
-        _tray_items: &HashMap<String, TrayItem>,
-        padding: f32,
-    ) -> f32 {
-        stable_text_width(font_system, Self::live_text(stats), "Vol 100%", font_size, font_family, padding)
-    }
-
-    fn content_width(
-        &self,
-        stats: &Option<SystemStats>,
-        _title: &str,
-        font_system: &mut FontSystem,
-        font_family: &str,
-        font_size: f32,
-        _tray_items: &HashMap<String, TrayItem>,
-        padding: f32,
-    ) -> f32 {
-        live_text_width(font_system, Self::live_text(stats), font_size, font_family, padding)
-    }
-
-    fn render(
-        &self,
-        x: f32,
-        _w: f32,
-        stats: &Option<SystemStats>,
-        _title: &str,
-        font_system: &mut FontSystem,
-        font_family: &str,
-        font_size: f32,
-        normal_color: [f32; 4],
-        bar_h: f32,
-        _scale_factor: f64,
-        text_prims: &mut Vec<crate::TextPrim>,
-        _rects: &mut Vec<RectWidget>,
-        _overlay_rects: &mut Vec<RectWidget>,
-        _tray_items: &HashMap<String, TrayItem>,
-        _tray_item_bounds: &mut Vec<TrayIconBounds>,
-        _box_bg_color: Option<[f32; 4]>,
-        _status_box_radius: f32,
-        _rounded_boxes: &mut Vec<RoundedBox>,
-        padding: f32,
-    ) {
-        if let Some(ref s) = stats {
-            if !s.volume.is_empty() {
-                let is_muted = s.volume_muted;
-                let color_val = if is_muted {
-                    crate::read_disabled_color_from_config().unwrap_or(color::TEXT_DIM)
-                } else {
-                    normal_color
-                };
-                let label = Label::new_with_family(font_system, &s.volume, font_size, color_val, font_family);
-                crate::draw_label(text_prims, label, x + padding, centered_text_y(bar_h, font_size));
-            }
-        }
+    fn readout(stats: &Option<SystemStats>, normal_color: [f32; 4]) -> Option<IconReadout> {
+        let (pct, muted) = match stats {
+            Some(s) => s.volume?,
+            None => (Some(100), false),
+        };
+        let color = if muted {
+            crate::read_disabled_color_from_config().unwrap_or(color::TEXT_DIM)
+        } else {
+            normal_color
+        };
+        let fallback = match (muted, pct) {
+            (_, Some(p)) => format!("Vol {p}%"),
+            (true, None) => "Vol Muted".to_string(),
+            (false, None) => "Vol N/A".to_string(),
+        };
+        Some(IconReadout {
+            icon: if muted { "volume-muted" } else { "volume" },
+            number: pct.map(|p| p.to_string()),
+            color,
+            fallback,
+            fallback_template: "Vol 100%",
+        })
     }
 }
 
 pub struct BrightnessModule;
 
-impl BrightnessModule {
-    fn live_text<'a>(stats: &'a Option<SystemStats>) -> &'a str {
-        match stats {
-            Some(s) if !s.brightness.is_empty() => &s.brightness,
-            _ => "Bri 100%",
-        }
-    }
-}
+impl IconStat for BrightnessModule {
+    const NAME: &'static str = "brightness";
 
-impl StatusModule for BrightnessModule {
-    fn name(&self) -> &'static str { "brightness" }
-
-    fn width(
-        &self,
-        stats: &Option<SystemStats>,
-        _title: &str,
-        font_system: &mut FontSystem,
-        font_family: &str,
-        font_size: f32,
-        _tray_items: &HashMap<String, TrayItem>,
-        padding: f32,
-    ) -> f32 {
-        stable_text_width(font_system, Self::live_text(stats), "Bri 100%", font_size, font_family, padding)
-    }
-
-    fn content_width(
-        &self,
-        stats: &Option<SystemStats>,
-        _title: &str,
-        font_system: &mut FontSystem,
-        font_family: &str,
-        font_size: f32,
-        _tray_items: &HashMap<String, TrayItem>,
-        padding: f32,
-    ) -> f32 {
-        live_text_width(font_system, Self::live_text(stats), font_size, font_family, padding)
-    }
-
-    fn render(
-        &self,
-        x: f32,
-        _w: f32,
-        stats: &Option<SystemStats>,
-        _title: &str,
-        font_system: &mut FontSystem,
-        font_family: &str,
-        font_size: f32,
-        normal_color: [f32; 4],
-        bar_h: f32,
-        _scale_factor: f64,
-        text_prims: &mut Vec<crate::TextPrim>,
-        _rects: &mut Vec<RectWidget>,
-        _overlay_rects: &mut Vec<RectWidget>,
-        _tray_items: &HashMap<String, TrayItem>,
-        _tray_item_bounds: &mut Vec<TrayIconBounds>,
-        _box_bg_color: Option<[f32; 4]>,
-        _status_box_radius: f32,
-        _rounded_boxes: &mut Vec<RoundedBox>,
-        padding: f32,
-    ) {
-        if let Some(ref s) = stats {
-            if !s.brightness.is_empty() {
-                let label = Label::new_with_family(font_system, &s.brightness, font_size, normal_color, font_family);
-                crate::draw_label(text_prims, label, x + padding, centered_text_y(bar_h, font_size));
-            }
-        }
+    fn readout(stats: &Option<SystemStats>, normal_color: [f32; 4]) -> Option<IconReadout> {
+        let pct = match stats {
+            Some(s) => s.brightness?,
+            None => 100,
+        };
+        Some(IconReadout {
+            icon: "brightness",
+            number: Some(pct.to_string()),
+            color: normal_color,
+            fallback: format!("Bri {pct}%"),
+            fallback_template: "Bri 100%",
+        })
     }
 }
 
@@ -567,6 +612,7 @@ impl StatusModule for MemoryModule {
         bar_h: f32,
         _scale_factor: f64,
         text_prims: &mut Vec<crate::TextPrim>,
+        _icon_prims: &mut Vec<crate::IconPrim>,
         _rects: &mut Vec<RectWidget>,
         _overlay_rects: &mut Vec<RectWidget>,
         _tray_items: &HashMap<String, TrayItem>,
@@ -585,70 +631,21 @@ impl StatusModule for MemoryModule {
 
 pub struct CpuModule;
 
-impl CpuModule {
-    fn live_text<'a>(stats: &'a Option<SystemStats>) -> &'a str {
-        match stats {
-            Some(s) if !s.cpu.is_empty() => &s.cpu,
-            _ => "Cpu 0%",
-        }
-    }
-}
+impl IconStat for CpuModule {
+    const NAME: &'static str = "cpu";
 
-impl StatusModule for CpuModule {
-    fn name(&self) -> &'static str { "cpu" }
-
-    fn width(
-        &self,
-        stats: &Option<SystemStats>,
-        _title: &str,
-        font_system: &mut FontSystem,
-        font_family: &str,
-        font_size: f32,
-        _tray_items: &HashMap<String, TrayItem>,
-        padding: f32,
-    ) -> f32 {
-        stable_text_width(font_system, Self::live_text(stats), "Cpu 100%", font_size, font_family, padding)
-    }
-
-    fn content_width(
-        &self,
-        stats: &Option<SystemStats>,
-        _title: &str,
-        font_system: &mut FontSystem,
-        font_family: &str,
-        font_size: f32,
-        _tray_items: &HashMap<String, TrayItem>,
-        padding: f32,
-    ) -> f32 {
-        live_text_width(font_system, Self::live_text(stats), font_size, font_family, padding)
-    }
-
-    fn render(
-        &self,
-        x: f32,
-        _w: f32,
-        stats: &Option<SystemStats>,
-        _title: &str,
-        font_system: &mut FontSystem,
-        font_family: &str,
-        font_size: f32,
-        normal_color: [f32; 4],
-        bar_h: f32,
-        _scale_factor: f64,
-        text_prims: &mut Vec<crate::TextPrim>,
-        _rects: &mut Vec<RectWidget>,
-        _overlay_rects: &mut Vec<RectWidget>,
-        _tray_items: &HashMap<String, TrayItem>,
-        _tray_item_bounds: &mut Vec<TrayIconBounds>,
-        _box_bg_color: Option<[f32; 4]>,
-        _status_box_radius: f32,
-        _rounded_boxes: &mut Vec<RoundedBox>,
-        padding: f32,
-    ) {
-        if let Some(ref s) = stats {
-            let label = Label::new_with_family(font_system, &s.cpu, font_size, normal_color, font_family);
-            crate::draw_label(text_prims, label, x + padding, centered_text_y(bar_h, font_size));
-        }
+    fn readout(stats: &Option<SystemStats>, normal_color: [f32; 4]) -> Option<IconReadout> {
+        let pct = match stats {
+            Some(s) => s.cpu_pct,
+            None => Some(0),
+        };
+        Some(IconReadout {
+            icon: "cpu",
+            number: pct.map(|p| p.to_string()),
+            color: normal_color,
+            fallback: pct.map_or("Cpu N/A".to_string(), |p| format!("Cpu {p}%")),
+            fallback_template: "Cpu 100%",
+        })
     }
 }
 
@@ -688,6 +685,7 @@ impl StatusModule for TrayModule {
         bar_h: f32,
         scale_factor: f64,
         text_prims: &mut Vec<crate::TextPrim>,
+        _icon_prims: &mut Vec<crate::IconPrim>,
         _rects: &mut Vec<RectWidget>,
         overlay_rects: &mut Vec<RectWidget>,
         tray_items: &HashMap<String, TrayItem>,
@@ -893,6 +891,7 @@ impl StatusModule for LightSourceModule {
         bar_h: f32,
         _scale_factor: f64,
         _text_prims: &mut Vec<crate::TextPrim>,
+        _icon_prims: &mut Vec<crate::IconPrim>,
         _rects: &mut Vec<RectWidget>,
         _overlay_rects: &mut Vec<RectWidget>,
         _tray_items: &HashMap<String, TrayItem>,
