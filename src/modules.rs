@@ -522,11 +522,11 @@ impl IconStat for BatteryModule {
             Some(s) => s.battery?,
             None => (100, false),
         };
-        // Accent while charging or nearly flat — the one cue left for
-        // charging now that the "⚡" prefix has gone with the text form.
+        // Accent while charging or nearly flat; charging also swaps in the
+        // bolt glyph, the icon form of the text readout's "⚡" prefix.
         let color = if !charging && cap > 10 { normal_color } else { color::TEXT_ACCENT };
         Some(IconReadout {
-            icon: "battery",
+            icon: if charging { "battery-charging" } else { "battery" },
             number: Some(cap.to_string()),
             color,
             fallback: format!("{} {cap}%", if charging { "⚡" } else { "Bat" }),

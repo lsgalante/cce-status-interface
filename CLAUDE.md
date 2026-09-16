@@ -99,9 +99,10 @@ the digits and drawn between the glyph and the number (`IconPrim::pocket`,
 `module { icon_pocket }`). Same-hue was the problem — white digits on a white
 ghost had only the alpha gap for contrast — and the pocket is the bubble
 scrim's answer applied locally: darken the ground under the digits rather
-than outline the letterforms. The muted sink swaps to `volume-muted`; the
-battery keeps its accent color while charging or under 10% (the only
-charging cue now that the "⚡" prefix went with the text form). A module whose
+than outline the letterforms. The muted sink swaps to `volume-muted`, the
+charging battery to `battery-charging` (the bolt runs the glyph's full
+height so its tips clear the digit pocket); the battery also keeps its
+accent color while charging or under 10%. A module whose
 reader has nothing (no battery, no backlight, no pactl) returns `None` and
 has width 0, i.e. it is hidden rather than an empty bubble; a reader that
 answers without a number (cpu with no /proc/stat, a sink with no level)
