@@ -360,7 +360,11 @@ scrim rather than switching it off.
 - **Super + left-drag on a segment is handled by the compositor**, not this app: it
   starts the same segment drag as adjust-position mode (snap to an edge on release,
   persisted to `layout.status_bar.<module>` in config.kdl). This app never sees those
-  clicks and no longer tracks the super key.
+  presses and no longer tracks the super key — with two exceptions since
+  2026-09-16 (cce-fx `cursor.rs`): a press that travels under 6px is a CLICK,
+  replayed to the segment as press+release instead of snapped (a still click on
+  a top-edge segment used to re-home it to top-center), and an EXPANDED segment
+  (menu open) is never grabbed at all, so the "Done" row can end adjust mode.
 - Tray icons left-click activate / right-click open their DBusMenu. (The old
   layout-mode menu and viewport tabs are gone with the viewport-tag feature.)
 - `ToggleHideModules` / `ToggleAdjustPositionMode` mirror their state to the compositor
