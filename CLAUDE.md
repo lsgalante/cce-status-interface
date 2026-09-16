@@ -9,7 +9,7 @@ is one crate in the multi-repo `cce` workspace — see `../cce-compositor/WORKSP
 the workspace layout, the multi-repo git rules (commit here, never `git init` at the root),
 and the `cce-ui` toolkit this app is built on. This crate is deliberately small:
 `src/main.rs` (the `StatusApp` application, layout/input, launcher daemon),
-`src/modules.rs` (the `StatusModule` trait and its nine implementations),
+`src/modules.rs` (the `StatusModule` trait and its ten implementations),
 `src/config.rs` (pointer-first config readers), `src/tray.rs` (SNI host),
 `src/cloud.rs` (menu page building), `src/stats.rs` (system stat readers —
 numbers, not strings; the modules do the formatting), `src/icons.rs` (tinted
@@ -36,7 +36,8 @@ One binary, three modes, selected by CLI args in `main()`:
   resets it). This is the normal production mode: each module is its own process and
   its own Wayland surface.
 - **`--module <name>`** — a single-module bar segment. Valid names: `window`, `tray`,
-  `cpu`, `memory`, `brightness`, `volume`, `battery`, `clock`, `light_source`.
+  `stats`, `cpu`, `memory`, `brightness`, `volume`, `battery`, `clock`, `light_source`
+  (the daemon launches `stats`, not the five it combines).
 - **`--trigger-switcher`** — one-shot: writes `trigger` to the switcher socket of the
   running instance and exits (used as a keybinding target).
 
@@ -86,27 +87,31 @@ Orientation is dynamic: `is_vertical()` compares the surface size against the
 configured bar thickness; every module renders along one axis using `bar_h`/`coord`
 accordingly.
 
-**The stat modules read out as a glyph, not a label.** `cpu`, `memory`,
-`brightness`, `volume` and `battery` are `IconStat` implementations (a
-blanket `impl<T: IconStat> StatusModule for T` in `modules.rs` does the shared
-layout): each names a cce-icons glyph, the bare number and a color, and
-`IconReadout` draws the glyph ghosted at `module { icon_alpha }` with the
-number centered on it — no unit symbol, since the glyph IS the unit ("87" on
-the battery, not "Bat 87%"). The number is bold (`module { icon_weight }`,
-the one run in the bar that sets `TextPrim`'s weight field) and sits in a
-POCKET: a feathered `Prim::Glow` pool in the number's contrast color, hugging
-the digits and drawn between the glyph and the number (`IconPrim::pocket`,
-`module { icon_pocket }`). Same-hue was the problem — white digits on a white
-ghost had only the alpha gap for contrast — and the pocket is the bubble
-scrim's answer applied locally: darken the ground under the digits rather
-than outline the letterforms. The muted sink swaps to `volume-muted`, the
-charging battery to `battery-charging` (the bolt runs the glyph's full
-height so its tips clear the digit pocket); the battery also keeps its
-accent color while charging or under 10%. A module whose
-reader has nothing (no battery, no backlight, no pactl) returns `None` and
-has width 0, i.e. it is hidden rather than an empty bubble; a reader that
-answers without a number (cpu with no /proc/stat, a sink with no level)
-draws the glyph alone.
+**The stat modules read out as a glyph with the number beside it, not a
+label.** `cpu`, `memory`, `brightness`, `volume` and `battery` are
+`IconStat` implementations: each names a cce-icons glyph, the bare number
+and a color, and `IconReadout` draws the glyph (tinted that color, at
+`module { icon_alpha }`) with the number `module { icon_gap }` to its right
+— no unit symbol, since the glyph IS the unit ("87" beside the battery, not
+"Bat 87%"). **The launcher runs them as ONE segment**, `stats`
+(`StatsModule`): every readout in a single bubble, `module { icon_spacing }`
+apart, in the order cpu, memory, brightness, volume, battery — the order the
+compositor's `RIGHT_ORDER` gave the five separate segments, and `stats` has
+its own slot there between `tray` and `clock` (cce-window-manager
+2026-09-16). The five single names stay valid `--module` values for a bar
+that wants them apart; a blanket `impl<T: IconStat> StatusModule for T`
+lays a lone readout out through the same `readouts_width` /
+`render_readouts` the combined segment uses. (Superimposing the number on a
+ghosted glyph, with a bold weight and a dark pocket under the digits, was
+tried first on 2026-09-16 and replaced the same day by the side-by-side
+form; `icon_weight` survives as an opt-in, the pocket is gone.) The muted
+sink swaps to `volume-muted`, the charging battery to `battery-charging`;
+the battery also keeps its accent color while charging or under 10%. A
+reader with nothing (no battery, no backlight, no pactl) returns `None`
+and drops out of the row — a lone module with nothing has width 0, i.e. it
+is hidden rather than an empty bubble; a reader that answers without a
+number (cpu with no /proc/stat, a sink with no level) draws the glyph
+alone.
 
 The glyphs come from the **cce-icons** crate via `cce_ui::icons_dir()`
 (`$CCE_ICONS_DIR`, else `~/projects/cce/cce-icons/svg`) — but NOT through
@@ -118,9 +123,9 @@ glyph that fails to load falls back to the old text readout ("Cpu 45%"), so
 a bar started without the icon set is still attributable; **a shadow session
 needs `CCE_ICONS_DIR` exported into the spawn**, its HOME being elsewhere,
 exactly as it needs `CCE_FONTS_DIR`. Slot stability holds as before: the
-stable width is the wider of the glyph and the "100" template, and the glyph
-normally wins, so a value crossing a digit boundary never resizes the
-surface. `memory` reads as a percentage of the total in use (used = total
+stable width sizes every number at the "100" template, so a value crossing
+a digit boundary never resizes the surface, and the bubble eases to the
+live row. `memory` reads as a percentage of the total in use (used = total
 less free, buffers and page cache) since 2026-09-16 — the "Mem 10/62G"
 gigabyte form went with the label.
 
@@ -237,12 +242,13 @@ silhouette's AA feather plus `DropletSpec::shadow_gap()` for the shadow's
 falloff (`main.rs`, three call sites — left, right, and the expanded menu
 box, which becomes the drop growing))
 and `module { icon_size }` (glyph height for the icon readouts, logical px,
-default bar height − 6) and `module { icon_font_size }` (the number on the
-glyph, default ¾ of `module { font_size }` — "100" at the full size
-overhangs a bar-height glyph) and `module { icon_alpha }` (the glyph's
-ghosting under the number, 0-1, default 0.4) and `module { icon_weight }`
-(OpenType weight of that number, default 700) and `module { icon_pocket }`
-(opacity 0-1 of the dark pocket under the digits, default 0.6, 0 = off) and `module { text_raise }` (lifts module text above vertical center, logical
+default bar height − 6) and `module { icon_font_size }` (the number beside
+the glyph, default `module { font_size }`) and `module { icon_gap }` (glyph
+to number, logical px, default 4) and `module { icon_spacing }` (between
+readouts in the `stats` bubble, default `module { spacing }`) and
+`module { icon_alpha }` (glyph opacity 0-1, default 1) and
+`module { icon_weight }` (OpenType weight of the number, unset = regular)
+and `module { text_raise }` (lifts module text above vertical center, logical
 px, bar-side only — every module funnels through `centered_text_y`) and
 `module { text_scrim }` (0-1 resting opacity of a
 feathered pool filling each module box, the DE's one text-contrast treatment)

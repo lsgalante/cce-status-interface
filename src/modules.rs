@@ -284,11 +284,10 @@ impl StatusModule for ClockModule {
     }
 }
 
-/// A stat module's readout as a cce-icons glyph with its value superimposed
-/// — the glyph IS the unit, so the number is bare: "87" on the battery, not
-/// "Bat 87%". The glyph is tinted the readout's color and ghosted under the
-/// number (`module { icon_alpha }`); see `icons.rs` for why the tint is done
-/// here rather than through `cce_ui::upload_icon`.
+/// A stat module's readout: a cce-icons glyph with its value beside it —
+/// the glyph IS the unit, so the number is bare ("87" next to the battery,
+/// not "Bat 87%"). The glyph is tinted the readout's color; see `icons.rs`
+/// for why the tint is done here rather than through `cce_ui::upload_icon`.
 ///
 /// The pre-glyph text form rides along as the FALLBACK: `tinted_icon` returns
 /// `None` when the icon set is missing or unparsable, and a readout that
@@ -296,7 +295,7 @@ impl StatusModule for ClockModule {
 /// it degrades to the old "Cpu 45%" instead.
 pub(crate) struct IconReadout {
     pub icon: &'static str,
-    /// The number drawn over the glyph; `None` draws the glyph alone (a
+    /// The number drawn beside the glyph; `None` draws the glyph alone (a
     /// value the reader could not produce — cpu with no /proc/stat, a
     /// sink without a level).
     pub number: Option<String>,
@@ -320,8 +319,8 @@ impl IconReadout {
         Some((image, w as f32 / scale, h as f32 / scale))
     }
 
-    /// The number's font size — `module { icon_font_size }`, else a
-    /// fraction of the module font.
+    /// The number's font size — `module { icon_font_size }`, else the
+    /// module font.
     fn number_size(font_size: f32) -> f32 {
         crate::read_icon_font_size_from_config(font_size)
     }
@@ -332,35 +331,29 @@ impl IconReadout {
         buf.layout_runs().next().map(|r| r.line_w).unwrap_or(0.0) / cce_ui::scale::scale_factor()
     }
 
-    /// Stable slot width: the glyph, the widest number and the live number
-    /// — whichever is widest — plus padding. Normally the glyph wins, which
-    /// is what makes the slot stable; a number wider than the glyph would
-    /// overhang it symmetrically, and the slot allows for that.
-    fn width(&self, font_system: &mut FontSystem, font_family: &str, font_size: f32, padding: f32) -> f32 {
+    /// This item's width — glyph, gap and number — with the number as the
+    /// live value (`template` false) or the widest plausible one (`template`
+    /// true, for the stable slot). In text fallback, the fallback string or
+    /// its template.
+    fn item_width(&self, font_system: &mut FontSystem, font_family: &str, font_size: f32, template: bool) -> f32 {
         match self.glyph() {
             Some((_, gw, _)) => {
                 let ns = Self::number_size(font_size);
-                let tmpl = Self::number_width(font_system, NUMBER_TEMPLATE, ns, font_family);
-                let live = self.number.as_deref().map_or(0.0, |n| Self::number_width(font_system, n, ns, font_family));
-                gw.max(tmpl).max(live) + 2.0 * padding
+                let nw = if template {
+                    Self::number_width(font_system, NUMBER_TEMPLATE, ns, font_family)
+                } else {
+                    self.number.as_deref().map_or(0.0, |n| Self::number_width(font_system, n, ns, font_family))
+                };
+                if nw > 0.0 { gw + crate::read_icon_gap_from_config() + nw } else { gw }
             }
-            None => stable_text_width(font_system, &self.fallback, self.fallback_template, font_size, font_family, padding),
+            None => {
+                let text = if template { self.fallback_template } else { self.fallback.as_str() };
+                Label::new_with_family(font_system, text, font_size, [0.0, 0.0, 0.0, 1.0], font_family).w
+            }
         }
     }
 
-    /// Live content width: the glyph or the live number, whichever is wider,
-    /// plus padding.
-    fn content_width(&self, font_system: &mut FontSystem, font_family: &str, font_size: f32, padding: f32) -> f32 {
-        match self.glyph() {
-            Some((_, gw, _)) => {
-                let ns = Self::number_size(font_size);
-                let live = self.number.as_deref().map_or(0.0, |n| Self::number_width(font_system, n, ns, font_family));
-                gw.max(live) + 2.0 * padding
-            }
-            None => live_text_width(font_system, &self.fallback, font_size, font_family, padding),
-        }
-    }
-
+    /// Draw the item with its left edge at `x`; returns the width drawn.
     fn render(
         &self,
         x: f32,
@@ -370,78 +363,94 @@ impl IconReadout {
         bar_h: f32,
         text_prims: &mut Vec<crate::TextPrim>,
         icon_prims: &mut Vec<crate::IconPrim>,
-        padding: f32,
-    ) {
+    ) -> f32 {
         match self.glyph() {
             Some((image, gw, gh)) => {
-                let ns = Self::number_size(font_size);
-                let weight = crate::read_icon_weight_from_config();
-                let number = self
-                    .number
-                    .as_deref()
-                    .map(|n| (n.to_string(), Self::number_width(font_system, n, ns, font_family)));
-                // Glyph and number share one center: the wider of the two
-                // spans the content, and both are centered on it. The same
-                // `module { text_raise }` lift every text run gets via
-                // `centered_text_y` is applied to the glyph too, so the pair
-                // stays concentric and level with the neighboring modules.
-                let span = gw.max(number.as_ref().map_or(0.0, |(_, w)| *w));
-                let cx = x + padding + span / 2.0;
+                // The same `module { text_raise }` lift every text run gets
+                // via `centered_text_y` is applied to the glyph too, so
+                // glyph and number stay level with each other and with the
+                // neighboring modules' text.
                 let gy = (bar_h - gh) / 2.0 - crate::config::read_text_raise_from_config();
-                let rgb = crate::icons::tint_of(self.color);
-                let mut pocket = None;
-                if let Some((text, nw)) = number {
-                    let nx = cx - nw / 2.0;
-                    let ny = centered_text_y(bar_h, ns);
-                    // The pocket hugs the digits, not the line box: in a
-                    // line box of exactly `ns`, digits run from about the
-                    // cap line at 0.1em down to the baseline near 0.85em.
-                    // Its feather reaches out from that core, so the notch
-                    // in the glyph is a little larger than the digits.
-                    let pocket_alpha = crate::read_icon_pocket_from_config();
-                    if pocket_alpha > 0.0 {
-                        let c = crate::treatment_rgb(rgb);
-                        pocket = Some(crate::Pocket {
-                            x: nx - 1.0,
-                            y: ny + ns * 0.1,
-                            w: nw + 2.0,
-                            h: ns * 0.75,
-                            feather: ns * 0.3,
-                            color: [c[0], c[1], c[2], pocket_alpha],
-                        });
-                    }
-                    text_prims.push((
-                        text,
-                        ns,
-                        nx,
-                        ny,
-                        rgb,
-                        Some(font_family.to_string()),
-                        None,
-                        None,
-                        Some(nw),
-                        weight,
-                    ));
-                }
                 icon_prims.push(crate::IconPrim {
                     image,
-                    x: cx - gw / 2.0,
+                    x,
                     y: gy,
                     w: gw,
                     h: gh,
                     alpha: crate::read_icon_alpha_from_config(),
-                    pocket,
                 });
+                let mut w = gw;
+                if let Some(n) = self.number.as_deref() {
+                    let ns = Self::number_size(font_size);
+                    let nw = Self::number_width(font_system, n, ns, font_family);
+                    let nx = x + gw + crate::read_icon_gap_from_config();
+                    text_prims.push((
+                        n.to_string(),
+                        ns,
+                        nx,
+                        centered_text_y(bar_h, ns),
+                        crate::icons::tint_of(self.color),
+                        Some(font_family.to_string()),
+                        None,
+                        None,
+                        Some(nw),
+                        crate::read_icon_weight_from_config(),
+                    ));
+                    w = nx + nw - x;
+                }
+                w
             }
             None => {
                 let label = Label::new_with_family(font_system, &self.fallback, font_size, self.color, font_family);
-                crate::draw_label(text_prims, label, x + padding, centered_text_y(bar_h, font_size));
+                crate::draw_label(text_prims, label, x, centered_text_y(bar_h, font_size))
             }
         }
     }
 }
 
-/// A module that reads out as an [`IconReadout`]: it only has to say which
+/// Width of a row of readouts in one bubble: `padding` inside each end,
+/// `module { icon_spacing }` between items. 0 for an empty row (the module
+/// hides). `template` sizes every number at its widest, for the stable
+/// slot; the live row is what the bubble hugs.
+fn readouts_width(
+    items: &[IconReadout],
+    font_system: &mut FontSystem,
+    font_family: &str,
+    font_size: f32,
+    padding: f32,
+    template: bool,
+) -> f32 {
+    if items.is_empty() {
+        return 0.0;
+    }
+    let spacing = crate::read_icon_spacing_from_config();
+    let sum: f32 = items.iter().map(|r| r.item_width(font_system, font_family, font_size, template)).sum();
+    sum + spacing * (items.len() as f32 - 1.0) + 2.0 * padding
+}
+
+/// Draw a row of readouts starting at the bubble's left edge `x`.
+fn render_readouts(
+    items: &[IconReadout],
+    x: f32,
+    font_system: &mut FontSystem,
+    font_family: &str,
+    font_size: f32,
+    bar_h: f32,
+    text_prims: &mut Vec<crate::TextPrim>,
+    icon_prims: &mut Vec<crate::IconPrim>,
+    padding: f32,
+) {
+    let spacing = crate::read_icon_spacing_from_config();
+    let mut cx = x + padding;
+    for (i, r) in items.iter().enumerate() {
+        if i > 0 {
+            cx += spacing;
+        }
+        cx += r.render(cx, font_system, font_family, font_size, bar_h, text_prims, icon_prims);
+    }
+}
+
+/// A module that reads out as one [`IconReadout`]: it only has to say which
 /// glyph, which number and which color, and the blanket `StatusModule` impl
 /// below does the shared layout. `None` hides the module (width 0) — a
 /// machine with no battery or backlight has nothing to read out.
@@ -465,8 +474,9 @@ impl<T: IconStat> StatusModule for T {
     ) -> f32 {
         // The color only tints the glyph, and the width is the same in any
         // tint; the readout's own color is applied at render.
-        T::readout(stats, color::TEXT_FG)
-            .map_or(0.0, |r| r.width(font_system, font_family, font_size, padding))
+        let items: Vec<_> = T::readout(stats, color::TEXT_FG).into_iter().collect();
+        readouts_width(&items, font_system, font_family, font_size, padding, true)
+            .max(readouts_width(&items, font_system, font_family, font_size, padding, false))
     }
 
     fn content_width(
@@ -479,8 +489,8 @@ impl<T: IconStat> StatusModule for T {
         _tray_items: &HashMap<String, TrayItem>,
         padding: f32,
     ) -> f32 {
-        T::readout(stats, color::TEXT_FG)
-            .map_or(0.0, |r| r.content_width(font_system, font_family, font_size, padding))
+        let items: Vec<_> = T::readout(stats, color::TEXT_FG).into_iter().collect();
+        readouts_width(&items, font_system, font_family, font_size, padding, false)
     }
 
     fn render(
@@ -506,9 +516,91 @@ impl<T: IconStat> StatusModule for T {
         _rounded_boxes: &mut Vec<RoundedBox>,
         padding: f32,
     ) {
-        if let Some(r) = T::readout(stats, normal_color) {
-            r.render(x, font_system, font_family, font_size, bar_h, text_prims, icon_prims, padding);
-        }
+        let items: Vec<_> = T::readout(stats, normal_color).into_iter().collect();
+        render_readouts(&items, x, font_system, font_family, font_size, bar_h, text_prims, icon_prims, padding);
+    }
+}
+
+/// The combined readout segment: every `IconStat` module's readout in one
+/// bubble, in the order the compositor used to lay the five separate
+/// segments out (cpu, memory, brightness, volume, battery). A reader with
+/// nothing (no battery, no backlight) simply drops out of the row. This is
+/// what the launcher daemon runs; the five single names stay valid for a
+/// bar configured to run them separately.
+pub struct StatsModule;
+
+impl StatsModule {
+    fn readouts(stats: &Option<SystemStats>, normal_color: [f32; 4]) -> Vec<IconReadout> {
+        [
+            CpuModule::readout(stats, normal_color),
+            MemoryModule::readout(stats, normal_color),
+            BrightnessModule::readout(stats, normal_color),
+            VolumeModule::readout(stats, normal_color),
+            BatteryModule::readout(stats, normal_color),
+        ]
+        .into_iter()
+        .flatten()
+        .collect()
+    }
+}
+
+impl StatusModule for StatsModule {
+    fn name(&self) -> &'static str { "stats" }
+
+    fn width(
+        &self,
+        stats: &Option<SystemStats>,
+        _title: &str,
+        font_system: &mut FontSystem,
+        font_family: &str,
+        font_size: f32,
+        _tray_items: &HashMap<String, TrayItem>,
+        padding: f32,
+    ) -> f32 {
+        let items = Self::readouts(stats, color::TEXT_FG);
+        readouts_width(&items, font_system, font_family, font_size, padding, true)
+            .max(readouts_width(&items, font_system, font_family, font_size, padding, false))
+    }
+
+    fn content_width(
+        &self,
+        stats: &Option<SystemStats>,
+        _title: &str,
+        font_system: &mut FontSystem,
+        font_family: &str,
+        font_size: f32,
+        _tray_items: &HashMap<String, TrayItem>,
+        padding: f32,
+    ) -> f32 {
+        let items = Self::readouts(stats, color::TEXT_FG);
+        readouts_width(&items, font_system, font_family, font_size, padding, false)
+    }
+
+    fn render(
+        &self,
+        x: f32,
+        _w: f32,
+        stats: &Option<SystemStats>,
+        _title: &str,
+        font_system: &mut FontSystem,
+        font_family: &str,
+        font_size: f32,
+        normal_color: [f32; 4],
+        bar_h: f32,
+        _scale_factor: f64,
+        text_prims: &mut Vec<crate::TextPrim>,
+        icon_prims: &mut Vec<crate::IconPrim>,
+        _rects: &mut Vec<RectWidget>,
+        _overlay_rects: &mut Vec<RectWidget>,
+        _tray_items: &HashMap<String, TrayItem>,
+        _tray_item_bounds: &mut Vec<TrayIconBounds>,
+        _box_bg_color: Option<[f32; 4]>,
+        _status_box_radius: f32,
+        _rounded_boxes: &mut Vec<RoundedBox>,
+        padding: f32,
+    ) {
+        let items = Self::readouts(stats, normal_color);
+        render_readouts(&items, x, font_system, font_family, font_size, bar_h, text_prims, icon_prims, padding);
     }
 }
 

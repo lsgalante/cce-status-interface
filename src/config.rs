@@ -201,36 +201,38 @@ pub(crate) fn read_icon_size_from_config() -> f32 {
         .max(4.0)
 }
 
-/// `module { icon_font_size }` — the size of the number superimposed on a
-/// glyph. Defaults to three quarters of the module font size: "100" at the
-/// full size overhangs a bar-height glyph on both sides, and the glyph is
-/// what carries the unit now, so the number can afford to be smaller.
+/// `module { icon_font_size }` — the size of the number beside a glyph.
+/// Defaults to the module font size, so the readouts match the clock.
 pub(crate) fn read_icon_font_size_from_config(font_size: f32) -> f32 {
-    cfg_f32("/module/icon_font_size").unwrap_or(font_size * 0.75).max(1.0)
+    cfg_f32("/module/icon_font_size").unwrap_or(font_size).max(1.0)
 }
 
-/// `module { icon_weight }` — OpenType weight of the number on a glyph
-/// (default 700, bold; 400 = the face's regular). Stroke width is what a
-/// digit of that size has to spare, so the number is heavier than the
-/// labels around it.
+/// `module { icon_gap }` — logical px between a glyph and its number
+/// (default 4). Narrower than `icon_spacing` so each pair reads as one.
+pub(crate) fn read_icon_gap_from_config() -> f32 {
+    cfg_f32("/module/icon_gap").unwrap_or(4.0).max(0.0)
+}
+
+/// `module { icon_spacing }` — logical px between readouts sharing a bubble
+/// (the `stats` segment). Defaults to the gap between segments, so the
+/// combined bubble is spaced like the strip it replaced.
+pub(crate) fn read_icon_spacing_from_config() -> f32 {
+    cfg_f32("/module/icon_spacing")
+        .unwrap_or_else(read_status_module_spacing_from_config)
+        .max(0.0)
+}
+
+/// `module { icon_weight }` — OpenType weight of the number beside a glyph
+/// (700 = bold); unset leaves the face's regular, like every other label.
 pub(crate) fn read_icon_weight_from_config() -> Option<u16> {
-    let w = cfg_f32("/module/icon_weight").unwrap_or(700.0).clamp(1.0, 1000.0) as u16;
-    Some(w)
+    cfg_f32("/module/icon_weight").map(|w| w.clamp(1.0, 1000.0) as u16)
 }
 
-/// `module { icon_pocket }` — opacity 0-1 (default 0.6) of the feathered
-/// pool under the digits, in the number's contrast color: the notch the
-/// number sits in, cut into the glyph so the digits are never read against
-/// the glyph's own tint. 0 disables it.
-pub(crate) fn read_icon_pocket_from_config() -> f32 {
-    cfg_f32("/module/icon_pocket").unwrap_or(0.6).clamp(0.0, 1.0)
-}
-
-/// `module { icon_alpha }` — opacity 0-1 of the glyph under the number
-/// (default 0.4). The glyph is tinted the number's color, so it is this
-/// ghosting alone that keeps the digits legible on it.
+/// `module { icon_alpha }` — opacity 0-1 of the glyph (default 1). The
+/// glyph is tinted the number's color, so this is the one lever for making
+/// it read lighter than the digits.
 pub(crate) fn read_icon_alpha_from_config() -> f32 {
-    cfg_f32("/module/icon_alpha").unwrap_or(0.4).clamp(0.0, 1.0)
+    cfg_f32("/module/icon_alpha").unwrap_or(1.0).clamp(0.0, 1.0)
 }
 
 /// `module { text_contrast }` — adaptive contrast strength (0 = off, the

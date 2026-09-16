@@ -14,7 +14,7 @@ pub(crate) use listeners::*;
 pub(crate) use stats::*;
 pub(crate) use tray::*;
 
-use modules::{StatusModule, WindowModule, ClockModule, BatteryModule, VolumeModule, BrightnessModule, MemoryModule, CpuModule, TrayModule, LightSourceModule};
+use modules::{StatusModule, WindowModule, ClockModule, BatteryModule, VolumeModule, BrightnessModule, MemoryModule, CpuModule, StatsModule, TrayModule, LightSourceModule};
 
 use std::collections::HashMap;
 use cce_ui::cosmic_text::{
@@ -86,23 +86,6 @@ pub struct IconPrim {
     pub w: f32,
     pub h: f32,
     pub alpha: f32,
-    /// The dark pocket the number sits in, cut into the glyph — see `Pocket`.
-    pub pocket: Option<Pocket>,
-}
-
-/// A feathered pool under a readout's digits (`cce_ui`'s `Prim::Glow`, the
-/// same ground treatment the bubble scrim is): solid through the core rect,
-/// fading to nothing across `feather` px outside it. Drawn between the glyph
-/// and the number, so the digits sit in a notch of the number's contrast
-/// color rather than on the glyph's own tint. Logical px.
-#[derive(Debug, Clone, Copy)]
-pub struct Pocket {
-    pub x: f32,
-    pub y: f32,
-    pub w: f32,
-    pub h: f32,
-    pub feather: f32,
-    pub color: [f32; 4],
 }
 
 /// The subset of [`SystemStats`] a given module actually paints, as a comparable
@@ -121,6 +104,7 @@ fn stats_signature(module: Option<&str>, s: &SystemStats) -> Option<String> {
         Some("volume") => Some(format!("{:?}", s.volume)),
         Some("brightness") => Some(format!("{:?}", s.brightness)),
         Some("window") | Some("tray") | Some("light_source") => None,
+        // `stats` paints every reader's value; so does an unknown name.
         _ => Some(format!(
             "{}|{:?}|{:?}|{:?}|{:?}|{:?}",
             s.clock, s.memory, s.cpu_pct, s.battery, s.volume, s.brightness
@@ -1195,13 +1179,6 @@ impl StatusApp {
                 ip.y = old_x;
                 ip.w = old_h;
                 ip.h = old_w;
-                if let Some(pk) = &mut ip.pocket {
-                    let (old_x, old_y, old_w, old_h) = (pk.x, pk.y, pk.w, pk.h);
-                    pk.x = old_y;
-                    pk.y = old_x;
-                    pk.w = old_h;
-                    pk.h = old_w;
-                }
             }
             // Rotate tray_item_bounds
             for tib in &mut self.tray_item_bounds {
@@ -1468,6 +1445,7 @@ impl cce_ui::engine::Application for StatusApp {
             "brightness" => Box::new(BrightnessModule),
             "volume" => Box::new(VolumeModule),
             "battery" => Box::new(BatteryModule),
+            "stats" => Box::new(StatsModule),
             "clock" => Box::new(ClockModule),
             "light_source" => Box::new(LightSourceModule),
             _ => panic!("Unknown module: {}", name),
@@ -1502,7 +1480,7 @@ impl cce_ui::engine::Application for StatusApp {
             tokio::spawn(spawn_status_tray(sender.clone()));
         }
         let has_stats = selected_module.as_ref().map_or(true, |(name, _)| {
-            name == "cpu" || name == "memory" || name == "brightness" || name == "volume" || name == "battery" || name == "clock"
+            name == "stats" || name == "cpu" || name == "memory" || name == "brightness" || name == "volume" || name == "battery" || name == "clock"
         });
         if has_stats {
             tokio::spawn(spawn_system_stats(sender.clone()));
@@ -1955,14 +1933,9 @@ impl cce_ui::engine::Application for StatusApp {
             );
         }
 
-        // Readout glyphs: post-scrim so the pool grounds them like any run,
-        // pre-text so the number lands on the glyph.
+        // Readout glyphs: post-scrim so the pool grounds them like any run.
         for ip in &self.icon_prims {
             pc.image(ip.image, Rect { x: ip.x, y: ip.y, width: ip.w, height: ip.h }, ip.alpha);
-            if let Some(pk) = ip.pocket {
-                let core = Rect { x: pk.x, y: pk.y, width: pk.w, height: pk.h };
-                pc.glow(core, pk.h.min(pk.w) / 2.0, pk.feather, pk.color);
-            }
         }
 
         for (text, tsize, x, y, color, font, bounds, layout, _run_w, weight) in &self.text_prims {
@@ -2367,10 +2340,10 @@ fn main() {
             let mut sigint = signal(SignalKind::interrupt()).expect("SIGINT");
             let mut sigterm = signal(SignalKind::terminate()).expect("SIGTERM");
             
-            let modules = vec![
-                "window", "tray", "cpu", "memory", "brightness",
-                "volume", "battery", "clock", "light_source"
-            ];
+            // `stats` is the combined readout segment (cpu, memory,
+            // brightness, volume, battery in one bubble); the five single
+            // names remain valid `--module` values but are not launched.
+            let modules = vec!["window", "tray", "stats", "clock", "light_source"];
             let current_exe = std::env::current_exe().unwrap_or_else(|_| {
                 std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default())
                     .join(".local/bin/cce-status-interface")
