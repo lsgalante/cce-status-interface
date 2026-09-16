@@ -58,7 +58,9 @@ pub struct TrayIconBounds {
 #[derive(Debug, Clone)]
 pub struct SystemStats {
     pub clock: String,
-    pub memory: String,
+    /// Memory in use as a whole percentage of the total; `None` when
+    /// /proc/meminfo is unreadable.
+    pub memory: Option<u8>,
     /// CPU busy share as a whole percentage; `None` when /proc/stat is
     /// unreadable.
     pub cpu_pct: Option<u8>,
@@ -114,13 +116,13 @@ fn stats_signature(module: Option<&str>, s: &SystemStats) -> Option<String> {
     match module {
         Some("clock") => Some(s.clock.clone()),
         Some("cpu") => Some(format!("{:?}", s.cpu_pct)),
-        Some("memory") => Some(s.memory.clone()),
+        Some("memory") => Some(format!("{:?}", s.memory)),
         Some("battery") => Some(format!("{:?}", s.battery)),
         Some("volume") => Some(format!("{:?}", s.volume)),
         Some("brightness") => Some(format!("{:?}", s.brightness)),
         Some("window") | Some("tray") | Some("light_source") => None,
         _ => Some(format!(
-            "{}|{}|{:?}|{:?}|{:?}|{:?}",
+            "{}|{:?}|{:?}|{:?}|{:?}|{:?}",
             s.clock, s.memory, s.cpu_pct, s.battery, s.volume, s.brightness
         )),
     }

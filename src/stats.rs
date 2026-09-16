@@ -21,26 +21,31 @@ pub(crate) fn read_cpu_ticks() -> Option<(u64, u64)> {
     None
 }
 
-pub(crate) fn read_memory_usage() -> Option<String> {
+/// Memory in use as a whole percentage of the total — used being total less
+/// free, buffers and page cache, so what an application could not have
+/// without the kernel dropping cache first. `None` when /proc/meminfo is
+/// unreadable.
+pub(crate) fn read_memory_usage() -> Option<u8> {
     let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
     let mut total = 0.0;
     let mut free = 0.0;
     let mut buffers = 0.0;
     let mut cached = 0.0;
     for line in meminfo.lines() {
+        let kib = |line: &str| line.split_whitespace().nth(1).and_then(|v| v.parse::<f32>().ok());
         if line.starts_with("MemTotal:") {
-            total = line.split_whitespace().nth(1)?.parse::<f32>().ok()? / 1024.0 / 1024.0;
+            total = kib(line)?;
         } else if line.starts_with("MemFree:") {
-            free = line.split_whitespace().nth(1)?.parse::<f32>().ok()? / 1024.0 / 1024.0;
+            free = kib(line)?;
         } else if line.starts_with("Buffers:") {
-            buffers = line.split_whitespace().nth(1)?.parse::<f32>().ok()? / 1024.0 / 1024.0;
+            buffers = kib(line)?;
         } else if line.starts_with("Cached:") {
-            cached = line.split_whitespace().nth(1)?.parse::<f32>().ok()? / 1024.0 / 1024.0;
+            cached = kib(line)?;
         }
     }
     if total > 0.0 {
         let used = total - free - buffers - cached;
-        Some(format!("Mem {:.0}/{:.0}G", used, total))
+        Some((used / total * 100.0).round().clamp(0.0, 100.0) as u8)
     } else {
         None
     }
@@ -133,7 +138,7 @@ pub(crate) async fn read_volume() -> Option<(Option<u32>, bool)> {
 
 pub(crate) fn get_initial_stats() -> SystemStats {
     let clock = chrono::Local::now().format("%A, %B %d, %Y %I:%M %p").to_string();
-    let memory = read_memory_usage().unwrap_or_else(|| "Mem N/A".to_string());
+    let memory = read_memory_usage();
 
     SystemStats {
         clock,
@@ -151,7 +156,7 @@ pub(crate) async fn spawn_system_stats(sender: calloop::channel::Sender<CustomEv
     loop {
         log::debug!("[spawn_system_stats] loop iteration start");
         let clock = chrono::Local::now().format("%A, %B %d, %Y %I:%M %p").to_string();
-        let memory = read_memory_usage().unwrap_or_else(|| "Mem N/A".to_string());
+        let memory = read_memory_usage();
         
         let cpu_pct = if let Some(current_cpu) = read_cpu_ticks() {
             let total_diff = current_cpu.0 - last_cpu.0;

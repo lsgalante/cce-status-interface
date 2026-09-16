@@ -587,80 +587,21 @@ impl IconStat for BrightnessModule {
 
 pub struct MemoryModule;
 
-impl MemoryModule {
-    fn live_text<'a>(stats: &'a Option<SystemStats>) -> &'a str {
-        match stats {
-            Some(s) if !s.memory.is_empty() => &s.memory,
-            _ => "Mem 0/0G",
-        }
-    }
-}
+impl IconStat for MemoryModule {
+    const NAME: &'static str = "memory";
 
-impl StatusModule for MemoryModule {
-    fn name(&self) -> &'static str { "memory" }
-
-    fn width(
-        &self,
-        stats: &Option<SystemStats>,
-        _title: &str,
-        font_system: &mut FontSystem,
-        font_family: &str,
-        font_size: f32,
-        _tray_items: &HashMap<String, TrayItem>,
-        padding: f32,
-    ) -> f32 {
-        let text = Self::live_text(stats);
-        // "Mem 17/62G" → "Mem 62/62G": used pinned to the total, the
-        // widest this machine's readout gets.
-        let template = text
-            .rsplit('/')
-            .next()
-            .and_then(|total| total.strip_suffix('G'))
-            .map(|total| format!("Mem {total}/{total}G"))
-            .unwrap_or_else(|| text.to_string());
-        stable_text_width(font_system, text, &template, font_size, font_family, padding)
-    }
-
-    fn content_width(
-        &self,
-        stats: &Option<SystemStats>,
-        _title: &str,
-        font_system: &mut FontSystem,
-        font_family: &str,
-        font_size: f32,
-        _tray_items: &HashMap<String, TrayItem>,
-        padding: f32,
-    ) -> f32 {
-        live_text_width(font_system, Self::live_text(stats), font_size, font_family, padding)
-    }
-
-    fn render(
-        &self,
-        x: f32,
-        _w: f32,
-        stats: &Option<SystemStats>,
-        _title: &str,
-        font_system: &mut FontSystem,
-        font_family: &str,
-        font_size: f32,
-        normal_color: [f32; 4],
-        bar_h: f32,
-        _scale_factor: f64,
-        text_prims: &mut Vec<crate::TextPrim>,
-        _icon_prims: &mut Vec<crate::IconPrim>,
-        _rects: &mut Vec<RectWidget>,
-        _overlay_rects: &mut Vec<RectWidget>,
-        _tray_items: &HashMap<String, TrayItem>,
-        _tray_item_bounds: &mut Vec<TrayIconBounds>,
-        _box_bg_color: Option<[f32; 4]>,
-        _status_box_radius: f32,
-        _rounded_boxes: &mut Vec<RoundedBox>,
-        padding: f32,
-    ) {
-        if let Some(ref s) = stats {
-            let label = Label::new_with_family(font_system, &s.memory, font_size, normal_color, font_family);
-            crate::draw_label(text_prims, label, x + padding, centered_text_y(bar_h, font_size));
-        }
+    fn readout(stats: &Option<SystemStats>, normal_color: [f32; 4]) -> Option<IconReadout> {
+        let pct = match stats {
+            Some(s) => s.memory,
+            None => Some(0),
+        };
+        Some(IconReadout {
+            icon: "memory",
+            number: pct.map(|p| p.to_string()),
+            color: normal_color,
+            fallback: pct.map_or("Mem N/A".to_string(), |p| format!("Mem {p}%")),
+            fallback_template: "Mem 100%",
+        })
     }
 }
 

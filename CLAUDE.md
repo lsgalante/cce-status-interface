@@ -86,7 +86,7 @@ Orientation is dynamic: `is_vertical()` compares the surface size against the
 configured bar thickness; every module renders along one axis using `bar_h`/`coord`
 accordingly.
 
-**The percentage modules read out as a glyph, not a label.** `cpu`,
+**The stat modules read out as a glyph, not a label.** `cpu`, `memory`,
 `brightness`, `volume` and `battery` are `IconStat` implementations (a
 blanket `impl<T: IconStat> StatusModule for T` in `modules.rs` does the shared
 layout): each names a cce-icons glyph, the bare number and a color, and
@@ -120,7 +120,9 @@ needs `CCE_ICONS_DIR` exported into the spawn**, its HOME being elsewhere,
 exactly as it needs `CCE_FONTS_DIR`. Slot stability holds as before: the
 stable width is the wider of the glyph and the "100" template, and the glyph
 normally wins, so a value crossing a digit boundary never resizes the
-surface. `memory` is not a percentage ("Mem 10/62G") and stays a label.
+surface. `memory` reads as a percentage of the total in use (used = total
+less free, buffers and page cache) since 2026-09-16 — the "Mem 10/62G"
+gigabyte form went with the label.
 
 ## Events and IPC
 
@@ -141,9 +143,9 @@ listen to tray D-Bus, etc.:
   first. (The old `viewport` topic is gone with the viewport-tag feature.)
 - **System stats** (`spawn_system_stats`): `/proc/stat`, `/proc/meminfo`,
   `/sys/class/power_supply/BAT*`, `/sys/class/backlight`, and `pactl` for volume/mute.
-  `SystemStats` carries numbers (`cpu_pct`, `battery: (capacity, charging)`,
-  `volume: (level, muted)`, `brightness`), each `Option` where the source can
-  be absent; only clock and memory arrive pre-formatted.
+  `SystemStats` carries numbers (`cpu_pct`, `memory`, `battery: (capacity,
+  charging)`, `volume: (level, muted)`, `brightness`), each `Option` where
+  the source can be absent; only the clock arrives pre-formatted.
 - **Tray** (`spawn_status_tray`): a full StatusNotifierItem/Watcher host over `zbus`,
   including DBusMenu fetching. Icons arrive as pixmaps or theme names (rendered via
   `resvg`/`png`).
