@@ -242,7 +242,7 @@ silhouette's AA feather plus `DropletSpec::shadow_gap()` for the shadow's
 falloff (`main.rs`, three call sites — left, right, and the expanded menu
 box, which becomes the drop growing))
 and `module { icon_size }` (glyph height for the icon readouts, logical px,
-default bar height − 6) and `module { icon_font_size }` (the number beside
+default 16 = the tray's fixed icon size, so the two read as one set) and `module { icon_font_size }` (the number beside
 the glyph, default `module { font_size }`) and `module { icon_gap }` (glyph
 to number, logical px, default 4) and `module { icon_spacing }` (between
 readouts in the `stats` bubble, default `module { spacing }`) and

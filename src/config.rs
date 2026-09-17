@@ -192,14 +192,17 @@ pub(crate) fn read_text_raise_from_config() -> f32 {
 }
 
 /// `module { icon_size }` — the glyph height, logical px, for the modules
-/// that read out as a cce-icons glyph with their value on it (cpu,
-/// brightness, volume, battery). Default: the bar height less 6, so the
-/// glyph sits inside the bubble with a 3px breath above and below.
+/// that read out as a cce-icons glyph beside their value (cpu, memory,
+/// brightness, volume, battery). Default `TRAY_ICON_SIZE`: the readout
+/// glyphs and the tray icons share the strip and read as one set only at
+/// one size (bar height − 6 was tried first and read a size larger).
 pub(crate) fn read_icon_size_from_config() -> f32 {
-    cfg_f32("/module/icon_size")
-        .unwrap_or_else(|| read_status_height_from_config() - 6.0)
-        .max(4.0)
+    cfg_f32("/module/icon_size").unwrap_or(TRAY_ICON_SIZE).max(4.0)
 }
+
+/// The tray's icon size, logical px — fixed, and what the readout glyphs
+/// default to.
+pub(crate) const TRAY_ICON_SIZE: f32 = 16.0;
 
 /// `module { icon_font_size }` — the size of the number beside a glyph.
 /// Defaults to the module font size, so the readouts match the clock.

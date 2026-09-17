@@ -770,7 +770,7 @@ impl StatusModule for TrayModule {
         sorted_tray.sort_by_key(|item| &item.id);
 
         for (i, item) in sorted_tray.iter().enumerate() {
-            let icon_size = 16.0;
+            let icon_size = crate::config::TRAY_ICON_SIZE;
             let icon_x = x + padding + (i as f32) * (icon_size + 8.0);
             // The same `module { text_raise }` lift every text run gets via
             // `centered_text_y` — without it the icons sit at geometric
