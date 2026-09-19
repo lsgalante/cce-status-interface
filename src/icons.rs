@@ -18,13 +18,16 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
+/// `(name, px, tint)` → the uploaded texture, or `None` for a glyph that could
+/// not be loaded (the miss is cached too, so the warning is logged once).
+type Key = (String, u32, [u8; 3]);
+static CACHE: Mutex<Option<HashMap<Key, Option<(u32, u32, u32)>>>> = Mutex::new(None);
+
 /// Rasterize `<name>.svg` from cce-icons at `px` on its longer side, tinted
 /// to `rgb` (raw sRGB, like every text color here — uploaded images are
 /// sampled as sRGB), and upload it as a renderer texture. Returns the image
 /// id plus the pixel size for `PaintCtx::image`.
 pub(crate) fn tinted_icon(name: &str, px: u32, rgb: [u8; 3]) -> Option<(u32, u32, u32)> {
-    type Key = (String, u32, [u8; 3]);
-    static CACHE: Mutex<Option<HashMap<Key, Option<(u32, u32, u32)>>>> = Mutex::new(None);
     let key = (name.to_string(), px, rgb);
     let mut guard = CACHE.lock().unwrap();
     let cache = guard.get_or_insert_with(HashMap::new);
@@ -66,4 +69,27 @@ pub(crate) fn tint_of(color: [f32; 4]) -> [u8; 3] {
         (color[1] * 255.0).round() as u8,
         (color[2] * 255.0).round() as u8,
     ]
+}
+
+/// Forget every uploaded glyph, freeing its texture.
+///
+/// The cache holds **renderer** image ids, and a renderer does not outlive its
+/// session: `cce-ui`'s `window_runner` repairs a lost Wayland transport by
+/// opening a new session around the same `Application`, which rebuilds the
+/// renderer and with it the image table. The cached ids then name images that
+/// no longer exist, and a draw for an unknown id is skipped rather than
+/// reported — so a bar that reconnected came back with its numbers and no
+/// glyphs at all, until the process was restarted.
+///
+/// Called from `Application::renderer_init` when the renderer it is handed is a
+/// *replacement*; the first renderer of the process is the one the uploads
+/// queued from `new()` are waiting for, so dropping them there would only
+/// upload, destroy and re-upload the same five glyphs before the first frame.
+pub(crate) fn drop_textures() {
+    let mut guard = CACHE.lock().unwrap();
+    let Some(cache) = guard.as_mut() else { return };
+    for (id, _, _) in cache.values().flatten() {
+        cce_ui::vk::free_image(*id);
+    }
+    cache.clear();
 }

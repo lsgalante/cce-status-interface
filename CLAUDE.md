@@ -118,7 +118,14 @@ The glyphs come from the **cce-icons** crate via `cce_ui::icons_dir()`
 `cce_ui::upload_icon`: a `Prim::Image` has alpha and no color, and the
 artwork is white, so `icons.rs::tinted_icon` rasterizes the SVG itself
 (`cce_ui::rasterize_svg`), multiplies it by the readout's raw-sRGB color and
-uploads it, cached per `(name, px, color)` for the life of the process. A
+uploads it, cached per `(name, px, color)` — for the life of the RENDERER,
+not the process: the cache holds renderer image ids, and a reconnect
+(cce-ui repairs a lost transport by opening a new session around the same
+`Application`) rebuilds the renderer and its image table, leaving every
+cached id naming nothing. A draw for an unknown id is skipped rather than
+reported, so a reconnected bar came back with its numbers and no glyphs at
+all; `renderer_init` now calls `icons::drop_textures()` on every renderer
+after the first, and the rebuild it forces re-uploads them. A
 glyph that fails to load falls back to the old text readout ("Cpu 45%"), so
 a bar started without the icon set is still attributable; **a shadow session
 needs `CCE_ICONS_DIR` exported into the spawn**, its HOME being elsewhere,

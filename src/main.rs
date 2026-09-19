@@ -562,6 +562,11 @@ struct StatusApp {
     selected_module_side: Option<Side>,
     status_hide_mode: bool,
     adjust_position_mode: bool,
+    /// Whether a renderer has been handed to this app yet. The first one is
+    /// the one `new()`'s glyph uploads are queued for; every later one is a
+    /// reconnect, and the ids cached in `icons` name images that died with
+    /// the renderer being replaced — see `renderer_init`.
+    seen_renderer: bool,
 }
 
 /// The Wayland `app_id` a segment presents — the compositor places segments
@@ -1534,6 +1539,7 @@ impl cce_ui::engine::Application for StatusApp {
             selected_module_side: selected_module.as_ref().map(|(_, s)| s.clone()),
             status_hide_mode: false,
             adjust_position_mode: false,
+            seen_renderer: false,
         };
 
         app.rebuild_layout();
@@ -1951,6 +1957,20 @@ impl cce_ui::engine::Application for StatusApp {
         }
 
         Some(pc.finish())
+    }
+
+    /// A reconnect is a new session around the SAME app (cce-ui's
+    /// `window_runner` repairs a lost transport rather than restarting the
+    /// process), and the renderer is rebuilt with it — so the glyph textures
+    /// `icons::tinted_icon` cached ids for no longer exist. A draw for an
+    /// unknown image id is skipped silently, which is why a reconnected bar
+    /// kept its numbers and lost every glyph. Drop the cache and rebuild, so
+    /// the next layout uploads into the renderer just created.
+    fn renderer_init(&mut self, _renderer: &mut cce_ui::vk::VkRenderer) {
+        if std::mem::replace(&mut self.seen_renderer, true) {
+            crate::icons::drop_textures();
+            self.needs_rebuild = true;
+        }
     }
 
     fn display_list_text(&self) -> bool {
