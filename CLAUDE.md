@@ -20,7 +20,7 @@ cce-icons glyph textures), `src/listeners.rs` (status/switcher socket tasks).
 ```sh
 cargo build --release                 # standalone build (or `-p cce-status-interface` from the workspace root)
 cargo test                            # 48 tests: main.rs (contrast, parsers), config.rs, tray.rs
-make install                          # installs ../target/release/cce-status-interface to ~/.local/bin
+make install                          # release build, then `ccebuild install --no-build cce-status-interface`
 ```
 
 Running it requires a live cce compositor session (`$WAYLAND_DISPLAY` plus the cce
