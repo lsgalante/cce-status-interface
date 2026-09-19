@@ -19,7 +19,7 @@ cce-icons glyph textures), `src/listeners.rs` (status/switcher socket tasks).
 
 ```sh
 cargo build --release                 # standalone build (or `-p cce-status-interface` from the workspace root)
-cargo test                            # 46 tests: main.rs (contrast, parsers), config.rs, tray.rs
+cargo test                            # 48 tests: main.rs (contrast, parsers), config.rs, tray.rs
 make install                          # installs ../target/release/cce-status-interface to ~/.local/bin
 ```
 
@@ -157,7 +157,29 @@ listen to tray D-Bus, etc.:
   `/sys/class/power_supply/BAT*`, `/sys/class/backlight`, and `pactl` for volume/mute.
   `SystemStats` carries numbers (`cpu_pct`, `memory`, `battery: (capacity,
   charging)`, `volume: (level, muted)`, `brightness`), each `Option` where
-  the source can be absent; only the clock arrives pre-formatted.
+  the source can be absent; only the clock arrives pre-formatted. The loop is
+  once a second, which is fine for a clock or a load average and far too slow
+  for the two values a KEYPRESS moves — so the backlight and the sink have a
+  fast path beside it (`spawn_level_watchers`), each pushing its own
+  one-field event (`BrightnessUpdated` / `VolumeUpdated`) that patches
+  `stats` in place. `watch_brightness` polls `/sys/class/backlight` every
+  100ms — `brightnessctl` writes the attribute directly, so there is nothing
+  to subscribe to, and two small sysfs reads are cheap enough that the
+  interval is not worth tuning; `watch_volume` follows `pactl subscribe` and
+  re-reads only on a `sink`/`server` event (NOT `sink-input`, which fires
+  throughout playback, and NOT `client`, which the bar's own `pactl` runs
+  generate — matching either would put the reader in a loop with itself).
+  Both send only a CHANGED value, so an idle desktop never wakes the event
+  loop, and `update()` asks `paints_stat` whether this module shows the field
+  before redrawing — the one-field counterpart to `stats_signature`, and a
+  test holds the two in agreement. The subscription burst is coalesced for
+  30ms before the read (a held volume key emits a stream of events, and one
+  `pactl` spawn per event would fall behind); the child carries
+  `PR_SET_PDEATHSIG` as well as `kill_on_drop`, because a subscription whose
+  reader was killed outright is reparented to init and sits there rather than
+  noticing. The one-second loop still reads both values, so it remains the
+  safety net when `pactl subscribe` cannot run at all. Measured in a shadow:
+  ~45ms for the backlight, ~55ms for the sink, against a second before.
 - **Tray** (`spawn_status_tray`): a full StatusNotifierItem/Watcher host over `zbus`,
   including DBusMenu fetching. Icons arrive as pixmaps or theme names (rendered via
   `resvg`/`png`).

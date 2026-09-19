@@ -112,11 +112,34 @@ fn stats_signature(module: Option<&str>, s: &SystemStats) -> Option<String> {
     }
 }
 
+/// Does this module paint `field` (`"brightness"` or `"volume"`)? The
+/// fast-path pushes carry one value each, so they ask this where a full stats
+/// push compares a [`stats_signature`]; the two must agree about which
+/// modules are blind to a stat, or a segment would redraw for a number it
+/// does not show.
+fn paints_stat(module: Option<&str>, field: &str) -> bool {
+    match module {
+        // The other single-stat modules; stats-blind modules.
+        Some("clock") | Some("cpu") | Some("memory") | Some("battery") => false,
+        Some("window") | Some("tray") | Some("light_source") => false,
+        Some("brightness") => field == "brightness",
+        Some("volume") => field == "volume",
+        // `stats` paints every reader's value; so does an unknown name.
+        _ => true,
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) enum CustomEvent {
     LayoutUpdated(String),
     TitleUpdated(String),
     SystemStatsUpdated(SystemStats),
+    /// The backlight moved, pushed by the fast path (`watch_brightness`) the
+    /// moment it did rather than at the next one-second stats poll.
+    BrightnessUpdated(Option<i32>),
+    /// The default sink's `(level %, muted)` moved, pushed by the fast path
+    /// (`watch_volume`) on the sound server's own event.
+    VolumeUpdated(Option<(Option<u32>, bool)>),
     TrayUpdated(TrayItem),
     TrayRemoved(String),
     /// A bar-built in-surface menu (window picker), fetched off-thread.
@@ -1490,6 +1513,14 @@ impl cce_ui::engine::Application for StatusApp {
         if has_stats {
             tokio::spawn(spawn_system_stats(sender.clone()));
         }
+        // The backlight and the sink are what a keypress moves, so they get a
+        // fast path alongside the one-second poll — only where a module
+        // actually paints one of them.
+        if paints_stat(selected_module.as_ref().map(|(n, _)| n.as_str()), "brightness")
+            || paints_stat(selected_module.as_ref().map(|(n, _)| n.as_str()), "volume")
+        {
+            tokio::spawn(spawn_level_watchers(sender.clone()));
+        }
 
         let font_system = cce_ui::create_font_system();
 
@@ -1597,6 +1628,22 @@ impl cce_ui::engine::Application for StatusApp {
                     }
                 }
                 self.stats = Some(s);
+            }
+            CustomEvent::BrightnessUpdated(b) => {
+                log::debug!("[module-{}] fast-path brightness {:?}", self.selected_module_name.as_deref().unwrap_or("none"), b);
+                changed = paints_stat(self.selected_module_name.as_deref(), "brightness")
+                    && self.stats.as_ref().is_some_and(|s| s.brightness != b);
+                if let Some(s) = self.stats.as_mut() {
+                    s.brightness = b;
+                }
+            }
+            CustomEvent::VolumeUpdated(v) => {
+                log::debug!("[module-{}] fast-path volume {:?}", self.selected_module_name.as_deref().unwrap_or("none"), v);
+                changed = paints_stat(self.selected_module_name.as_deref(), "volume")
+                    && self.stats.as_ref().is_some_and(|s| s.volume != v);
+                if let Some(s) = self.stats.as_mut() {
+                    s.volume = v;
+                }
             }
             CustomEvent::TrayUpdated(item) => {
                 self.tray_items.insert(item.id.clone(), item);
@@ -2941,5 +2988,62 @@ mod tests {
         assert!(parse_ccectl_windows(r#"{"app_id":"x","title":"no id"}"#).is_empty());
         assert!(parse_ccectl_windows(r#"{"id":3,"title":"no app_id"}"#).is_empty());
         assert!(parse_ccectl_windows("{not json").is_empty());
+    }
+
+    /// The fast path and the full stats push must agree about which modules
+    /// are blind to a value; a disagreement would redraw a segment for a
+    /// number it does not paint (and re-bake the compositor's blur with it).
+    #[test]
+    fn paints_stat_agrees_with_the_stats_signature() {
+        let a = SystemStats {
+            clock: "x".into(),
+            memory: Some(1),
+            cpu_pct: Some(1),
+            battery: Some((1, false)),
+            volume: Some((Some(10), false)),
+            brightness: Some(10),
+        };
+        for field in ["brightness", "volume"] {
+            for module in [
+                None,
+                Some("stats"),
+                Some("brightness"),
+                Some("volume"),
+                Some("clock"),
+                Some("cpu"),
+                Some("memory"),
+                Some("battery"),
+                Some("window"),
+                Some("tray"),
+                Some("light_source"),
+            ] {
+                // Move only `field`, then ask both paths whether it shows.
+                let mut b = a.clone();
+                match field {
+                    "brightness" => b.brightness = Some(50),
+                    _ => b.volume = Some((Some(50), false)),
+                }
+                let by_signature = stats_signature(module, &a) != stats_signature(module, &b);
+                assert_eq!(
+                    paints_stat(module, field),
+                    by_signature,
+                    "module {:?}, field {}",
+                    module,
+                    field
+                );
+            }
+        }
+    }
+
+    /// The sink and the default-sink change are ours; a single application's
+    /// stream is not — `sink-input` fires throughout playback and would have
+    /// us re-reading `pactl` the whole time.
+    #[test]
+    fn sink_events_exclude_sink_inputs() {
+        assert!(is_sink_event("Event 'change' on sink #0"));
+        assert!(is_sink_event("Event 'change' on server"));
+        assert!(!is_sink_event("Event 'change' on sink-input #34"));
+        assert!(!is_sink_event("Event 'new' on source-output #7"));
+        assert!(!is_sink_event(""));
     }
 }

@@ -23,6 +23,8 @@ png = "0.17"
 log = "0.4"
 env_logger = "0.11"
 kdl = "4.6"
+# Real dependency: PR_SET_PDEATHSIG on the `pactl subscribe` child.
+libc = "0.2"
 
 
 
