@@ -1836,7 +1836,7 @@ impl cce_ui::engine::Application for StatusApp {
         // Droplet-style module boxes paint first, so any remaining rounded
         // boxes (module-internal chips) and all content sit on the drops.
         for &(x, y, w, h, color, spec) in &self.droplet_boxes {
-            pc.droplet(Rect { x, y, width: w, height: h }, color, spec);
+            pc.droplet(Rect { x, y, width: w, height: h }, &cce_ui::scene::Material::from_fill(color).with_finish(spec.finish()), spec);
         }
 
         for rb in &self.rounded_boxes {
@@ -1862,7 +1862,7 @@ impl cce_ui::engine::Application for StatusApp {
                         // takes the sphere-lit disc — the circular sibling of
                         // the plate treatment, same light and material.
                         if matches!(self.box_bevel, Some(StatusBoxBevel::Raised)) {
-                            pc.sphere(rb.x + r, rb.y + r, r, rb.color);
+                            pc.sphere(rb.x + r, rb.y + r, r, &cce_ui::scene::Material::from_fill(rb.color));
                         } else {
                             pc.circle(rb.x + r, rb.y + r, r, rb.color);
                         }
@@ -1878,7 +1878,7 @@ impl cce_ui::engine::Application for StatusApp {
             match self.box_bevel {
                 Some(StatusBoxBevel::Raised) => {
                     // A lit plate: fill + rolled lip in one prim.
-                    pc.bevel(rect, radii, rb.color, self.box_bevel_depth);
+                    pc.bevel(rect, radii, &cce_ui::scene::Material::from_fill(rb.color), self.box_bevel_depth);
                 }
                 Some(StatusBoxBevel::Inset) => {
                     // Recess shades only the rim, so keep the flat fill under it.
@@ -1960,7 +1960,7 @@ impl cce_ui::engine::Application for StatusApp {
                 };
                 let c = treatment_rgb(color);
                 let feather = scrim_feather(w, h, feather_cfg);
-                pc.droplet_scrim(rect, [c[0], c[1], c[2], alpha], spec, feather);
+                pc.droplet_scrim(rect, &cce_ui::scene::Material::from_fill([c[0], c[1], c[2], alpha]), spec, feather);
             }
             // Everything else is genuinely a rounded rect, so a rounded-rect
             // pool IS its exact shape.
