@@ -1817,6 +1817,8 @@ impl cce_ui::engine::Application for StatusApp {
         }
     }
 
+    // style-audit: opt-out the bar is a transparent surface; each module box is its own plate
+
     fn display_list(&mut self, size: cce_ui::engine::LogicalSize, scale: f64) -> Option<cce_ui::scene::paint::DisplayList> {
         // Phase 6ak single paint path: the rounded boxes, the status-bar bg / module rects
         // (the legacy view_rounded_quads then view() bodies, in the wrapper's
