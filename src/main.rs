@@ -1451,6 +1451,15 @@ pub(crate) fn draw_label(prims: &mut Vec<TextPrim>, label: cce_ui::widget::Style
 impl cce_ui::engine::Application for StatusApp {
     type Message = CustomEvent;
 
+    /// The status bar is a systemd user service the compositor does not
+    /// restore, so it waits for the next compositor instead of exiting with
+    /// this one. Exiting took the tray module's StatusNotifierWatcher off the
+    /// bus at every logout, and Dropbox, starting into the gap before the
+    /// launcher's backoff restarted the module, found no tray.
+    fn outlives_compositor(&self) -> bool {
+        true
+    }
+
     fn new(_qh: &wayland_client::QueueHandle<cce_ui::engine::EngineState<Self>>, sender: calloop::channel::Sender<Self::Message>) -> Self {
         let selected_module = parse_selected_module_from_args();
 
