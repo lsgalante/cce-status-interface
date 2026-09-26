@@ -19,7 +19,7 @@ cce-icons glyph textures), `src/listeners.rs` (status/switcher socket tasks).
 
 ```sh
 cargo build --release                 # standalone build (or `-p cce-status-interface` from the workspace root)
-cargo test                            # 56 tests: main.rs (contrast, parsers), config.rs, tray.rs, the tray bridge's x11.rs and title.rs
+cargo test                            # 57 tests: main.rs (contrast, parsers), config.rs, tray.rs, the tray bridge's x11.rs and title.rs
 make install                          # release build, then `ccebuild install --no-build cce-status-interface`
 ```
 

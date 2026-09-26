@@ -404,6 +404,27 @@ impl StatusInterface {
     }
 }
 
+/// The registered items to drop when bus name `name` loses its owner
+/// (`old_owner`, the unique name that held it). An item is addressed by
+/// whatever it registered with: its connection's unique name (an item that
+/// registered by object path, or a unique-name service string) or a
+/// well-known name like `org.kde.StatusNotifierItem-<pid>-<n>`. Until
+/// 2026-09-26 only the unique-name form was matched, so an app that
+/// registered under a well-known name left a dead icon in the tray when it
+/// exited: the signal for the well-known name carries it as `name`, never as
+/// `old_owner`.
+pub(crate) fn vanished_items(
+    items: &HashMap<String, NotifierAddress>,
+    name: &str,
+    old_owner: Option<&str>,
+) -> Vec<String> {
+    items
+        .iter()
+        .filter(|(_, addr)| addr.destination == name || Some(addr.destination.as_str()) == old_owner)
+        .map(|(key, _)| key.clone())
+        .collect()
+}
+
 pub(crate) async fn spawn_status_tray(sender: calloop::channel::Sender<CustomEvent>) {
     let registered_items = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
     let tokio_handle = tokio::runtime::Handle::current();
@@ -476,23 +497,14 @@ pub(crate) async fn spawn_status_tray(sender: calloop::channel::Sender<CustomEve
         use tokio_stream::StreamExt;
         while let Some(signal) = owner_changes.next().await {
             if let Ok(args) = signal.args() {
-                let old = args.old_owner;
-                let new = args.new_owner;
-                let old_opt: &Option<_> = &*old;
-                if let Some(ref old_owner) = old_opt {
-                    if new.is_none() {
-                        let mut items = registered_items_clone.lock().await;
-                        let mut to_remove = Vec::new();
-                        for (key, addr) in items.iter() {
-                            if addr.destination == old_owner.as_str() {
-                                to_remove.push(key.clone());
-                            }
-                        }
-                        for key in to_remove {
-                            items.remove(&key);
-                            let _ = sender_clone.send(CustomEvent::TrayRemoved(key));
-                        }
-                    }
+                if args.new_owner.is_some() {
+                    continue;
+                }
+                let old_owner = args.old_owner.as_ref().map(|o| o.as_str());
+                let mut items = registered_items_clone.lock().await;
+                for key in vanished_items(&items, args.name.as_str(), old_owner) {
+                    items.remove(&key);
+                    let _ = sender_clone.send(CustomEvent::TrayRemoved(key));
                 }
             }
         }
@@ -507,6 +519,35 @@ pub(crate) async fn spawn_status_tray(sender: calloop::channel::Sender<CustomEve
 #[cfg(test)]
 mod tests {
     use super::resolve_icon_path;
+    use super::{vanished_items, NotifierAddress};
+    use std::collections::HashMap;
+
+    fn items() -> HashMap<String, NotifierAddress> {
+        let mut m = HashMap::new();
+        for (dest, path) in [
+            (":1.42", "/StatusNotifierItem"),
+            ("org.kde.StatusNotifierItem-777-1", "/StatusNotifierItem"),
+            (":1.50", "/org/ayatana/NotificationItem/dropbox"),
+        ] {
+            let addr = NotifierAddress { destination: dest.to_string(), path: path.to_string() };
+            m.insert(format!("{dest}{path}"), addr);
+        }
+        m
+    }
+
+    #[test]
+    fn an_item_goes_with_the_name_it_registered_under() {
+        let m = items();
+        // A path-registered item: its unique name vanishing drops it.
+        assert_eq!(vanished_items(&m, ":1.42", Some(":1.42")), vec![":1.42/StatusNotifierItem"]);
+        // A well-known-name item: the signal for that name drops it.
+        assert_eq!(
+            vanished_items(&m, "org.kde.StatusNotifierItem-777-1", Some(":1.99")),
+            vec!["org.kde.StatusNotifierItem-777-1/StatusNotifierItem"]
+        );
+        // Anyone else's name going away leaves both alone.
+        assert!(vanished_items(&m, ":1.77", Some(":1.77")).is_empty());
+    }
 
     /// The two tray-specific pieces kept local when the theme search moved to
     /// `cce_ui::icon::lookup_in`: the dropbox alias, and the SNI IconThemePath
