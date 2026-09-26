@@ -19,7 +19,7 @@ cce-icons glyph textures), `src/listeners.rs` (status/switcher socket tasks).
 
 ```sh
 cargo build --release                 # standalone build (or `-p cce-status-interface` from the workspace root)
-cargo test                            # 54 tests: main.rs (contrast, parsers), config.rs, tray.rs, the tray bridge's x11.rs and title.rs
+cargo test                            # 56 tests: main.rs (contrast, parsers), config.rs, tray.rs, the tray bridge's x11.rs and title.rs
 make install                          # release build, then `ccebuild install --no-build cce-status-interface`
 ```
 
@@ -50,9 +50,15 @@ selection and, per docked icon:
 - **forwards clicks** as `SendEvent` button presses to the icon: `Activate` is
   button 1, `ContextMenu` button 3 (the app draws its own menu, which is why
   there is deliberately no `Menu` property — its presence makes the bar fetch a
-  D-Bus menu instead), `Scroll` buttons 4-7. The root position in the event is
-  where the container sits, along the top-right of the X screen, so an app that
-  opens its menu at the cursor opens it near the tray.
+  D-Bus menu instead), `Scroll` buttons 4-7. An app opens its menu at the
+  root position the event reports, so the click is placed at the host's
+  Activate/ContextMenu point — scaled into X pixels by `Xft.dpi`/96 — and the
+  container is moved under it first. That point is only right because the
+  bar sends SCREEN coordinates, as SNI asks: its segment's position from
+  `ccectl windows --json` plus the pointer's x, at the bar's bottom edge
+  (`tray_click_point`). It sent segment-local ones until 2026-09-26, and
+  Ubisoft Connect's menu opened ~700 px from its icon. With no point (0,0)
+  the container stays where it docked, at the top-right of the X screen.
 - **names it after its app** (`title.rs`), since icon windows are untitled
   and their WM_CLASS names the toolkit (`steam_proton` for every Proton
   program). A Wine icon is not even the app's window: Wine's tray lives in the

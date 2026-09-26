@@ -26,8 +26,10 @@ struct Item {
 }
 
 impl Item {
-    fn click(&self, button: u8) {
-        if let Err(e) = self.x.click(self.icon, button, self.at) {
+    /// `screen`: the host's click point, when it gave one (see
+    /// `XHandle::click`).
+    fn click(&self, button: u8, screen: Option<(i32, i32)>) {
+        if let Err(e) = self.x.click(self.icon, button, self.at, screen) {
             log::warn!("click on {:#x} failed: {e}", self.icon);
         }
     }
@@ -83,16 +85,16 @@ impl Item {
         false
     }
 
-    fn activate(&self, _x: i32, _y: i32) {
-        self.click(1);
+    fn activate(&self, x: i32, y: i32) {
+        self.click(1, Some((x, y)));
     }
 
-    fn secondary_activate(&self, _x: i32, _y: i32) {
-        self.click(2);
+    fn secondary_activate(&self, x: i32, y: i32) {
+        self.click(2, Some((x, y)));
     }
 
-    fn context_menu(&self, _x: i32, _y: i32) {
-        self.click(3);
+    fn context_menu(&self, x: i32, y: i32) {
+        self.click(3, Some((x, y)));
     }
 
     fn scroll(&self, delta: i32, orientation: &str) {
@@ -103,7 +105,7 @@ impl Item {
             (true, true) => 7,
             (true, false) => 6,
         };
-        self.click(button);
+        self.click(button, None);
     }
 
     #[zbus(signal)]

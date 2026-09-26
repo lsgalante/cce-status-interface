@@ -63,12 +63,16 @@ pub enum TrayEvent {
     Undocked { icon: Window },
 }
 
-/// Where a forwarded click lands: in root coordinates (what the app reads
-/// back as the cursor position, so where its menu opens) and in the icon's.
+/// Where a forwarded click lands when the host gives no screen point: in
+/// root coordinates (what the app reads back as the cursor position, so
+/// where its menu opens) and in the icon's. Also the icon's container and
+/// size, which a click at a host-given point moves (`XHandle::click`).
 #[derive(Clone, Copy, Debug)]
 pub struct ClickPoint {
     pub root: (i16, i16),
     pub local: (i16, i16),
+    pub container: Window,
+    pub size: u16,
 }
 
 struct Icon {
@@ -95,7 +99,20 @@ impl XHandle {
     /// Press and release `button` on `icon`. Sent with an empty event mask,
     /// which delivers it to the client that created the window — the app
     /// that docked the icon — whatever it selected.
-    pub fn click(&self, icon: Window, button: u8, at: ClickPoint) -> Res<()> {
+    ///
+    /// `screen` is the host's click point in screen (logical) coordinates,
+    /// as SNI's Activate/ContextMenu carry it; cce's bar sends the pointer's
+    /// x at the bar's bottom edge. An app opens its menu at the root
+    /// position the event reports, so that point — scaled into X's pixels —
+    /// is where the click is placed, and the container is moved under it
+    /// first so the icon's real position agrees for an app that asks X
+    /// instead. `None` (or the 0,0 a host with no idea sends) keeps the
+    /// container where it docked, at the top-right of the X screen.
+    pub fn click(&self, icon: Window, button: u8, at: ClickPoint, screen: Option<(i32, i32)>) -> Res<()> {
+        let at = match screen.filter(|&(x, y)| x > 0 || y > 0) {
+            Some(point) => self.move_under(at, point, x11_scale(&self.conn, self.root)),
+            None => at,
+        };
         let mask = 1u16 << (7 + button.min(5));
         for (kind, state) in [(BUTTON_PRESS_EVENT, 0u16), (BUTTON_RELEASE_EVENT, mask)] {
             let ev = ButtonPressEvent {
@@ -117,6 +134,25 @@ impl XHandle {
         }
         self.conn.flush()?;
         Ok(())
+    }
+
+    /// Put `at`'s container so the icon's bottom-centre is the screen point
+    /// (in X pixels), and return the click point to match.
+    fn move_under(&self, at: ClickPoint, (sx, sy): (i32, i32), scale: f64) -> ClickPoint {
+        let (rx, ry) = to_x11_point(sx, sy, scale);
+        let size = i32::from(at.size);
+        let half = size / 2;
+        let cx = (rx - half).max(0);
+        let cy = (ry - (size - 1)).max(0);
+        let _ = self
+            .conn
+            .configure_window(at.container, &ConfigureWindowAux::new().x(cx).y(cy));
+        let local = ((rx - cx).clamp(0, size - 1), (ry - cy).clamp(0, size - 1));
+        ClickPoint {
+            root: (clamp_i16(cx + local.0), clamp_i16(cy + local.1)),
+            local: (clamp_i16(local.0), clamp_i16(local.1)),
+            ..at
+        }
     }
 
     /// Hand every icon back on the way out: unmapped, on the root window,
@@ -431,7 +467,7 @@ impl Tray {
 
         let title = crate::title::resolve(&self.conn, self.root, &self.atoms, icon);
         let half = (size / 2) as i16;
-        let at = ClickPoint { root: (x + half, half), local: (half, half) };
+        let at = ClickPoint { root: (x + half, half), local: (half, half), container, size };
         let image = self.capture_changed(icon);
         log::info!("docked {icon:#x} ({:?}, {size}px, depth {}) in slot {slot}", title.text, geom.depth);
         let _ = self.tx.send(TrayEvent::Docked {
@@ -504,6 +540,35 @@ impl Tray {
     }
 }
 
+/// How many X pixels one logical pixel is: cce writes `Xft.dpi` into the
+/// root window's resources for its X11 scale (192 at scale 2), so it is
+/// read back from there. 1 when absent.
+fn x11_scale(conn: &RustConnection, root: Window) -> f64 {
+    let dpi = conn
+        .get_property(false, root, AtomEnum::RESOURCE_MANAGER, AtomEnum::STRING, 0, 1 << 16)
+        .ok()
+        .and_then(|c| c.reply().ok())
+        .and_then(|r| xft_dpi(&String::from_utf8_lossy(&r.value)));
+    dpi.map_or(1.0, |d| d / 96.0).max(1.0)
+}
+
+/// `Xft.dpi` from an X resource database string.
+pub fn xft_dpi(resources: &str) -> Option<f64> {
+    resources.lines().find_map(|l| {
+        let (k, v) = l.split_once(':')?;
+        (k.trim() == "Xft.dpi").then(|| v.trim().parse().ok()).flatten()
+    })
+}
+
+/// A logical screen point in X root pixels.
+pub fn to_x11_point(x: i32, y: i32, scale: f64) -> (i32, i32) {
+    ((f64::from(x) * scale).round() as i32, (f64::from(y) * scale).round() as i32)
+}
+
+fn clamp_i16(v: i32) -> i16 {
+    v.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
+}
+
 /// Convert a 32-bits-per-pixel ZPixmap to SNI's ARGB32: network byte
 /// order, straight alpha. X's ARGB visuals are premultiplied; a depth-24
 /// image has no alpha and is opaque. `None` for any other layout.
@@ -535,7 +600,15 @@ pub fn to_sni_argb(data: &[u8], depth: u8, lsb_first: bool) -> Option<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use super::to_sni_argb;
+    use super::{to_sni_argb, to_x11_point, xft_dpi};
+
+    #[test]
+    fn scale_comes_from_xft_dpi() {
+        assert_eq!(xft_dpi("Xcursor.size:\t48\nXft.dpi:\t192\n"), Some(192.0));
+        assert_eq!(xft_dpi("Xcursor.size: 48\n"), None);
+        assert_eq!(to_x11_point(1167, 27, 2.0), (2334, 54));
+        assert_eq!(to_x11_point(1167, 27, 1.0), (1167, 27));
+    }
 
     #[test]
     fn premultiplied_argb_becomes_straight_network_order() {

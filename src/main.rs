@@ -1354,6 +1354,40 @@ pub(crate) fn query_adjust_position_mode() -> Option<bool> {
     }
 }
 
+/// Where this segment sits on screen: (x, y, height) in logical px, from
+/// `ccectl windows --json`. `None` when the compositor does not list it.
+pub(crate) fn segment_screen_rect(app_id: &str) -> Option<(i32, i32, i32)> {
+    let out = std::process::Command::new(get_ccectl_cmd())
+        .args(["windows", "--json"])
+        .output()
+        .ok()?;
+    segment_rect_in(&String::from_utf8_lossy(&out.stdout), app_id)
+}
+
+/// `segment_screen_rect`'s parse, split out to test.
+pub(crate) fn segment_rect_in(windows_json: &str, app_id: &str) -> Option<(i32, i32, i32)> {
+    windows_json.lines().find_map(|line| {
+        let v: serde_json::Value = serde_json::from_str(line).ok()?;
+        if v.get("app_id")?.as_str()? != app_id {
+            return None;
+        }
+        let n = |k: &str| v.get(k).and_then(|x| x.as_i64()).map(|x| x as i32);
+        Some((n("x")?, n("y")?, n("h")?))
+    })
+}
+
+/// The SNI `Activate`/`ContextMenu` point for a click at segment-local
+/// (`cx`, `cy`): SCREEN coordinates, as the spec asks, with the y at the
+/// segment's bottom edge so a menu the app opens there hangs below the bar
+/// instead of over it. Without the segment's position (compositor not
+/// answering) the local point is all there is.
+pub(crate) fn tray_click_point(segment: Option<(i32, i32, i32)>, cx: i32, cy: i32) -> (i32, i32) {
+    match segment {
+        Some((x, y, h)) => (x + cx, y + h),
+        None => (cx, cy),
+    }
+}
+
 /// One window from `ccectl windows` output: (id, app_id, title, focused).
 pub(crate) type CcectlWindow = (String, String, String, bool);
 
@@ -2158,10 +2192,13 @@ impl cce_ui::engine::Application for StatusApp {
                     MouseButton::Right => 273,
                     _ => 0,
                 };
-                let cx_i = cx as i32;
-                let cy_i = cy as i32;
+                let local = (cx as i32, cy as i32);
+                let segment_app_id = self.get_app_id();
                 let thread_sender = self.sender.clone();
                 std::thread::spawn(move || {
+                    // Off the UI thread: this asks the compositor.
+                    let (cx_i, cy_i) =
+                        tray_click_point(segment_screen_rect(&segment_app_id), local.0, local.1);
                     let rt = tokio::runtime::Builder::new_current_thread()
                         .enable_all()
                         .build()
@@ -2551,6 +2588,19 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tray_clicks_report_screen_points_below_the_bar() {
+        let listing = concat!(
+            r#"{"app_id":"cce-status-interface-right-clock","x":1569,"y":0,"w":339,"h":27}"#, "\n",
+            r#"{"app_id":"cce-status-interface-right-tray","x":1127,"y":0,"w":116,"h":27}"#, "\n",
+        );
+        let seg = segment_rect_in(listing, "cce-status-interface-right-tray");
+        assert_eq!(seg, Some((1127, 0, 27)));
+        assert_eq!(tray_click_point(seg, 40, 12), (1167, 27));
+        assert_eq!(segment_rect_in(listing, "cce-status-interface-left-window"), None);
+        assert_eq!(tray_click_point(None, 40, 12), (40, 12));
+    }
 
     // ------------------------------------------------------------------
     // Adaptive contrast: the bar cannot see its own backdrop, so these pin
