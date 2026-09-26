@@ -19,7 +19,7 @@ cce-icons glyph textures), `src/listeners.rs` (status/switcher socket tasks).
 
 ```sh
 cargo build --release                 # standalone build (or `-p cce-status-interface` from the workspace root)
-cargo test                            # 51 tests: main.rs (contrast, parsers), config.rs, tray.rs, the tray bridge's x11.rs
+cargo test                            # 54 tests: main.rs (contrast, parsers), config.rs, tray.rs, the tray bridge's x11.rs and title.rs
 make install                          # release build, then `ccebuild install --no-build cce-status-interface`
 ```
 
@@ -53,6 +53,16 @@ selection and, per docked icon:
   D-Bus menu instead), `Scroll` buttons 4-7. The root position in the event is
   where the container sits, along the top-right of the X screen, so an app that
   opens its menu at the cursor opens it near the tray.
+- **names it after its app** (`title.rs`), since icon windows are untitled
+  and their WM_CLASS names the toolkit (`steam_proton` for every Proton
+  program). A Wine icon is not even the app's window: Wine's tray lives in the
+  prefix's `explorer.exe`, which creates every program's icon windows. So the
+  name is the most common title among the top-level windows of the programs
+  sharing the icon's `WINEPREFIX` — drive-letter exes outside `C:\windows\`,
+  which leaves out explorer, Proton's `steam.exe` shim and xalia — or of the
+  icon's own process for a native app. Ubisoft Connect titles its windows
+  "Ubisoft Connect" even while hidden in the tray. With no titled window yet,
+  the exe's stem stands in and the lookup is retried at 2, 5, 10 and 30 s.
 
 Each item is its own session-bus connection registering by object **path**, so
 the watcher records its unique name — the only kind of name whose disappearance

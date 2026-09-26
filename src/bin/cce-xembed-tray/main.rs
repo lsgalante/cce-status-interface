@@ -12,6 +12,7 @@
 //! menu).
 
 mod sni;
+mod title;
 mod x11;
 
 use std::sync::atomic::{AtomicI32, Ordering};
@@ -45,6 +46,8 @@ async fn main() {
         }
     };
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    // The D-Bus side's own way into the same queue: late title lookups.
+    let retry_tx = tx.downgrade();
     let mut tray = match x11::Tray::new(conn, screen, tx) {
         Ok(t) => t,
         Err(e) => {
@@ -67,7 +70,7 @@ async fn main() {
         // Dropping `tray` closes the channel, which ends `sni::run`.
     });
 
-    if let Err(e) = sni::run(handle, rx).await {
+    if let Err(e) = sni::run(handle, rx, retry_tx).await {
         log::error!("D-Bus side failed: {e}");
         code.store(1, Ordering::SeqCst);
     }

@@ -34,6 +34,7 @@ x11rb::atom_manager! {
         _XEMBED,
         _XEMBED_INFO,
         _NET_WM_NAME,
+        _NET_WM_PID,
         UTF8_STRING,
         _CCE_XEMBED_TRAY_TIME,
     }
@@ -53,8 +54,10 @@ const MIN_ICON: u16 = 16;
 const MAX_ICON: u16 = 64;
 
 pub enum TrayEvent {
-    /// A new icon. `image` is `None` until it has drawn something.
-    Docked { icon: Window, title: String, image: Option<SniImage>, at: ClickPoint },
+    /// A new icon. `image` is `None` until it has drawn something;
+    /// `title_settled` is false while the title is only a fallback
+    /// (`title::resolve`), so the D-Bus side asks again later.
+    Docked { icon: Window, title: String, title_settled: bool, image: Option<SniImage>, at: ClickPoint },
     Image { icon: Window, image: SniImage },
     Title { icon: Window, title: String },
     Undocked { icon: Window },
@@ -80,9 +83,15 @@ struct Icon {
 pub struct XHandle {
     conn: Arc<RustConnection>,
     root: Window,
+    atoms: Atoms,
 }
 
 impl XHandle {
+    /// The icon's name, as `Tray` resolves it at dock time. Blocking.
+    pub fn title(&self, icon: Window) -> crate::title::Title {
+        crate::title::resolve(&self.conn, self.root, &self.atoms, icon)
+    }
+
     /// Press and release `button` on `icon`. Sent with an empty event mask,
     /// which delivers it to the client that created the window — the app
     /// that docked the icon — whatever it selected.
@@ -212,7 +221,7 @@ impl Tray {
     }
 
     pub fn handle(&self) -> XHandle {
-        XHandle { conn: self.conn.clone(), root: self.root }
+        XHandle { conn: self.conn.clone(), root: self.root, atoms: self.atoms }
     }
 
     /// Take the tray selection and announce it. Another tray already
@@ -319,8 +328,8 @@ impl Tray {
                     if e.atom == self.atoms._XEMBED_INFO {
                         self.apply_xembed_info(e.window)?;
                     } else if e.atom == self.atoms._NET_WM_NAME || e.atom == u32::from(AtomEnum::WM_NAME) {
-                        let title = self.title_of(e.window);
-                        let _ = self.tx.send(TrayEvent::Title { icon: e.window, title });
+                        let title = crate::title::resolve(&self.conn, self.root, &self.atoms, e.window);
+                        let _ = self.tx.send(TrayEvent::Title { icon: e.window, title: title.text });
                     }
                 }
                 Event::DamageNotify(e) => {
@@ -420,12 +429,18 @@ impl Tray {
         self.conn.send_event(false, icon, EventMask::NO_EVENT, notify)?;
         self.conn.flush()?;
 
-        let title = self.title_of(icon);
+        let title = crate::title::resolve(&self.conn, self.root, &self.atoms, icon);
         let half = (size / 2) as i16;
         let at = ClickPoint { root: (x + half, half), local: (half, half) };
         let image = self.capture_changed(icon);
-        log::info!("docked {icon:#x} ({title:?}, {size}px, depth {}) in slot {slot}", geom.depth);
-        let _ = self.tx.send(TrayEvent::Docked { icon, title, image, at });
+        log::info!("docked {icon:#x} ({:?}, {size}px, depth {}) in slot {slot}", title.text, geom.depth);
+        let _ = self.tx.send(TrayEvent::Docked {
+            icon,
+            title: title.text,
+            title_settled: title.settled,
+            image,
+            at,
+        });
         Ok(())
     }
 
@@ -457,24 +472,6 @@ impl Tray {
         let _ = self.conn.flush();
         log::info!("undocked {icon:#x}");
         let _ = self.tx.send(TrayEvent::Undocked { icon });
-    }
-
-    /// The icon's name for the tray: `_NET_WM_NAME`, then `WM_NAME`, then
-    /// its WM_CLASS class, since most icon windows are untitled.
-    fn title_of(&self, icon: Window) -> String {
-        let text = |atom: Atom, kind: Atom| -> Option<String> {
-            let reply = self.conn.get_property(false, icon, atom, kind, 0, 256).ok()?.reply().ok()?;
-            let s = String::from_utf8_lossy(&reply.value).trim_end_matches('\0').trim().to_string();
-            (!s.is_empty()).then_some(s)
-        };
-        text(self.atoms._NET_WM_NAME, self.atoms.UTF8_STRING)
-            .or_else(|| text(AtomEnum::WM_NAME.into(), AtomEnum::ANY.into()))
-            .or_else(|| {
-                text(AtomEnum::WM_CLASS.into(), AtomEnum::STRING.into())
-                    .and_then(|c| c.split('\0').nth(1).map(str::to_string))
-                    .filter(|c| !c.is_empty())
-            })
-            .unwrap_or_else(|| "X11 tray icon".to_string())
     }
 
     /// Read the icon's pixels; `Some` only when they differ from what was

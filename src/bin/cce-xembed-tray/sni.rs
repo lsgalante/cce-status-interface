@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::sync::mpsc::{UnboundedReceiver, WeakUnboundedSender};
 use tokio_stream::StreamExt;
 
 use crate::x11::{ClickPoint, SniImage, TrayEvent, XHandle};
@@ -164,9 +164,46 @@ async fn update(conn: &zbus::Connection, image: Option<SniImage>, title: Option<
     Ok(())
 }
 
+/// Delays after docking at which an icon whose name was only a fallback
+/// (no titled app window yet — the app is often still starting) is looked
+/// up again. Bounded: an app that never titles a window keeps the fallback.
+const TITLE_RETRIES_SECS: &[u64] = &[2, 5, 10, 30];
+
+/// Look the icon's name up again on the retry schedule, feeding a settled
+/// one back through the event queue as an ordinary title change.
+fn retry_title(x: Arc<XHandle>, icon: u32, fallback: String, events: WeakUnboundedSender<TrayEvent>) {
+    tokio::spawn(async move {
+        let mut waited = 0;
+        for &at in TITLE_RETRIES_SECS {
+            tokio::time::sleep(std::time::Duration::from_secs(at - waited)).await;
+            waited = at;
+            let x = x.clone();
+            let Ok(title) = tokio::task::spawn_blocking(move || x.title(icon)).await else {
+                return;
+            };
+            if title.settled {
+                if title.text != fallback {
+                    log::info!("named {icon:#x} {:?} after {at}s", title.text);
+                    if let Some(events) = events.upgrade() {
+                        let _ = events.send(TrayEvent::Title { icon, title: title.text });
+                    }
+                }
+                return;
+            }
+        }
+    });
+}
+
 /// Mirror the X side's icons onto the bus until it stops (its channel
 /// closes) or the process is told to exit; then hand the icons back.
-pub async fn run(x: Arc<XHandle>, mut events: UnboundedReceiver<TrayEvent>) -> zbus::Result<()> {
+/// `requeue` feeds the same channel, for the late title lookups. It is
+/// weak so that the X side dropping its sender still closes the channel:
+/// that is how this loop learns the X side has stopped.
+pub async fn run(
+    x: Arc<XHandle>,
+    mut events: UnboundedReceiver<TrayEvent>,
+    requeue: WeakUnboundedSender<TrayEvent>,
+) -> zbus::Result<()> {
     let control = zbus::Connection::session().await?;
     let dbus = zbus::fdo::DBusProxy::new(&control).await?;
     let mut watcher_owner = dbus.receive_name_owner_changed_with_args(&[(0, WATCHER)]).await?;
@@ -181,7 +218,10 @@ pub async fn run(x: Arc<XHandle>, mut events: UnboundedReceiver<TrayEvent>) -> z
             event = events.recv() => {
                 let Some(event) = event else { break };
                 match event {
-                    TrayEvent::Docked { icon, title, image, at } => {
+                    TrayEvent::Docked { icon, title, title_settled, image, at } => {
+                        if !title_settled {
+                            retry_title(x.clone(), icon, title.clone(), requeue.clone());
+                        }
                         let entry = match image {
                             Some(image) => match publish(&x, icon, title.clone(), image, at).await {
                                 Ok(conn) => Entry::Published(conn),
