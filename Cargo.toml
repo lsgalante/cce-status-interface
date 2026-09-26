@@ -25,6 +25,9 @@ env_logger = "0.11"
 kdl = "4.6"
 # Real dependency: PR_SET_PDEATHSIG on the `pactl subscribe` child.
 libc = "0.2"
+# The cce-xembed-tray bridge (src/bin/cce-xembed-tray): the XEmbed system
+# tray selection, the icons' pixels (damage) and their input region (shape).
+x11rb = { version = "0.13", features = ["damage", "shape", "xfixes"] }
 
 
 

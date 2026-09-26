@@ -1,0 +1,16 @@
+[Unit]
+Description=CCE XEmbed tray bridge (legacy X11 tray icons into the status bar)
+After=graphical-session.target cce-status-interface.service
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/cce-xembed-tray
+# Exit 0 means another X11 tray took the selection over; only a failure
+# (Xwayland gone with the compositor) is worth a restart.
+Restart=on-failure
+RestartSec=3
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=graphical-session.target

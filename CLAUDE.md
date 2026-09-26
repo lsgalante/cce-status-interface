@@ -19,12 +19,51 @@ cce-icons glyph textures), `src/listeners.rs` (status/switcher socket tasks).
 
 ```sh
 cargo build --release                 # standalone build (or `-p cce-status-interface` from the workspace root)
-cargo test                            # 48 tests: main.rs (contrast, parsers), config.rs, tray.rs
+cargo test                            # 51 tests: main.rs (contrast, parsers), config.rs, tray.rs, the tray bridge's x11.rs
 make install                          # release build, then `ccebuild install --no-build cce-status-interface`
 ```
 
 Running it requires a live cce compositor session (`$WAYLAND_DISPLAY` plus the cce
 sockets); there is no meaningful headless mode.
+
+## `cce-xembed-tray` — legacy X11 tray icons in the bar
+
+A second binary (`src/bin/cce-xembed-tray/`, run by `cce-xembed-tray.service`)
+bridges the **XEmbed system tray** into the SNI tray `tray.rs` hosts. X11 apps
+older than StatusNotifierItem — Wine and Proton programs above all — dock their
+icons with whichever X client owns `_NET_SYSTEM_TRAY_S0`; with no owner, Wine
+shows a fallback window of its own holding the icons, which is how a blank white
+window came to sit beside Ubisoft Connect (2026-09-26). The bridge owns that
+selection and, per docked icon:
+
+- **reparents the icon window into a container** — an override-redirect window
+  with `WM_CLASS` `cce-xembed-tray`, which the compositor never shows
+  (`cce-compositor/src/server/xwayland_override_redirect.rs`,
+  `is_xembed_tray_container`; keep the class in step). X needs it mapped or
+  the icon never draws. It also gets an **empty input region**, so X never
+  routes the pointer into it: a hidden container stacked over a real X window
+  would otherwise swallow that window's clicks.
+- **reads its pixels** with `GetImage` whenever X Damage reports a redraw, in
+  the ARGB visual it advertises through `_NET_SYSTEM_TRAY_VISUAL` (so icons keep
+  their transparency), and publishes them as `IconPixmap` — skipped while the
+  icon is still fully transparent, so an undrawn icon is never an empty slot.
+- **forwards clicks** as `SendEvent` button presses to the icon: `Activate` is
+  button 1, `ContextMenu` button 3 (the app draws its own menu, which is why
+  there is deliberately no `Menu` property — its presence makes the bar fetch a
+  D-Bus menu instead), `Scroll` buttons 4-7. The root position in the event is
+  where the container sits, along the top-right of the X screen, so an app that
+  opens its menu at the cursor opens it near the tray.
+
+Each item is its own session-bus connection registering by object **path**, so
+the watcher records its unique name — the only kind of name whose disappearance
+`spawn_status_tray` notices. Closing the connection is the whole of
+unregistering. On SIGTERM the bridge hands every icon back to the root window,
+unmapped, which XEmbed clients read as "the tray is gone". Another tray already
+owning the selection is waited out, not displaced.
+
+Verify it in a shadow with `cce-shadow start --xwayland` and
+`cce-compositor/verify/clients`' `xembed-icon`, under `dbus-run-session` so the
+test bar and bridge never reach the live session's bus.
 
 ## Process model (the most important thing to know)
 
