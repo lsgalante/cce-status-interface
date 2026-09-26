@@ -196,6 +196,39 @@ fn retry_title(x: Arc<XHandle>, icon: u32, fallback: String, events: WeakUnbound
     });
 }
 
+/// The compositor's status socket, as the bar finds it.
+fn status_socket_path() -> String {
+    let display = std::env::var("WAYLAND_DISPLAY").unwrap_or_else(|_| "wayland-0".to_string());
+    let primary = format!("/tmp/cce-status-interface-{display}.sock");
+    if std::path::Path::new(&primary).exists() {
+        primary
+    } else {
+        format!("/tmp/cce-status-{display}.sock")
+    }
+}
+
+/// Follow the compositor's `clickaway` topic — a press that landed on no
+/// X11 surface while an X11 popup was up — and close the popup a forwarded
+/// click opened (`XHandle::dismiss_popup`). Reconnects when the compositor
+/// goes away; a compositor without the topic simply never sends a line.
+fn follow_click_aways(x: Arc<XHandle>) {
+    tokio::spawn(async move {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        loop {
+            if let Ok(mut stream) = tokio::net::UnixStream::connect(status_socket_path()).await {
+                if stream.write_all(b"clickaway\n").await.is_ok() {
+                    let mut lines = BufReader::new(stream).lines();
+                    while let Ok(Some(_press)) = lines.next_line().await {
+                        let x = x.clone();
+                        let _ = tokio::task::spawn_blocking(move || x.dismiss_popup()).await;
+                    }
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        }
+    });
+}
+
 /// Mirror the X side's icons onto the bus until it stops (its channel
 /// closes) or the process is told to exit; then hand the icons back.
 /// `requeue` feeds the same channel, for the late title lookups. It is
@@ -213,6 +246,8 @@ pub async fn run(
         .map_err(|e| zbus::Error::Failure(e.to_string()))?;
     let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
         .map_err(|e| zbus::Error::Failure(e.to_string()))?;
+
+    follow_click_aways(x.clone());
 
     let mut entries: HashMap<u32, Entry> = HashMap::new();
     loop {

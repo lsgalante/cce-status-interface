@@ -59,6 +59,20 @@ selection and, per docked icon:
   (`tray_click_point`). It sent segment-local ones until 2026-09-26, and
   Ubisoft Connect's menu opened ~700 px from its icon. With no point (0,0)
   the container stays where it docked, at the top-right of the X screen.
+- **looks after the popup the click opens** (`PopupWatch`): the next
+  override-redirect window to map within 1.5 s of a forwarded click is that
+  click's popup. Windows tray apps open their menu UPWARD from the pointer
+  (the taskbar is at the bottom there) and clamp it to the screen top, so on
+  a top bar it lands over the icon — a popup reaching above the bar's bottom
+  edge is moved down to it. The app keeps working in the moved window, since
+  X reports pointer positions relative to the window. Wine's `_NET_WORKAREA`
+  does not help: Ubisoft Connect places its own menu, and ignored a work area
+  that excluded the bar. The popup is also closed on the compositor's
+  `clickaway` status topic (a press on no X11 surface): the bridge addresses
+  it a press just outside itself, which the app — holding the mouse capture
+  while its menu is up — reads as a click outside. Xwayland never delivers a
+  press on a Wayland window, so before this only a click on one of the app's
+  own X windows closed the menu.
 - **names it after its app** (`title.rs`), since icon windows are untitled
   and their WM_CLASS names the toolkit (`steam_proton` for every Proton
   program). A Wine icon is not even the app's window: Wine's tray lives in the

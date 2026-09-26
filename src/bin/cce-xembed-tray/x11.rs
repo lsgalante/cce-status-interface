@@ -6,7 +6,8 @@
 //! through an [`XHandle`]; `RustConnection` is thread-safe for that.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc::UnboundedSender;
 use x11rb::connection::Connection;
@@ -83,11 +84,28 @@ struct Icon {
     last: Option<Vec<u8>>,
 }
 
+/// How long after a forwarded click a newly mapped override-redirect
+/// window counts as the popup that click opened.
+const POPUP_ARM: Duration = Duration::from_millis(1500);
+
+/// The popup an app opened in answer to a forwarded click, shared between
+/// the X thread (which sees it map and go) and the D-Bus side (which arms
+/// the watch on a click and closes the popup on a click-away).
+#[derive(Default)]
+struct PopupWatch {
+    /// When the last click was forwarded, and the root y (X pixels) the
+    /// popup should not reach above: the bar's bottom edge, when the host
+    /// gave a screen point.
+    armed: Option<(Instant, Option<i32>)>,
+    popup: Option<Window>,
+}
+
 /// The request-only view of the connection the D-Bus side holds.
 pub struct XHandle {
     conn: Arc<RustConnection>,
     root: Window,
     atoms: Atoms,
+    watch: Arc<Mutex<PopupWatch>>,
 }
 
 impl XHandle {
@@ -109,10 +127,16 @@ impl XHandle {
     /// instead. `None` (or the 0,0 a host with no idea sends) keeps the
     /// container where it docked, at the top-right of the X screen.
     pub fn click(&self, icon: Window, button: u8, at: ClickPoint, screen: Option<(i32, i32)>) -> Res<()> {
-        let at = match screen.filter(|&(x, y)| x > 0 || y > 0) {
+        let placed = screen.filter(|&(x, y)| x > 0 || y > 0);
+        let at = match placed {
             Some(point) => self.move_under(at, point, x11_scale(&self.conn, self.root)),
             None => at,
         };
+        // Whatever override-redirect window maps next is this click's
+        // popup: armed before the press goes out, so the map cannot win.
+        if let Ok(mut w) = self.watch.lock() {
+            w.armed = Some((Instant::now(), placed.map(|_| i32::from(at.root.1))));
+        }
         let mask = 1u16 << (7 + button.min(5));
         for (kind, state) in [(BUTTON_PRESS_EVENT, 0u16), (BUTTON_RELEASE_EVENT, mask)] {
             let ev = ButtonPressEvent {
@@ -155,6 +179,43 @@ impl XHandle {
         }
     }
 
+    /// Close the popup a forwarded click opened, if it is still up: press
+    /// and release at a point just outside it, addressed to the popup. The
+    /// app holds the mouse capture while its menu is open, so it reads that
+    /// as a click outside the menu and closes it — what a click on any
+    /// other window would do on Windows, and what one on a Wayland window
+    /// cannot, since Xwayland never delivers it (see the compositor's
+    /// `clickaway` status topic, which is what calls this).
+    pub fn dismiss_popup(&self) {
+        let Some(popup) = self.watch.lock().ok().and_then(|w| w.popup) else {
+            return;
+        };
+        let Some(geom) = self.conn.get_geometry(popup).ok().and_then(|c| c.reply().ok()) else {
+            return;
+        };
+        let (ex, ey) = (-8i16, -8i16);
+        for (kind, state) in [(BUTTON_PRESS_EVENT, 0u16), (BUTTON_RELEASE_EVENT, 1u16 << 8)] {
+            let ev = ButtonPressEvent {
+                response_type: kind,
+                detail: 1,
+                sequence: 0,
+                time: CURRENT_TIME,
+                root: self.root,
+                event: popup,
+                child: NONE,
+                root_x: geom.x.saturating_add(ex),
+                root_y: geom.y.saturating_add(ey),
+                event_x: ex,
+                event_y: ey,
+                state: KeyButMask::from(state),
+                same_screen: true,
+            };
+            let _ = self.conn.send_event(false, popup, EventMask::NO_EVENT, ev);
+        }
+        let _ = self.conn.flush();
+        log::info!("click-away: closing popup {popup:#x}");
+    }
+
     /// Hand every icon back on the way out: unmapped, on the root window,
     /// which the XEmbed client reads as "the tray is gone" and so goes
     /// looking for the next one (or its own fallback).
@@ -179,6 +240,7 @@ pub struct Tray {
     colormap: Colormap,
     icons: HashMap<Window, Icon>,
     tx: UnboundedSender<TrayEvent>,
+    watch: Arc<Mutex<PopupWatch>>,
 }
 
 impl Tray {
@@ -238,6 +300,13 @@ impl Tray {
             AtomEnum::VISUALID,
             &[visual],
         )?;
+        // Top-level map/unmap events, to catch the popup a forwarded click
+        // opens (`PopupWatch`). SubstructureNotify is shareable; only the
+        // redirect mask is the window manager's alone.
+        conn.change_window_attributes(
+            screen.root,
+            &ChangeWindowAttributesAux::new().event_mask(EventMask::SUBSTRUCTURE_NOTIFY),
+        )?;
         conn.flush()?;
         log::info!("tray visual {visual:#x} (depth {depth})");
 
@@ -253,11 +322,12 @@ impl Tray {
             colormap,
             icons: HashMap::new(),
             tx,
+            watch: Arc::new(Mutex::new(PopupWatch::default())),
         })
     }
 
     pub fn handle(&self) -> XHandle {
-        XHandle { conn: self.conn.clone(), root: self.root, atoms: self.atoms }
+        XHandle { conn: self.conn.clone(), root: self.root, atoms: self.atoms, watch: self.watch.clone() }
     }
 
     /// Take the tray selection and announce it. Another tray already
@@ -343,7 +413,12 @@ impl Tray {
                     log::info!("another tray took the selection; handing over");
                     return Ok(());
                 }
-                Event::DestroyNotify(e) => self.undock(e.window, true),
+                Event::DestroyNotify(e) => {
+                    self.popup_gone(e.window);
+                    self.undock(e.window, true)
+                }
+                Event::UnmapNotify(e) => self.popup_gone(e.window),
+                Event::MapNotify(e) if e.override_redirect => self.popup_mapped(e.window)?,
                 Event::ReparentNotify(e) => {
                     if self.icons.get(&e.window).is_some_and(|i| i.container != e.parent) {
                         self.undock(e.window, false);
@@ -380,6 +455,48 @@ impl Tray {
                 _ => {}
             }
             self.conn.flush()?;
+        }
+    }
+
+    /// An override-redirect window mapped: if a forwarded click is still
+    /// armed, it is that click's popup. Remember it for the click-away, and
+    /// if it covers the bar, move it down to the bar's bottom edge. Windows
+    /// tray apps open their menu UPWARD from the pointer, the taskbar being
+    /// at the bottom there; with the pointer on a top bar there is no room
+    /// above, and the app clamps the menu to the screen top — over the very
+    /// icon that opened it. The app keeps working in the moved window:
+    /// X reports pointer positions relative to the window, which is what
+    /// the app hit-tests with.
+    fn popup_mapped(&mut self, window: Window) -> Res<()> {
+        if self.icons.values().any(|i| i.container == window) {
+            return Ok(());
+        }
+        let anchor = {
+            let Ok(mut w) = self.watch.lock() else { return Ok(()) };
+            match w.armed {
+                Some((at, anchor)) if at.elapsed() < POPUP_ARM => {
+                    w.popup = Some(window);
+                    anchor
+                }
+                _ => return Ok(()),
+            }
+        };
+        let geom = self.conn.get_geometry(window)?.reply()?;
+        log::info!("popup {window:#x} opened at {},{} {}x{}", geom.x, geom.y, geom.width, geom.height);
+        if let Some(bar_bottom) = anchor {
+            if i32::from(geom.y) < bar_bottom {
+                self.conn.configure_window(window, &ConfigureWindowAux::new().y(bar_bottom))?;
+                log::info!("popup {window:#x} moved below the bar to y={bar_bottom}");
+            }
+        }
+        Ok(())
+    }
+
+    fn popup_gone(&self, window: Window) {
+        if let Ok(mut w) = self.watch.lock() {
+            if w.popup == Some(window) {
+                w.popup = None;
+            }
         }
     }
 
