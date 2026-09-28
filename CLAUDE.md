@@ -73,6 +73,18 @@ selection and, per docked icon:
   while its menu is up — reads as a click outside. Xwayland never delivers a
   press on a Wayland window, so before this only a click on one of the app's
   own X windows closed the menu.
+  **Tooltips are not the popup** (`is_tooltip`). A forwarded click makes
+  Wine's `explorer.exe` — the prefix's tray host — show the icon's tooltip,
+  and Wine gives it the same window type (`DIALOG`) and Win32 styles as the
+  app's menu; only its owner tells them apart. So a window from a Wine
+  plumbing process (`title::is_wine_plumbing`: a `WINEPREFIX` process that
+  `is_wine_program` does not count as an app) is skipped, as is one typed
+  `_NET_WM_WINDOW_TYPE_TOOLTIP`. Until 2026-09-28 the watch took whichever
+  mapped LAST, so a tooltip mapping over an open menu replaced it and the
+  click-away closed the tooltip, leaving the menu up. A headless shadow never
+  shows the tooltip (Wine's tooltip checks the real X pointer); reproduce it
+  by mapping explorer's `DIALOG` window override-redirect yourself while a
+  test app's menu is open.
 - **names it after its app** (`title.rs`), since icon windows are untitled
   and their WM_CLASS names the toolkit (`steam_proton` for every Proton
   program). A Wine icon is not even the app's window: Wine's tray lives in the

@@ -36,6 +36,8 @@ x11rb::atom_manager! {
         _XEMBED_INFO,
         _NET_WM_NAME,
         _NET_WM_PID,
+        _NET_WM_WINDOW_TYPE,
+        _NET_WM_WINDOW_TYPE_TOOLTIP,
         UTF8_STRING,
         _CCE_XEMBED_TRAY_TIME,
     }
@@ -471,16 +473,18 @@ impl Tray {
         if self.icons.values().any(|i| i.container == window) {
             return Ok(());
         }
-        let anchor = {
-            let Ok(mut w) = self.watch.lock() else { return Ok(()) };
-            match w.armed {
-                Some((at, anchor)) if at.elapsed() < POPUP_ARM => {
-                    w.popup = Some(window);
-                    anchor
-                }
-                _ => return Ok(()),
-            }
+        let armed = self.watch.lock().ok().and_then(|w| w.armed);
+        let anchor = match armed {
+            Some((at, anchor)) if at.elapsed() < POPUP_ARM => anchor,
+            _ => return Ok(()),
         };
+        if self.is_tooltip(window) {
+            log::debug!("{window:#x} mapped after a click, but is a tooltip; not the popup");
+            return Ok(());
+        }
+        if let Ok(mut w) = self.watch.lock() {
+            w.popup = Some(window);
+        }
         let geom = self.conn.get_geometry(window)?.reply()?;
         log::info!("popup {window:#x} opened at {},{} {}x{}", geom.x, geom.y, geom.width, geom.height);
         if let Some(bar_bottom) = anchor {
@@ -490,6 +494,33 @@ impl Tray {
             }
         }
         Ok(())
+    }
+
+    /// Whether a window that mapped while a click was armed is a tooltip,
+    /// not the click's popup. A forwarded click makes Wine's `explorer.exe`
+    /// — which hosts the prefix's tray icons — show the icon's tooltip, and
+    /// nothing tells it from the app's menu but whose it is: Wine gives the
+    /// two the same window type (DIALOG) and the same Win32 styles. Taken
+    /// for the popup, the tooltip stole the click-away (the menu stayed
+    /// open) and, mapping after the menu, replaced it in the watch. A
+    /// toolkit that declares `_NET_WM_WINDOW_TYPE_TOOLTIP` is taken at its
+    /// word.
+    fn is_tooltip(&self, window: Window) -> bool {
+        let typed = self
+            .conn
+            .get_property(false, window, self.atoms._NET_WM_WINDOW_TYPE, AtomEnum::ATOM, 0, 16)
+            .ok()
+            .and_then(|c| c.reply().ok())
+            .is_some_and(|r| r.value32().is_some_and(|mut v| v.any(|a| a == self.atoms._NET_WM_WINDOW_TYPE_TOOLTIP)));
+        if typed {
+            return true;
+        }
+        self.conn
+            .get_property(false, window, self.atoms._NET_WM_PID, AtomEnum::CARDINAL, 0, 1)
+            .ok()
+            .and_then(|c| c.reply().ok())
+            .and_then(|r| r.value32().and_then(|mut v| v.next()))
+            .is_some_and(crate::title::is_wine_plumbing)
     }
 
     fn popup_gone(&self, window: Window) {

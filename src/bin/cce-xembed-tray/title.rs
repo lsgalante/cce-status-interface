@@ -143,6 +143,14 @@ pub fn is_wine_program(argv0: &str) -> bool {
     drive_path && !a[1..].starts_with(":\\windows\\") && !a.contains("\\xalia\\")
 }
 
+/// A process of Wine's own — run under a `WINEPREFIX`, but not a program
+/// `is_wine_program` counts as an app. `explorer.exe`, which hosts every
+/// tray icon in the prefix, is the one that matters: its windows are the
+/// icons and their tooltips, never an app's menu.
+pub fn is_wine_plumbing(pid: u32) -> bool {
+    environ_var(pid, "WINEPREFIX").is_some() && argv0(pid).is_some_and(|a| !is_wine_program(&a))
+}
+
 /// A process's name for the fallback: a Windows exe's file stem, or the
 /// kernel's `comm` for anything else.
 fn process_name(pid: u32) -> Option<String> {
