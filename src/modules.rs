@@ -393,7 +393,6 @@ impl IconReadout {
                         Some(font_family.to_string()),
                         None,
                         None,
-                        Some(nw),
                         crate::read_icon_weight_from_config(),
                     ));
                     w = nx + nw - x;
@@ -912,7 +911,6 @@ impl StatusModule for TrayModule {
                     Some(font_family.to_string()),
                     None,
                     None,
-                    Some(tw),
                     None,
                 ));
             }

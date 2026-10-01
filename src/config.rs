@@ -238,42 +238,6 @@ pub(crate) fn read_icon_alpha_from_config() -> f32 {
     cfg_f32("/module/icon_alpha").unwrap_or(1.0).clamp(0.0, 1.0)
 }
 
-/// `module { text_contrast }` — adaptive contrast strength (0 = off, the
-/// default; 1 = full). The compositor's per-segment `backdrop` measurement
-/// drives the scrim through it: the ground darkens only as far as a backdrop
-/// the configured text color cannot carry demands, and its strength tracks
-/// how badly the text is losing. Bar-side only.
-///
-/// On its own it makes the scrim appear only when the backdrop earns it;
-/// alongside `module { text_scrim }` it deepens that resting ground.
-pub(crate) fn read_text_contrast_from_config() -> f32 {
-    cfg_f32("/module/text_contrast").unwrap_or(0.0).clamp(0.0, 1.0)
-}
-
-/// `module { text_scrim }` — opacity 0-1 of a dark feathered pool drawn
-/// inside each module box, beneath everything the module paints (0 = off,
-/// the default). It darkens the ground the glyphs sit on rather than
-/// decorating the letterforms, which is what survives a busy backdrop
-/// without putting a rim on every letterform.
-///
-/// The DE's one text-contrast treatment, and `module { text_contrast }`
-/// applies on top: the scrim rests at this opacity and deepens toward
-/// opaque as the measured backdrop demands more.
-pub(crate) fn read_text_scrim_from_config() -> f32 {
-    cfg_f32("/module/text_scrim").unwrap_or(0.0).clamp(0.0, 1.0)
-}
-
-/// `module { text_scrim_feather }` — how far, in logical px, the scrim fades
-/// out from its solid core (default: a quarter of the box's height, which
-/// keeps the whole gradient inside the box at any bar height).
-///
-/// The feather is drawn OUTSIDE the core rect, so the core is inset by this
-/// much: feather and inset are the same number, and the pool reaches the
-/// box's edge exactly.
-pub(crate) fn read_text_scrim_feather_from_config() -> Option<f32> {
-    cfg_f32("/module/text_scrim_feather").map(|v| v.max(0.0))
-}
-
 pub(crate) fn read_status_box_corner_radius_from_config() -> f32 {
     // App-native ONLY (~/.config/cce/cce-status-interface/config.kdl,
     // merged over the shared config by cce-ui): `module { corner_radius }`.

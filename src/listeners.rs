@@ -6,9 +6,8 @@ use crate::CustomEvent;
 /// Subscribe to one compositor status topic and forward its pushes as
 /// [`CustomEvent`]s, reconnecting every second until the socket is there.
 ///
-/// `sub` is the whole subscription line, because one topic takes an argument:
-/// `backdrop <app_id>` asks what THAT segment is composited over (every other
-/// topic is the same for all subscribers, so it is a bare word).
+/// `sub` is the whole subscription line; the topic is its first word, so a
+/// topic that takes an argument can still be subscribed to.
 pub(crate) async fn spawn_status_listener(sub: String, sender: calloop::channel::Sender<CustomEvent>) {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::net::UnixStream;
@@ -17,7 +16,7 @@ pub(crate) async fn spawn_status_listener(sub: String, sender: calloop::channel:
     // does not know this topic drops the subscription on sight, so the flat
     // 1s retry turned an unrecognized topic into a permanent once-a-second
     // reconnect from every module process — which is exactly what a bar
-    // running ahead of its compositor does with `backdrop` (the two halves
+    // running ahead of its compositor does with a new topic (the two halves
     // deploy separately, and cce-fx only restarts at login).
     let mut retry_s = 1u64;
     loop {
@@ -57,11 +56,6 @@ pub(crate) async fn spawn_status_listener(sub: String, sender: calloop::channel:
                             // Click-away-close: the payload is the app_id of
                             // the segment the press landed on ("-" for none).
                             "dismiss" => CustomEvent::MenuDismiss(val.clone()),
-                            // "<luma> <spread>", both 0-100, or "unknown"
-                            // when the compositor has no sample for this
-                            // segment — treated as the worst case rather
-                            // than as no news.
-                            "backdrop" => CustomEvent::BackdropUpdated(parse_backdrop(&val)),
                             _ => unreachable!(),
                         };
                         let _ = sender.send(ev);
@@ -72,29 +66,6 @@ pub(crate) async fn spawn_status_listener(sub: String, sender: calloop::channel:
         }
         tokio::time::sleep(std::time::Duration::from_secs(retry_s)).await;
         retry_s = (retry_s * 2).min(30);
-    }
-}
-
-/// Parse a `backdrop` line into (luma, spread), both 0-100.
-///
-/// Anything unreadable — the literal "unknown", a truncated line, a future
-/// compositor's extra fields — reports the worst case: mid luminance and full
-/// spread, which drives the scrim. Guessing "uniform and bright" from a
-/// line we failed to understand would silently turn the treatment OFF, and
-/// unreadable text is a worse failure than an unnecessary scrim.
-pub(crate) fn parse_backdrop(line: &str) -> (u8, u8) {
-    const UNKNOWN: (u8, u8) = (50, 100);
-    let mut parts = line.split_whitespace();
-    let (Some(luma), Some(spread)) = (parts.next(), parts.next()) else {
-        return UNKNOWN;
-    };
-    // Parsed wide and range-checked rather than clamped, so that "101" and
-    // "300" fail the same way. Clamping would quietly turn an out-of-protocol
-    // luma into "bright and uniform" — the one answer that switches the
-    // treatment off.
-    match (luma.parse::<u16>(), spread.parse::<u16>()) {
-        (Ok(l), Ok(s)) if l <= 100 && s <= 100 => (l as u8, s as u8),
-        _ => UNKNOWN,
     }
 }
 

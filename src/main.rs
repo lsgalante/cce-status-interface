@@ -76,8 +76,8 @@ pub struct SystemStats {
 /// A bundled cce-icons glyph placed in the bar: `image` is the tinted
 /// texture from `icons::tinted_icon`, the rect is logical px, `alpha` the
 /// ghosting under a superimposed readout. Retained like `text_prims` and
-/// replayed by `display_list`, drawn after the scrim and before the text so
-/// the number sits on the glyph.
+/// replayed by `display_list`, drawn before the text so the number sits on
+/// the glyph.
 #[derive(Debug, Clone, Copy)]
 pub struct IconPrim {
     pub image: u32,
@@ -151,61 +151,8 @@ pub(crate) enum CustomEvent {
     MenuDismiss(String),
     /// A tray icon's DBusMenu, fetched and flattened for the in-surface menu.
     TrayMenuFetched { destination: String, menu_path: String, pages: Vec<MenuPage> },
-    /// What this segment is composited over, measured by the compositor:
-    /// (luma, spread), both 0-100. The bar cannot see behind its own
-    /// translucent box, so this is the only source of that fact — see
-    /// `module { text_contrast }`.
-    BackdropUpdated((u8, u8)),
     ToggleHideModules,
     ToggleAdjustPositionMode,
-}
-
-/// One sRGB channel to linear light (the WCAG transfer function).
-fn to_linear(c: f32) -> f32 {
-    let c = c.clamp(0.0, 1.0);
-    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
-}
-
-/// WCAG relative luminance of a raw-sRGB color, 0-1. Must agree with the
-/// compositor's `backdrop::relative_luminance` — the two are the halves of
-/// one contrast comparison, and weighting them differently would make the
-/// ratio meaningless.
-fn relative_luminance(rgba: [f32; 4]) -> f32 {
-    0.2126 * to_linear(rgba[0]) + 0.7152 * to_linear(rgba[1]) + 0.0722 * to_linear(rgba[2])
-}
-
-/// WCAG contrast ratio between two relative luminances, 1.0 (identical) to
-/// 21.0 (black on white).
-fn contrast_ratio(a: f32, b: f32) -> f32 {
-    let (hi, lo) = if a > b { (a, b) } else { (b, a) };
-    (hi + 0.05) / (lo + 0.05)
-}
-
-/// How badly `text` fails to read against a backdrop of luminance `bg`:
-/// 0 once the pair clears WCAG AA for normal text (4.5:1), rising to 1 as
-/// the two converge on invisible.
-fn contrast_deficit(text: f32, bg: f32) -> f32 {
-    const AA: f32 = 4.5;
-    ((AA - contrast_ratio(text, bg)) / (AA - 1.0)).clamp(0.0, 1.0)
-}
-
-/// How much help text of luminance `text_luma` needs over a backdrop
-/// measured as `(luma, spread)`, 0 (none) to 1 (as much as the knob allows).
-///
-/// Contrast is checked at BOTH ends of the spread as well as at the mean, and
-/// the worst answer wins: a segment lying half on a black cell and half on a
-/// light gap averages to a perfectly comfortable mid-gray while the text is
-/// unreadable over one of the two halves. Checking only the mean is the
-/// mistake that would make an adaptive scheme look broken exactly where the
-/// fixed one already worked.
-fn contrast_demand(text_luma: f32, (luma, spread): (u8, u8)) -> f32 {
-    let mid = luma as f32 / 100.0;
-    let half = (spread as f32 / 100.0) / 2.0;
-    let lo = (mid - half).clamp(0.0, 1.0);
-    let hi = (mid + half).clamp(0.0, 1.0);
-    contrast_deficit(text_luma, mid)
-        .max(contrast_deficit(text_luma, lo))
-        .max(contrast_deficit(text_luma, hi))
 }
 
 /// A droplet spec whose shape knobs resolve against `reference_h` instead of
@@ -264,82 +211,6 @@ fn spec_at_reference_height(
     out.dome *= lit;
     out.gleam *= lit;
     out
-}
-
-/// The color a treatment behind or around `rgb` text should be drawn in:
-/// whichever of black/white that text reads against.
-///
-/// Used by the scrim, and applied PER RUN rather than from the configured
-/// module color, because a module may paint a run in something else entirely
-/// — the volume module's muted state uses the shared `disabled_color`. A
-/// black pool behind black text is not a weaker treatment, it is an eraser.
-pub(crate) fn treatment_rgb(rgb: [u8; 3]) -> [f32; 3] {
-    let luma = relative_luminance([rgb[0] as f32 / 255.0, rgb[1] as f32 / 255.0, rgb[2] as f32 / 255.0, 1.0]);
-    if contrast_ratio(luma, 0.0) >= contrast_ratio(luma, 1.0) {
-        [0.0, 0.0, 0.0]
-    } else {
-        [1.0, 1.0, 1.0]
-    }
-}
-
-/// The scrim's opacity: it rests at the configured `base` and deepens toward
-/// opaque as the measured backdrop demands more. `demand` is the eased
-/// `contrast_now`, which is already zero when `module { text_contrast }` is
-/// off — so without that knob the scrim is a constant, which is the point of
-/// having it.
-fn scrim_alpha(base: f32, demand: f32) -> f32 {
-    (base + (1.0 - base) * demand.clamp(0.0, 1.0)).clamp(0.0, 1.0)
-}
-
-/// How far the pool fades out, logical px. Defaults to a quarter of the
-/// bubble's height so the gradient scales with the bar, and is capped at half
-/// of each axis: the feather is drawn OUTSIDE the solid core, so the core is
-/// inset by this much, and a larger one would invert it and the pool would
-/// vanish — exactly where a narrow module (a lone icon) lands.
-fn scrim_feather(w: f32, h: f32, configured: Option<f32>) -> f32 {
-    configured.unwrap_or(h * 0.25).max(0.0).min(w / 2.0).min(h / 2.0)
-}
-
-/// The color of the widest measured text run inside a box, which is the run a
-/// box-sized pool is really there to protect. None when the box holds no
-/// measured run at all.
-///
-/// Width is the tiebreak rather than, say, the first run, because a module
-/// that mixes colors (a value in an accent beside its label) is led by its
-/// longest label, and that is the one whose legibility carries the segment.
-fn dominant_run_color(runs: &[TextPrim], bx: f32, by: f32, bw: f32, bh: f32) -> Option<[u8; 3]> {
-    let mut best: Option<(f32, [u8; 3])> = None;
-    for (_, tsize, x, y, color, _, _, _, run_w, _) in runs {
-        let Some(rw) = *run_w else { continue };
-        // Runs belong to the box they sit in; a segment with an expanded menu
-        // has text in both.
-        let (cx, cy) = (x + rw * 0.5, y + tsize * 0.5);
-        if cx < bx || cx > bx + bw || cy < by || cy > by + bh {
-            continue;
-        }
-        if best.map_or(true, |(w, _)| rw > w) {
-            best = Some((rw, *color));
-        }
-    }
-    best.map(|(_, c)| c)
-}
-
-/// The pool color for a box that holds tray icons rather than text. The
-/// tray is the one module whose content is not a measured run, and the
-/// text-keyed lookup finding nothing used to leave its bubble bare — the
-/// only one in the strip painted without the pool, visibly lighter than its
-/// neighbors and the only one that never answered the backdrop. The icons
-/// read as light glyphs (a dark pixmap is recolored toward white in
-/// `TrayModule::render`), so the box gets what a white run would get: a
-/// black pool. None when no icon sits in the box.
-fn dominant_icon_color(icons: &[TrayIconBounds], bx: f32, by: f32, bw: f32, bh: f32) -> Option<[u8; 3]> {
-    icons
-        .iter()
-        .any(|b| {
-            let (cx, cy) = (b.x + b.w * 0.5, b.y + b.h * 0.5);
-            cx >= bx && cx <= bx + bw && cy >= by && cy <= by + bh
-        })
-        .then_some([255, 255, 255])
 }
 
 /// The in-surface right-click menu: instead of spawning a popup process, the
@@ -509,35 +380,9 @@ struct StatusApp {
     ///
     /// The spec rides each box rather than being read from `self.droplet` at
     /// paint time because the expanded menu box needs a DIFFERENT one — see
-    /// `spec_at_reference_height` — and the scrim has to be handed the same
-    /// spec the drop was drawn with or the two silhouettes disagree.
+    /// `spec_at_reference_height`.
     droplet_boxes: Vec<(f32, f32, f32, f32, [f32; 4], cce_ui::scene::paint::DropletSpec)>,
     droplet: Option<cce_ui::scene::paint::DropletSpec>,
-    /// Adaptive-contrast strength (0 = off) — see
-    /// `read_text_contrast_from_config`. Deepens the scrim as the measured
-    /// backdrop demands more; on its own (no `text_scrim`) it makes the scrim
-    /// appear only when it is needed.
-    text_contrast: f32,
-    /// The compositor's last `backdrop` push for this segment: (luma,
-    /// spread), both 0-100. Starts at the worst case, so a segment that
-    /// never hears from the compositor errs toward legible rather than
-    /// toward bare.
-    backdrop: (u8, u8),
-    /// Relative luminance of the configured module text color, 0-1. Cached
-    /// at config-reload time because the contrast decision needs it every
-    /// frame and the color changes about never.
-    text_luma: f32,
-    /// Dark feathered pool behind each module's content (0 = off) — see
-    /// `read_text_scrim_from_config`. The DE's one text-contrast treatment.
-    text_scrim: f32,
-    /// Feather distance for that pool, logical px; None derives it from the
-    /// box height.
-    text_scrim_feather: Option<f32>,
-    /// The contrast demand actually in effect, eased toward the backdrop's
-    /// in `tick`. Stepping straight to the target makes the scrim pulse as
-    /// the desktop pans under a segment, which reads as a flicker rather than
-    /// as an adaptation.
-    contrast_now: f32,
     text_prims: Vec<TextPrim>,
     /// The glyphs the stat modules paint their readouts on — see `IconPrim`.
     icon_prims: Vec<IconPrim>,
@@ -572,8 +417,8 @@ struct StatusApp {
     /// what the in-surface menu expansion grows out of and contracts back to.
     collapsed_box: Option<(f32, f32)>,
     /// The hovered menu row's highlight pill (x, y, w, h), set by the menu
-    /// branch of `rebuild_layout` and drawn in `display_list` AFTER the scrim
-    /// (so the pool does not darken it) and before the text.
+    /// branch of `rebuild_layout` and drawn in `display_list` before the
+    /// text.
     menu_hover_rect: Option<(f32, f32, f32, f32)>,
     input_regions: Vec<(i32, i32, i32, i32)>,
     module_bounds: Vec<ModuleBounds>,
@@ -593,10 +438,8 @@ struct StatusApp {
 }
 
 /// The Wayland `app_id` a segment presents — the compositor places segments
-/// by it, and it is also how this process names itself to the `backdrop`
-/// subscription. A free function because `new()` must be able to spell it
-/// before there is a `StatusApp` to ask, and the two spellings below are
-/// exactly the kind of thing that drifts when copied.
+/// by it. The two spellings below are exactly the kind of thing that drifts
+/// when copied, so they live in one place.
 fn status_app_id(selected: Option<(&str, Side)>) -> String {
     let display = std::env::var("WAYLAND_DISPLAY").unwrap_or_else(|_| "wayland-0".to_string());
     let use_interface_prefix = std::path::Path::new(&format!("/tmp/cce-status-interface-{}.sock", display)).exists();
@@ -614,22 +457,6 @@ impl StatusApp {
             _ => None,
         };
         status_app_id(selected)
-    }
-
-    /// The contrast help this segment's measured backdrop calls for, 0-1.
-    ///
-    /// The compositor reports a mean luminance and a spread. Contrast is
-    /// checked at BOTH ends of that spread as well as at the mean, and the
-    /// worst answer wins: a segment lying half on a black cell and half on a
-    /// light gap averages to a perfectly comfortable mid-gray, and the text
-    /// is still unreadable over one of the two halves. Checking only the mean
-    /// is the mistake that makes an adaptive scheme look broken exactly where
-    /// a fixed one already worked.
-    fn backdrop_contrast_demand(&self) -> f32 {
-        if self.text_contrast <= 0.0 {
-            return 0.0;
-        }
-        contrast_demand(self.text_luma, self.backdrop) * self.text_contrast
     }
 
     fn is_vertical(&self) -> bool {
@@ -671,7 +498,6 @@ impl StatusApp {
         let padding = read_status_padding_from_config();
         let spacing = read_status_module_spacing_from_config();
         let normal_color = read_normal_color_from_config().unwrap_or(color::TEXT_FG);
-        self.text_luma = relative_luminance(normal_color);
         let sw_logical = if is_vertical { self.height as f32 } else { self.width as f32 };
         let bar_h = if is_vertical { self.width as f32 } else { read_status_height_from_config() };
 
@@ -695,9 +521,6 @@ impl StatusApp {
         self.box_bevel_depth = read_status_box_bevel_depth_from_config();
         self.droplet = read_droplet_from_config();
         self.droplet_boxes.clear();
-        self.text_contrast = read_text_contrast_from_config();
-        self.text_scrim = read_text_scrim_from_config();
-        self.text_scrim_feather = read_text_scrim_feather_from_config();
 
         self.status_bar.set_rect(0.0, 0.0, self.width as f32, self.height as f32);
         // The surface itself is transparent: every StatusApp is a single
@@ -987,8 +810,6 @@ impl StatusApp {
                     Some(font_family.clone()),
                     None,
                     None,
-                    // No scrim: the tooltip already sits on its own box.
-                    None,
                     None,
                 ));
             }
@@ -1112,8 +933,6 @@ impl StatusApp {
                         Some(font_family.clone()),
                         None,
                         None,
-                        // Menu text sits on the expanded box; no scrim.
-                        None,
                         None,
                     ));
 
@@ -1139,7 +958,7 @@ impl StatusApp {
                         } else {
                             if hovered == Some(i) && row.enabled {
                                 // A rounded pill inset from the panel edge,
-                                // drawn post-scrim in display_list — a
+                                // drawn before the text in display_list — a
                                 // square-cornered full-width rect butting
                                 // into the rounded silhouette was the last
                                 // blocky element of the expanded menu.
@@ -1153,7 +972,6 @@ impl StatusApp {
                                 iy + (h - font_size) / 2.0,
                                 if row.enabled { text_u8 } else { dim_u8 },
                                 Some(font_family.clone()),
-                                None,
                                 None,
                                 None,
                                 None,
@@ -1463,14 +1281,9 @@ pub(crate) fn parse_ccectl_windows(output: &str) -> Vec<CcectlWindow> {
 }
 
 /// The frame's text as prim data: (text, size, x, y, color_u8, font, bounds, box-layout).
-/// The last field is the run's MEASURED width in logical px, when the emitter
-/// knew it — `draw_label` always does, since the label was built for its
-/// width. It is what lets the text scrim hug the run instead of the whole
-/// module box; `None` simply gets no scrim, which is right for the menu and
-/// tooltip text that sits on an opaque box already.
-/// The field after that is the run's OpenType weight (`Some(700)` = bold),
-/// `None` for the face's regular; only the icon readouts' numbers set it.
-pub(crate) type TextPrim = (String, f32, f32, f32, [u8; 3], Option<String>, Option<[f32; 4]>, Option<cce_ui::scene::paint::TextLayout>, Option<f32>, Option<u16>);
+/// The last field is the run's OpenType weight (`Some(700)` = bold), `None`
+/// for the face's regular; only the icon readouts' numbers set it.
+pub(crate) type TextPrim = (String, f32, f32, f32, [u8; 3], Option<String>, Option<[f32; 4]>, Option<cce_ui::scene::paint::TextLayout>, Option<u16>);
 
 /// Emit a measured `StyledLabel` as a text-prim tuple, returning its width (like the legacy
 /// `StyledLabel::draw`). The label was built for its width; `into_prim` carries the source
@@ -1478,7 +1291,7 @@ pub(crate) type TextPrim = (String, f32, f32, f32, [u8; 3], Option<String>, Opti
 pub(crate) fn draw_label(prims: &mut Vec<TextPrim>, label: cce_ui::widget::StyledLabel, x: f32, y: f32) -> f32 {
     let w = label.w;
     let p = label.into_prim(x, y);
-    prims.push((p.text, p.size, p.x, p.y, p.color, p.font, None, p.layout, Some(w), None));
+    prims.push((p.text, p.size, p.x, p.y, p.color, p.font, None, p.layout, None));
     w
 }
 
@@ -1530,17 +1343,6 @@ impl cce_ui::engine::Application for StatusApp {
         // Every module can host an in-surface menu, so every process listens
         // for the compositor's click-away dismiss pushes.
         tokio::spawn(spawn_status_listener("dismiss".to_string(), sender.clone()));
-        // ...and every module has text over a backdrop it cannot see, so
-        // every one asks the compositor what it is sitting on. Subscribed
-        // unconditionally rather than behind `module { text_contrast }`: the
-        // knob is re-read live from the config file, and a task spawned once
-        // in `new()` could not follow it being switched on.
-        {
-            let app_id = status_app_id(
-                selected_module.as_ref().map(|(name, side)| (name.as_str(), *side)),
-            );
-            tokio::spawn(spawn_status_listener(format!("backdrop {}", app_id), sender.clone()));
-        }
         let is_primary_for_switcher = selected_module.as_ref().map_or(true, |(name, _)| name == "window");
         if is_primary_for_switcher {
             tokio::spawn(spawn_switcher_listener(sender.clone()));
@@ -1582,12 +1384,6 @@ impl cce_ui::engine::Application for StatusApp {
             rounded_boxes: Vec::new(),
             droplet_boxes: Vec::new(),
             droplet: None,
-            text_contrast: 0.0,
-            backdrop: (50, 100),
-            text_luma: 0.0,
-            text_scrim: 0.0,
-            text_scrim_feather: None,
-            contrast_now: 0.0,
             text_prims: Vec::new(),
             icon_prims: Vec::new(),
             scale_factor: 1.0,
@@ -1733,15 +1529,6 @@ impl cce_ui::engine::Application for StatusApp {
                     changed = false;
                 }
             }
-            CustomEvent::BackdropUpdated(sample) => {
-                if self.backdrop != sample {
-                    self.backdrop = sample;
-                    // Only the paint changes, but something has to ask for a
-                    // frame: `tick` eases toward the new target and nothing
-                    // else on this segment is animating.
-                    self.needs_rebuild = true;
-                }
-            }
             CustomEvent::SwitcherTriggered => {
                 log::debug!("[switcher] SwitcherTriggered event received, calling trigger_switcher");
                 self.trigger_switcher(true);
@@ -1791,27 +1578,8 @@ impl cce_ui::engine::Application for StatusApp {
     }
 
     fn tick(&mut self, dt: f32, needs_rebuild: &mut bool) {
-        // Ease toward what the backdrop currently demands. The measurement
-        // itself is quantized and only pushed on change, so this is the only
-        // thing standing between a camera pan and the scrim pulsing on the
-        // cell edges it crosses.
-        if self.text_contrast > 0.0 {
-            const CONTRAST_EASE_S: f32 = 0.12;
-            let target = self.backdrop_contrast_demand();
-            if (target - self.contrast_now).abs() > 0.002 {
-                let step = (dt / CONTRAST_EASE_S).clamp(0.0, 1.0);
-                self.contrast_now += (target - self.contrast_now) * step;
-                *needs_rebuild = true;
-                self.needs_rebuild = true;
-            } else if self.contrast_now != target {
-                self.contrast_now = target;
-                *needs_rebuild = true;
-                self.needs_rebuild = true;
-            }
-        }
-
-        // Ease the drawn bubble toward its live-content width — the same
-        // treatment the scrim gets: stepping straight there would snap the
+        // Ease the drawn bubble toward its live-content width: stepping
+        // straight there would snap the
         // bubble edges on every stat update or title change, and a flapping
         // browser title would make the box twitch instead of breathe.
         {
@@ -1944,84 +1712,13 @@ impl cce_ui::engine::Application for StatusApp {
             }
         }
 
-        // The pool, one per module box, filling the bubble rather than
-        // hugging the run inside it, so a segment reads as one darkened
-        // lozenge instead of a pill within a pill.
-        //
-        // Two shapes, because "the bubble" is two different things: a droplet
-        // module gets a pool of the droplet's own silhouette (below), while a
-        // plain rounded box gets `Prim::Glow` — a feathered aura, solid
-        // through its core rect and falling off across `reach`, so insetting
-        // the core by exactly the feather lands the gradient's outer edge on
-        // the box's own edge.
-        if self.text_scrim > 0.0 || self.text_contrast > 0.0 {
-            // Rests at the configured opacity and deepens with the measured
-            // demand. Either knob alone is meaningful: `text_scrim` with no
-            // `text_contrast` is a constant ground (the demand stays zero),
-            // and `text_contrast` with no `text_scrim` is a ground that
-            // appears only when the backdrop earns it.
-            let alpha = scrim_alpha(self.text_scrim, self.contrast_now);
-            let feather_cfg = self.text_scrim_feather;
-            let runs = &self.text_prims;
-            let icons = &self.tray_item_bounds;
-            let pool_in = |pc: &mut cce_ui::scene::paint::PaintCtx, bx: f32, by: f32, bw: f32, bh: f32, radius: f32| {
-                // Colored for the text it is protecting — the widest run
-                // inside this box, since a box with mixed colors is being
-                // led by its longest label. A box holding no measured run
-                // but tray icons is grounded for those (light glyphs, so a
-                // black pool); a box holding neither gets no pool at all.
-                let Some(color) = dominant_run_color(runs, bx, by, bw, bh)
-                    .or_else(|| dominant_icon_color(icons, bx, by, bw, bh))
-                else {
-                    return;
-                };
-                let feather = scrim_feather(bw, bh, feather_cfg);
-                let core = Rect {
-                    x: bx + feather,
-                    y: by + feather,
-                    width: (bw - feather * 2.0).max(0.0),
-                    height: (bh - feather * 2.0).max(0.0),
-                };
-                if core.width <= 0.0 || core.height <= 0.0 {
-                    return;
-                }
-                let c = treatment_rgb(color);
-                let box_rect = Rect { x: bx, y: by, width: bw, height: bh };
-                pc.clip_rounded(box_rect, radius, |pc| {
-                    pc.glow(core, (radius - feather).max(0.0), feather, [c[0], c[1], c[2], alpha]);
-                });
-            };
-            // A droplet bubble gets a pool of its OWN silhouette, not a
-            // rounded-rect stand-in: cce-ui's `Prim::DropletScrim` runs the
-            // droplet's shader path with the same spec, filled flat and
-            // feathered inward, so the vignette's edge is the drop's edge by
-            // construction rather than by approximation.
-            for &(x, y, w, h, _, spec) in &self.droplet_boxes {
-                let rect = Rect { x, y, width: w, height: h };
-                let Some(color) = dominant_run_color(runs, x, y, w, h)
-                    .or_else(|| dominant_icon_color(icons, x, y, w, h))
-                else {
-                    continue;
-                };
-                let c = treatment_rgb(color);
-                let feather = scrim_feather(w, h, feather_cfg);
-                pc.droplet_scrim(rect, &cce_ui::scene::Material::from_fill([c[0], c[1], c[2], alpha]), spec, feather);
-            }
-            // Everything else is genuinely a rounded rect, so a rounded-rect
-            // pool IS its exact shape.
-            for rb in &self.rounded_boxes {
-                pool_in(&mut pc, rb.x, rb.y, rb.w, rb.h, rb.radius);
-            }
-        }
-
         let (sb_x, sb_y, sb_w, sb_h) = self.status_bar.rect();
         pc.quad(Rect { x: sb_x, y: sb_y, width: sb_w, height: sb_h }, self.status_bar.color());
         for r in &self.rects {
             pc.quad(Rect { x: r.x, y: r.y, width: r.w, height: r.h }, r.color);
         }
 
-        // The hovered menu row's pill: post-scrim so the pool cannot darken
-        // it, pre-text so the label sits on it.
+        // The hovered menu row's pill, pre-text so the label sits on it.
         if let Some((hx, hy, hw, hh)) = self.menu_hover_rect {
             pc.rounded_rect(
                 Rect { x: hx, y: hy, width: hw, height: hh },
@@ -2031,19 +1728,18 @@ impl cce_ui::engine::Application for StatusApp {
             );
         }
 
-        // Readout glyphs: post-scrim so the pool grounds them like any run.
+        // Readout glyphs, under the numbers beside them.
         for ip in &self.icon_prims {
             pc.image(ip.image, Rect { x: ip.x, y: ip.y, width: ip.w, height: ip.h }, ip.alpha);
         }
 
-        for (text, tsize, x, y, color, font, bounds, layout, _run_w, weight) in &self.text_prims {
+        for (text, tsize, x, y, color, font, bounds, layout, weight) in &self.text_prims {
             let attrs = cce_ui::scene::paint::TextAttrs { italic: false, weight: *weight };
             match layout {
                 Some(l) => pc.text_boxed(text.clone(), *x, *y, *tsize, *color, font.clone(), *bounds, attrs, *l),
-                // Glyphs are drawn plain. Contrast is the scrim's job now —
-                // it darkens the ground rather than decorating the
-                // letterforms, and the two together were always one treatment
-                // too many.
+                // Glyphs are drawn plain: contrast is the compositor's job,
+                // which compresses the backdrop behind the segment
+                // (`module { backdrop_compress }`).
                 None => pc.text_attrs(text.clone(), *x, *y, *tsize, *color, font.clone(), *bounds, attrs),
             }
         }
@@ -2603,92 +2299,6 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
-    // Adaptive contrast: the bar cannot see its own backdrop, so these pin
-    // down what it does with the compositor's measurement of it.
-    // ------------------------------------------------------------------
-
-    /// Luminance of the black text the droplet style is configured with.
-    const BLACK_TEXT: f32 = 0.0;
-    const WHITE_TEXT: f32 = 1.0;
-
-    #[test]
-    fn dark_text_on_a_light_uniform_backdrop_wants_no_scrim() {
-        // The case that must stay untouched: the bar already reads fine, so
-        // an adaptive scheme that decorates it anyway is worse than nothing.
-        assert_eq!(contrast_demand(BLACK_TEXT, (100, 0)), 0.0);
-    }
-
-    #[test]
-    fn dark_text_on_a_dark_uniform_backdrop_wants_a_full_scrim() {
-        // Black text over a black grid cell — invisible, and the whole
-        // reason for the feature.
-        assert_eq!(contrast_demand(BLACK_TEXT, (0, 0)), 1.0);
-    }
-
-    #[test]
-    fn light_text_reverses_the_verdict() {
-        // The decision is about the CONFIGURED color, not a hardcoded
-        // assumption that module text is dark.
-        assert_eq!(contrast_demand(WHITE_TEXT, (0, 0)), 0.0);
-        assert_eq!(contrast_demand(WHITE_TEXT, (100, 0)), 1.0);
-    }
-
-    #[test]
-    fn a_comfortable_mean_over_a_split_backdrop_still_wants_a_scrim() {
-        // Half black cell, half light gap: the mean alone says "mid-gray,
-        // fine" while the text is invisible over one half. Checking the
-        // spread's ends is what catches it.
-        let mean_only = contrast_deficit(BLACK_TEXT, 0.5);
-        let with_spread = contrast_demand(BLACK_TEXT, (50, 100));
-        assert!(with_spread > mean_only, "{} !> {}", with_spread, mean_only);
-        assert_eq!(with_spread, 1.0);
-    }
-
-    #[test]
-    fn an_unknown_backdrop_is_treated_as_the_worst_case() {
-        // What a segment reports before it has heard from the compositor,
-        // and what an occluding window resolves to: assume unreadable.
-        assert_eq!(contrast_demand(BLACK_TEXT, (50, 100)), 1.0);
-    }
-
-    const BLACK: [f32; 3] = [0.0, 0.0, 0.0];
-    const WHITE: [f32; 3] = [1.0, 1.0, 1.0];
-
-    #[test]
-    fn a_treatment_contrasts_with_the_text_not_with_a_fixed_assumption() {
-        // A white outline around white text is not a weaker treatment, it is
-        // an eraser — which is exactly what a light backdrop got before this
-        // followed the text color. The same holds for a black pool behind
-        // black text.
-        assert_eq!(treatment_rgb([255, 255, 255]), BLACK);
-        assert_eq!(treatment_rgb([0, 0, 0]), WHITE);
-    }
-
-    #[test]
-    fn the_treatment_is_chosen_per_run_so_an_odd_colored_module_is_safe() {
-        // The volume module paints its muted state in the shared
-        // disabled_color while every other run is the configured white, and
-        // the two need not land on the same answer. They happen to today —
-        // disabled_color is a light red, picked so the muted run keeps the
-        // same dark pool as its neighbors — so the endpoints below stand in
-        // for a palette that could part them again.
-        assert_eq!(treatment_rgb([255, 255, 255]), BLACK);
-        assert_eq!(treatment_rgb([0, 0, 0]), WHITE);
-        // A mid accent color still resolves rather than landing in between.
-        assert!(matches!(treatment_rgb([125, 222, 143]), BLACK | WHITE));
-    }
-
-    #[test]
-    fn the_treatment_crossover_follows_the_wcag_curve_not_the_midpoint() {
-        // Mid-gray (sRGB 128) is luminance ~0.22, which reads better against
-        // black than white — so the crossover sits well below the halfway
-        // byte, and picking it by midpoint would give a swathe of grays the
-        // wrong treatment.
-        assert_eq!(treatment_rgb([128, 128, 128]), BLACK);
-        assert_eq!(treatment_rgb([80, 80, 80]), WHITE);
-    }
-
-    // ------------------------------------------------------------------
     // The expanded menu's drop: the module box grows downward, and the
     // silhouette must not grow with it.
     // ------------------------------------------------------------------
@@ -2773,118 +2383,6 @@ mod tests {
         assert!((barely.dome - spec.dome).abs() < 0.1);
         let doubled = spec_at_reference_height(spec, COLLAPSED.1, COLLAPSED.1 * 2.0);
         assert_eq!(doubled.dome, 0.0);
-    }
-
-    #[test]
-    fn the_scrim_is_constant_without_the_adaptive_knob() {
-        // text_contrast off leaves `demand` at zero, and the scrim is then
-        // exactly what was configured — a fixed dark ground, which is the
-        // whole reason it can stand alone as a treatment.
-        assert_eq!(scrim_alpha(0.55, 0.0), 0.55);
-        assert_eq!(scrim_alpha(0.0, 0.0), 0.0);
-    }
-
-    #[test]
-    fn the_scrim_deepens_with_demand_and_never_thins() {
-        // Adaptive contrast can only ever darken the ground further; a
-        // backdrop that needs help must not be able to lighten it.
-        assert!(scrim_alpha(0.55, 0.5) > 0.55);
-        assert_eq!(scrim_alpha(0.55, 1.0), 1.0);
-        assert!(scrim_alpha(0.55, 1.0) >= scrim_alpha(0.55, 0.0));
-    }
-
-    #[test]
-    fn the_feather_defaults_to_a_quarter_of_the_bubble_height() {
-        assert_eq!(scrim_feather(200.0, 28.0, None), 7.0);
-        assert_eq!(scrim_feather(200.0, 28.0, Some(9.0)), 9.0);
-        assert_eq!(scrim_feather(200.0, 28.0, Some(-3.0)), 0.0);
-    }
-
-    #[test]
-    fn the_feather_cannot_swallow_the_core_it_surrounds() {
-        // Drawn OUTSIDE the core, so the core is inset by it; a feather past
-        // half of either axis would invert the core and the pool would
-        // disappear — exactly where a narrow module (a lone icon) lands.
-        assert_eq!(scrim_feather(10.0, 28.0, Some(40.0)), 5.0);
-        assert_eq!(scrim_feather(200.0, 28.0, Some(40.0)), 14.0);
-    }
-
-    fn run(x: f32, y: f32, w: f32, color: [u8; 3]) -> TextPrim {
-        ("x".to_string(), 14.0, x, y, color, None, None, None, Some(w), None)
-    }
-
-    #[test]
-    fn the_pool_takes_its_color_from_the_widest_run_it_covers() {
-        let runs = vec![run(20.0, 7.0, 30.0, [255, 255, 255]), run(60.0, 7.0, 90.0, [0, 0, 0])];
-        assert_eq!(dominant_run_color(&runs, 10.0, 0.0, 200.0, 27.0), Some([0, 0, 0]));
-    }
-
-    #[test]
-    fn a_run_in_another_box_does_not_color_this_pool() {
-        // An expanded segment has text in the strip AND in the menu below it;
-        // the strip's pool must not be colored by a menu row.
-        let runs = vec![run(20.0, 7.0, 30.0, [255, 255, 255]), run(20.0, 60.0, 90.0, [0, 0, 0])];
-        assert_eq!(dominant_run_color(&runs, 10.0, 0.0, 200.0, 27.0), Some([255, 255, 255]));
-    }
-
-    #[test]
-    fn a_box_with_no_measured_text_gets_no_pool() {
-        // The tray is icons; there is no text to ground, and a pool there
-        // would just be a smudge behind the icons.
-        let runs: Vec<TextPrim> = vec![("i".to_string(), 14.0, 20.0, 7.0, [255, 255, 255], None, None, None, None, None)];
-        assert_eq!(dominant_run_color(&runs, 10.0, 0.0, 200.0, 27.0), None);
-        assert_eq!(dominant_run_color(&[], 10.0, 0.0, 200.0, 27.0), None);
-    }
-
-    #[test]
-    fn a_box_of_tray_icons_gets_the_pool_a_white_run_would() {
-        // The tray draws icons, not measured runs, so the text-keyed lookup
-        // finds nothing; the icon fallback grounds the box as light glyphs.
-        let icon = |x: f32| TrayIconBounds {
-            id: "i".into(), x, y: 5.5, w: 16.0, h: 16.0, title: None, dbus_id: None,
-        };
-        let icons = [icon(18.0), icon(42.0)];
-        assert_eq!(dominant_icon_color(&icons, 10.0, 0.0, 80.0, 27.0), Some([255, 255, 255]));
-        assert_eq!(treatment_rgb([255, 255, 255]), [0.0, 0.0, 0.0]);
-        // An icon whose center lies outside the box does not ground it —
-        // the expanded menu box below the strip holds no icons.
-        assert_eq!(dominant_icon_color(&icons, 10.0, 27.0, 80.0, 100.0), None);
-        assert_eq!(dominant_icon_color(&[], 10.0, 0.0, 80.0, 27.0), None);
-    }
-
-    #[test]
-    fn contrast_ratio_matches_the_wcag_endpoints() {
-        assert!((contrast_ratio(0.0, 1.0) - 21.0).abs() < 0.01);
-        assert!((contrast_ratio(0.5, 0.5) - 1.0).abs() < 0.001);
-    }
-
-    #[test]
-    fn parse_backdrop_reads_a_well_formed_line() {
-        assert_eq!(crate::listeners::parse_backdrop("42 17"), (42, 17));
-        assert_eq!(crate::listeners::parse_backdrop("  0 0  "), (0, 0));
-    }
-
-    #[test]
-    fn parse_backdrop_falls_back_to_the_worst_case_not_the_best() {
-        // Every unreadable form must fail toward "assume unreadable": a
-        // fallback of (bright, uniform) would silently switch the treatment
-        // off, and bare text over an unknown backdrop is the failure this
-        // whole path exists to prevent.
-        for line in ["unknown", "", "42", "nonsense here", "42 spread"] {
-            assert_eq!(crate::listeners::parse_backdrop(line), (50, 100), "line {:?}", line);
-        }
-        assert_eq!(contrast_demand(BLACK_TEXT, crate::listeners::parse_backdrop("unknown")), 1.0);
-    }
-
-    #[test]
-    fn parse_backdrop_rejects_out_of_range_but_tolerates_extra_fields() {
-        // Out of protocol is unknown, not clamped — clamping a bad luma to
-        // 100 would read as "bright and uniform" and switch the scrim off.
-        assert_eq!(crate::listeners::parse_backdrop("200 200"), (50, 100));
-        assert_eq!(crate::listeners::parse_backdrop("101 0"), (50, 100));
-        // Room for the compositor to grow the line without the bar
-        // misreading it as garbage.
-        assert_eq!(crate::listeners::parse_backdrop("30 40 future"), (30, 40));
     }
 
     // ------------------------------------------------------------------

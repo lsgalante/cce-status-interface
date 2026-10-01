@@ -19,7 +19,7 @@ cce-icons glyph textures), `src/listeners.rs` (status/switcher socket tasks).
 
 ```sh
 cargo build --release                 # standalone build (or `-p cce-status-interface` from the workspace root)
-cargo test                            # 57 tests: main.rs (contrast, parsers), config.rs, tray.rs, the tray bridge's x11.rs and title.rs
+cargo test                            # 37 tests: main.rs (parsers, droplet geometry), config.rs, tray.rs, the tray bridge's x11.rs and title.rs
 make install                          # release build, then `ccebuild install --no-build cce-status-interface`
 ```
 
@@ -226,7 +226,7 @@ listen to tray D-Bus, etc.:
 - **Compositor status feed** (`spawn_status_listener`): connects to
   `/tmp/cce-status[-interface]-{WAYLAND_DISPLAY}.sock` and subscribes, one task
   per topic, line-oriented — `layout` and `title` only in the process that owns
-  the window module, `dismiss` and `backdrop` in every one. Reconnects back off
+  the window module, `dismiss` in every one. Reconnects back off
   1s doubling to 30s, reset the moment a connection delivers a line: a
   compositor that does not know a topic drops the subscription on sight, so a
   flat retry made a bar running ahead of its compositor reconnect once a second
@@ -264,11 +264,6 @@ listen to tray D-Bus, etc.:
 - **Tray** (`spawn_status_tray`): a full StatusNotifierItem/Watcher host over `zbus`,
   including DBusMenu fetching. Icons arrive as pixmaps or theme names (rendered via
   `resvg`/`png`).
-- **Backdrop** (`spawn_status_listener("backdrop <app_id>")`): what THIS segment
-  is composited over, measured compositor-side and pushed as `<luma> <spread>`
-  (0-100 each) or `unknown`. Every module process subscribes, naming itself with
-  `status_app_id()`. A Wayland client cannot see behind its own surface, so this
-  is the only source of the fact — see `module { text_contrast }` below.
 - **Switcher** (`spawn_switcher_listener`): binds
   `/tmp/cce-status-interface-switcher-{WAYLAND_DISPLAY}.sock`; a line on it fires
   `SwitcherTriggered`.
@@ -299,7 +294,7 @@ box — full strength drew a blocky lit picture-frame with the band pinned, and
 envelope folds across the body with the band grown; both were tried. The panel
 keeps the silhouette-hugging water terms (clarity, rim crest, core, contact
 shadow), and the hovered row's highlight is a rounded pill inset from the
-panel edge (`menu_hover_rect`, drawn post-scrim), not a full-width rect.
+panel edge (`menu_hover_rect`, drawn before the text), not a full-width rect.
 
 **No cce-cloud popups remain in this app**: the window picker (window-module
 click → `MenuReady` rows of `Ccectl(["focus-window", id])`) is an in-surface
@@ -360,18 +355,9 @@ readouts in the `stats` bubble, default `module { spacing }`) and
 `module { icon_weight }` (OpenType weight of the number, unset = regular)
 and `module { text_raise }` (lifts module text above vertical center, logical
 px, bar-side only — every module funnels through `centered_text_y`) and
-`module { text_scrim }` (0-1 resting opacity of a
-feathered pool filling each module box, the DE's one text-contrast treatment)
-and `module { text_scrim_feather }` (that pool's falloff in logical px,
-default a quarter of the box height) and `module { text_contrast }` (adaptive
-contrast 0-1, default 0 = off — the compositor's `backdrop` measurement
-deepens the pool through it, so the ground darkens only as far as a backdrop
-the configured text color cannot carry demands; on its own, with no
-`text_scrim`, it makes the pool appear ONLY when the backdrop earns it).
-(The glyph-decorating treatments this replaced — `text_relief`'s letterpress
-underlay and `text_halo`'s four-copy outline — were deleted 2026-08-28 once
-the scrim superseded both; don't reintroduce a per-letterform treatment
-without a reason the ground cannot serve.) Everything is read through
+`module { backdrop_compress }` (the minimum WCAG contrast ratio the text must
+hold against any backdrop pixel, e.g. 10; unset = off — read by the
+COMPOSITOR only, see "Text contrast" below). Everything is read through
 `cce_ui::config::cached_config()`; KDL is converted to JSON
 (`cce_ui::config::parse_kdl_to_json`) and looked up by **explicit JSON
 pointer only**: every key names its canonical nesting
@@ -401,69 +387,39 @@ is gone; `text_colors_stay_srgb_and_quad_colors_are_linearized`, in
 `config.rs`, is the spec. Config changes are picked up by polling the file
 mtime in `tick()`, so there is no reload event to wire up.
 
-## Adaptive text contrast
+## Text contrast: backdrop compression
 
 The bar draws into its own buffer and can never see what it is composited
 over, so a module box at `background_color` alpha `30` leaves its text at the
-mercy of whatever the desktop shows through it. `module { text_contrast }`
-closes that loop with the compositor, which CAN see:
+mercy of whatever the desktop shows through it. The fix lives in the
+compositor, which CAN see: `module { backdrop_compress }` makes `cce-fx`
+compress the luminance of each segment's backdrop — the blurred one, or the
+refracted one when the droplet lens is live — so the module text keeps that
+contrast ratio over every pixel of it. For light text the backdrop's bright
+parts are pulled down under a ceiling; for dark text its shadows are lifted
+instead. Below a knee (half the ceiling) nothing moves, so a backdrop that is
+already dark enough is left exactly as it is, and the curve approaches the
+ceiling asymptotically with no seam. The color is scaled, not desaturated, so
+a bright backdrop keeps its hue. The text color is `module { text_color }`
+(else the shared `/style/status/normal_color`), read compositor-side;
+`backdrop_compress_params` in cce-compositor's `config.rs` turns the pair into
+the shader's ceiling, and scenefx's `tex.frag`/`droplet.frag`
+(`compress_backdrop`) apply it. It rides the backdrop blur, so a bar with
+`/style/status/background_blur` at 0 has nothing to compress. The bubble's own
+translucent fill and the droplet's lighting composite on top of the compressed
+backdrop and lift it, so the ratio reached is well under the one asked for:
+measured in a shadow on a pure-white desktop with this repo's droplet style,
+`backdrop_compress 4.5` reached 2.7:1 and `10` reached 4.7:1 (`15`: 6.4:1).
+Over a backdrop already dark enough, on and off are pixel-identical.
 
-1. `cce-fx` measures each segment's backdrop per frame (`backdrop.rs`) and
-   pushes `<luma> <spread>` on the status socket's `backdrop` topic.
-2. `contrast_demand()` checks the configured text color's WCAG contrast
-   against that backdrop at three points — the mean AND both ends of the
-   spread — and takes the worst. Checking only the mean is the trap: a segment
-   half on a black grid cell and half on a light gap averages to a comfortable
-   mid-gray while the text is invisible over one half.
-3. `tick` eases `contrast_now` toward that demand over ~120ms. Stepping
-   straight to it makes the scrim pulse as the desktop pans under the segment.
-
-`module { text_scrim }` is the treatment itself: a feathered pool (`cce_ui`'s
-`Prim::Glow` — solid through a core rect, falling off to nothing across
-`text_scrim_feather` px, tessellated as per-vertex-alpha rings so there is no
-banding) filling each module box. It darkens the ground the glyphs sit on
-rather than decorating the letterforms. It rests at the configured opacity and
-`text_contrast` deepens it from there, so it is a constant when that knob is
-off — and either knob alone is meaningful.
-
-One pool per bubble, not per text run, so a segment reads as one darkened
-lozenge rather than a pill inside a pill. Its shape is the bubble's ACTUAL
-shape, which means two paths: a droplet module gets `Prim::DropletScrim`
-(cce-ui shader mode 12 — the droplet's own SDF under the same `DropletSpec`,
-filled flat and feathered inward, so the vignette's edge is the drop's edge by
-construction), while a plain rounded box gets `Prim::Glow` with its core inset
-by exactly the feather, which lands the gradient's outer edge on the box edge.
-The rounded-rect pool is clipped to its box; the droplet one needs no clip,
-since the shader cannot draw outside the silhouette it is evaluating.
-
-The pool's color comes from `dominant_run_color` — the widest run inside the
-box, using the width that rides `TextPrim`'s last field — with
-`dominant_icon_color` as the fallback for a box that holds tray icons and no
-run: the icons read as light glyphs (dark pixmaps are recolored toward white),
-so the tray is grounded as a white run would be, with a black pool. Before
-2026-09-05 a box with no measured run got no pool, which left the tray the
-one bare bubble in the strip — visibly lighter than its neighbors, and the
-one segment the backdrop feed could not deepen. A box holding neither text
-nor icons still gets no pool. Width is the tiebreak because a module mixing
-colors is led by its longest label.
-
-The pool takes its color from `treatment_rgb` — whichever of black/white the
-run reads against, by contrast ratio (the WCAG crossover is near 0.18, not
-0.5). Chosen from the run's OWN color, not the configured module color: a
-module may paint a run in something else entirely, and the volume module's
-muted state uses the shared `disabled_color`. A black pool behind black text
-is not a weaker treatment — it is an eraser. (That `disabled_color` is a light
-red as of 2026-08-28, chosen so the muted run keeps the same dark pool as
-every other bubble instead of inverting to a light one.)
-
-A window covering part of a segment is measured too — the compositor reads
-that window's own content over the overlapping strip and blends it with the
-desktop reading for the rest. `unknown` is left for content it genuinely
-cannot read (no committed buffer, an unsupported read format).
-
-Failures resolve toward legible in every direction: an unparseable or absent
-line reads as `(50, 100)` — mid luminance, full spread — which drives the
-scrim rather than switching it off.
+This replaced the bar-side scrim on 2026-10-01: a dark feathered pool
+(`text_scrim`, deepened by `text_contrast` from a per-segment `backdrop`
+luminance measurement the compositor pushed on the status socket) that
+darkened the whole bubble even over a backdrop that needed no help. Compression
+is per pixel, so it needs neither the pool nor the measurement loop. (Before
+the scrim, `text_relief`'s letterpress underlay and `text_halo`'s four-copy
+outline decorated the letterforms; they went 2026-08-28. Don't reintroduce a
+per-letterform treatment without a reason the backdrop cannot serve.)
 
 ## Interactions worth knowing before touching input code
 
