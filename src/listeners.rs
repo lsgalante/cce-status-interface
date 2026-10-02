@@ -80,9 +80,15 @@ pub(crate) async fn spawn_switcher_listener(sender: calloop::channel::Sender<Cus
         log::info!("[switcher-listener] Listening on {}", socket_path);
         loop {
             if let Ok((stream, _)) = listener.accept().await {
-                let mut reader = tokio::io::BufReader::new(stream);
+                // Bounded in size and in TOTAL time: connections are served
+                // one at a time here, so one that never finished its line
+                // (until 2026-10-02 nothing timed it out) left the Super+Tab
+                // switcher dead for the rest of the session.
+                use tokio::io::AsyncReadExt;
+                let mut reader = tokio::io::BufReader::new(stream.take(4096));
                 let mut line = String::new();
-                if reader.read_line(&mut line).await.is_ok() {
+                let read = tokio::time::timeout(std::time::Duration::from_secs(2), reader.read_line(&mut line)).await;
+                if matches!(read, Ok(Ok(n)) if n > 0) {
                     let _ = sender.send(CustomEvent::SwitcherTriggered);
                 }
             }
