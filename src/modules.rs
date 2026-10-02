@@ -522,10 +522,11 @@ impl<T: IconStat> StatusModule for T {
 
 /// The combined readout segment: every `IconStat` module's readout in one
 /// bubble, in the order the compositor used to lay the five separate
-/// segments out (cpu, memory, brightness, volume, battery). A reader with
-/// nothing (no battery, no backlight) simply drops out of the row. This is
-/// what the launcher daemon runs; the five single names stay valid for a
-/// bar configured to run them separately.
+/// segments out (cpu, memory, brightness, volume, battery), with wifi —
+/// which postdates that order — between volume and battery. A reader with
+/// nothing (no battery, no backlight, no wireless adapter) simply drops out
+/// of the row. This is what the launcher daemon runs; the single names stay
+/// valid for a bar configured to run them separately.
 pub struct StatsModule;
 
 impl StatsModule {
@@ -535,6 +536,7 @@ impl StatsModule {
             MemoryModule::readout(stats, normal_color),
             BrightnessModule::readout(stats, normal_color),
             VolumeModule::readout(stats, normal_color),
+            WifiModule::readout(stats, normal_color),
             BatteryModule::readout(stats, normal_color),
         ]
         .into_iter()
@@ -652,6 +654,38 @@ impl IconStat for VolumeModule {
             color,
             fallback,
             fallback_template: "Vol 100%",
+        })
+    }
+}
+
+pub struct WifiModule;
+
+impl IconStat for WifiModule {
+    const NAME: &'static str = "wifi";
+
+    fn readout(stats: &Option<SystemStats>, normal_color: [f32; 4]) -> Option<IconReadout> {
+        let (signal, connected) = match stats {
+            Some(s) => s.wifi?,
+            None => (Some(100), true),
+        };
+        // Disconnected reads like a muted sink: the struck-through glyph,
+        // dimmed, with no number.
+        let color = if connected {
+            normal_color
+        } else {
+            crate::read_disabled_color_from_config().unwrap_or(color::TEXT_DIM)
+        };
+        let fallback = match (connected, signal) {
+            (false, _) => "Wifi Off".to_string(),
+            (true, Some(p)) => format!("Wifi {p}%"),
+            (true, None) => "Wifi N/A".to_string(),
+        };
+        Some(IconReadout {
+            icon: if connected { "wifi" } else { "wifi-off" },
+            number: signal.map(|p| p.to_string()),
+            color,
+            fallback,
+            fallback_template: "Wifi 100%",
         })
     }
 }

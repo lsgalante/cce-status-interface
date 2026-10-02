@@ -9,7 +9,7 @@ is one crate in the multi-repo `cce` workspace — see `../cce-compositor/WORKSP
 the workspace layout, the multi-repo git rules (commit here, never `git init` at the root),
 and the `cce-ui` toolkit this app is built on. This crate is deliberately small:
 `src/main.rs` (the `StatusApp` application, layout/input, launcher daemon),
-`src/modules.rs` (the `StatusModule` trait and its ten implementations),
+`src/modules.rs` (the `StatusModule` trait and its eleven implementations),
 `src/config.rs` (pointer-first config readers), `src/tray.rs` (SNI host),
 `src/cloud.rs` (menu page building), `src/stats.rs` (system stat readers —
 numbers, not strings; the modules do the formatting), `src/icons.rs` (tinted
@@ -19,7 +19,7 @@ cce-icons glyph textures), `src/listeners.rs` (status/switcher socket tasks).
 
 ```sh
 cargo build --release                 # standalone build (or `-p cce-status-interface` from the workspace root)
-cargo test                            # 37 tests: main.rs (parsers, droplet geometry), config.rs, tray.rs, the tray bridge's x11.rs and title.rs
+cargo test                            # 38 tests: main.rs (parsers, droplet geometry), config.rs, tray.rs, the tray bridge's x11.rs and title.rs
 make install                          # release build, then `ccebuild install --no-build cce-status-interface`
 ```
 
@@ -117,8 +117,8 @@ One binary, three modes, selected by CLI args in `main()`:
   resets it). This is the normal production mode: each module is its own process and
   its own Wayland surface.
 - **`--module <name>`** — a single-module bar segment. Valid names: `window`, `tray`,
-  `stats`, `cpu`, `memory`, `brightness`, `volume`, `battery`, `clock`, `light_source`
-  (the daemon launches `stats`, not the five it combines).
+  `stats`, `cpu`, `memory`, `brightness`, `volume`, `wifi`, `battery`, `clock`,
+  `light_source` (the daemon launches `stats`, not the six it combines).
 - **`--trigger-switcher`** — one-shot: writes `trigger` to the switcher socket of the
   running instance and exits (used as a keybinding target).
 
@@ -169,17 +169,19 @@ configured bar thickness; every module renders along one axis using `bar_h`/`coo
 accordingly.
 
 **The stat modules read out as a glyph with the number beside it, not a
-label.** `cpu`, `memory`, `brightness`, `volume` and `battery` are
+label.** `cpu`, `memory`, `brightness`, `volume`, `wifi` and `battery` are
 `IconStat` implementations: each names a cce-icons glyph, the bare number
 and a color, and `IconReadout` draws the glyph (tinted that color, at
 `module { icon_alpha }`) with the number `module { icon_gap }` to its right
 — no unit symbol, since the glyph IS the unit ("87" beside the battery, not
 "Bat 87%"). **The launcher runs them as ONE segment**, `stats`
 (`StatsModule`): every readout in a single bubble, `module { icon_spacing }`
-apart, in the order cpu, memory, brightness, volume, battery — the order the
-compositor's `RIGHT_ORDER` gave the five separate segments, and `stats` has
+apart, in the order cpu, memory, brightness, volume, wifi, battery — the
+order the compositor's `RIGHT_ORDER` gave the five separate segments, with
+wifi (added 2026-10-02, after that order) beside volume, and `stats` has
 its own slot there between `tray` and `clock` (cce-window-manager
-2026-09-16). The five single names stay valid `--module` values for a bar
+2026-09-16). `RIGHT_ORDER` has no `wifi`, so a lone `--module wifi` segment
+sorts last, past the clock. The single names stay valid `--module` values for a bar
 that wants them apart; a blanket `impl<T: IconStat> StatusModule for T`
 lays a lone readout out through the same `readouts_width` /
 `render_readouts` the combined segment uses. (Superimposing the number on a
@@ -187,8 +189,11 @@ ghosted glyph, with a bold weight and a dark pocket under the digits, was
 tried first on 2026-09-16 and replaced the same day by the side-by-side
 form; `icon_weight` survives as an opt-in, the pocket is gone.) The muted
 sink swaps to `volume-muted`, the charging battery to `battery-charging`;
-the battery also keeps its accent color while charging or under 10%. A
-reader with nothing (no battery, no backlight, no pactl) returns `None`
+the battery also keeps its accent color while charging or under 10%. Wifi
+is the link's signal strength, and a disconnected adapter reads like a
+muted sink: `wifi-off`, dimmed, no number. A
+reader with nothing (no battery, no backlight, no pactl, no wireless
+adapter) returns `None`
 and drops out of the row — a lone module with nothing has width 0, i.e. it
 is hidden rather than an empty bubble; a reader that answers without a
 number (cpu with no /proc/stat, a sink with no level) draws the glyph
@@ -235,9 +240,13 @@ listen to tray D-Bus, etc.:
   topics ends in `unreachable!()` — adding a subscription means adding its arm
   first. (The old `viewport` topic is gone with the viewport-tag feature.)
 - **System stats** (`spawn_system_stats`): `/proc/stat`, `/proc/meminfo`,
-  `/sys/class/power_supply/BAT*`, `/sys/class/backlight`, and `pactl` for volume/mute.
+  `/sys/class/power_supply/BAT*`, `/sys/class/backlight`, `pactl` for volume/mute,
+  and `/sys/class/net/*/wireless` + `/proc/net/wireless` for wifi (`read_wifi`:
+  the link is connected when its `operstate` is `up`, and the quality column is
+  on cfg80211's 0..=70 scale, so 70 is 100%).
   `SystemStats` carries numbers (`cpu_pct`, `memory`, `battery: (capacity,
-  charging)`, `volume: (level, muted)`, `brightness`), each `Option` where
+  charging)`, `volume: (level, muted)`, `brightness`, `wifi: (signal,
+  connected)`), each `Option` where
   the source can be absent; only the clock arrives pre-formatted. The loop is
   once a second, which is fine for a clock or a load average and far too slow
   for the two values a KEYPRESS moves — so the backlight and the sink have a

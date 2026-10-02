@@ -14,7 +14,7 @@ pub(crate) use listeners::*;
 pub(crate) use stats::*;
 pub(crate) use tray::*;
 
-use modules::{StatusModule, WindowModule, ClockModule, BatteryModule, VolumeModule, BrightnessModule, MemoryModule, CpuModule, StatsModule, TrayModule, LightSourceModule};
+use modules::{StatusModule, WindowModule, ClockModule, BatteryModule, VolumeModule, BrightnessModule, MemoryModule, CpuModule, WifiModule, StatsModule, TrayModule, LightSourceModule};
 
 use std::collections::HashMap;
 use cce_ui::cosmic_text::{
@@ -71,6 +71,9 @@ pub struct SystemStats {
     pub volume: Option<(Option<u32>, bool)>,
     /// Backlight level as a whole percentage; `None` without a backlight.
     pub brightness: Option<i32>,
+    /// `(signal %, connected)`; `None` without a wireless interface. The
+    /// signal is `None` while disconnected.
+    pub wifi: Option<(Option<u8>, bool)>,
 }
 
 /// A bundled cce-icons glyph placed in the bar: `image` is the tinted
@@ -103,11 +106,12 @@ fn stats_signature(module: Option<&str>, s: &SystemStats) -> Option<String> {
         Some("battery") => Some(format!("{:?}", s.battery)),
         Some("volume") => Some(format!("{:?}", s.volume)),
         Some("brightness") => Some(format!("{:?}", s.brightness)),
+        Some("wifi") => Some(format!("{:?}", s.wifi)),
         Some("window") | Some("tray") | Some("light_source") => None,
         // `stats` paints every reader's value; so does an unknown name.
         _ => Some(format!(
-            "{}|{:?}|{:?}|{:?}|{:?}|{:?}",
-            s.clock, s.memory, s.cpu_pct, s.battery, s.volume, s.brightness
+            "{}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
+            s.clock, s.memory, s.cpu_pct, s.battery, s.volume, s.brightness, s.wifi
         )),
     }
 }
@@ -120,7 +124,7 @@ fn stats_signature(module: Option<&str>, s: &SystemStats) -> Option<String> {
 fn paints_stat(module: Option<&str>, field: &str) -> bool {
     match module {
         // The other single-stat modules; stats-blind modules.
-        Some("clock") | Some("cpu") | Some("memory") | Some("battery") => false,
+        Some("clock") | Some("cpu") | Some("memory") | Some("battery") | Some("wifi") => false,
         Some("window") | Some("tray") | Some("light_source") => false,
         Some("brightness") => field == "brightness",
         Some("volume") => field == "volume",
@@ -1329,6 +1333,7 @@ impl cce_ui::engine::Application for StatusApp {
             "brightness" => Box::new(BrightnessModule),
             "volume" => Box::new(VolumeModule),
             "battery" => Box::new(BatteryModule),
+            "wifi" => Box::new(WifiModule),
             "stats" => Box::new(StatsModule),
             "clock" => Box::new(ClockModule),
             "light_source" => Box::new(LightSourceModule),
@@ -1353,7 +1358,7 @@ impl cce_ui::engine::Application for StatusApp {
             tokio::spawn(spawn_status_tray(sender.clone()));
         }
         let has_stats = selected_module.as_ref().map_or(true, |(name, _)| {
-            name == "stats" || name == "cpu" || name == "memory" || name == "brightness" || name == "volume" || name == "battery" || name == "clock"
+            name == "stats" || name == "cpu" || name == "memory" || name == "brightness" || name == "volume" || name == "battery" || name == "wifi" || name == "clock"
         });
         if has_stats {
             tokio::spawn(spawn_system_stats(sender.clone()));
@@ -2152,7 +2157,7 @@ fn main() {
             let mut sigterm = signal(SignalKind::terminate()).expect("SIGTERM");
             
             // `stats` is the combined readout segment (cpu, memory,
-            // brightness, volume, battery in one bubble); the five single
+            // brightness, volume, wifi, battery in one bubble); the six single
             // names remain valid `--module` values but are not launched.
             let modules = vec!["window", "tray", "stats", "clock", "light_source"];
             let current_exe = std::env::current_exe().unwrap_or_else(|_| {
@@ -2561,6 +2566,7 @@ mod tests {
             battery: Some((1, false)),
             volume: Some((Some(10), false)),
             brightness: Some(10),
+            wifi: Some((Some(80), true)),
         };
         for field in ["brightness", "volume"] {
             for module in [
@@ -2572,6 +2578,7 @@ mod tests {
                 Some("cpu"),
                 Some("memory"),
                 Some("battery"),
+                Some("wifi"),
                 Some("window"),
                 Some("tray"),
                 Some("light_source"),
@@ -2604,5 +2611,20 @@ mod tests {
         assert!(!is_sink_event("Event 'change' on sink-input #34"));
         assert!(!is_sink_event("Event 'new' on source-output #7"));
         assert!(!is_sink_event(""));
+    }
+
+    /// The signal is read off the interface's own row, the quality column's
+    /// trailing dot and all, on cfg80211's 0..=70 scale; the two header rows
+    /// and other interfaces' rows are not mistaken for it.
+    #[test]
+    fn wifi_signal_reads_the_interfaces_quality() {
+        let table = "Inter-| sta-|   Quality        |   Discarded packets               | Missed | WE\n \
+                      face | tus | link level noise |  nwid  crypt   frag  retry   misc | beacon | 22\n \
+                     wlan1: 0000   35.  -75.  -256        0      0      0      0      0        0\n\
+                     wlp0s20f3: 0000   63.  -47.  -256        0      0      0      0      2        0\n";
+        assert_eq!(stats::wifi_signal(table, "wlp0s20f3"), Some(90));
+        assert_eq!(stats::wifi_signal(table, "wlan1"), Some(50));
+        assert_eq!(stats::wifi_signal(table, "wlan0"), None);
+        assert_eq!(stats::wifi_signal("", "wlp0s20f3"), None);
     }
 }

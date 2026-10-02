@@ -87,6 +87,51 @@ pub(crate) fn read_brightness() -> Option<i32> {
     None
 }
 
+/// The top of the link-quality scale in `/proc/net/wireless`. cfg80211
+/// synthesizes the wireless-extensions stats for every mac80211 driver as
+/// `signal dBm + 110`, clamped to 0..=70, so 70 is the full-strength value
+/// on any modern adapter.
+const WIFI_QUALITY_MAX: f32 = 70.0;
+
+/// The Wi-Fi link as `(signal %, connected)`; `None` on a machine without a
+/// wireless interface, which hides the readout. With several adapters, a
+/// connected one wins over a disconnected one, then the stronger signal.
+/// The signal is `None` when the link is up but `/proc/net/wireless` has no
+/// quality for it.
+pub(crate) fn read_wifi() -> Option<(Option<u8>, bool)> {
+    let proc = std::fs::read_to_string("/proc/net/wireless").unwrap_or_default();
+    let mut best: Option<(Option<u8>, bool)> = None;
+    for entry in std::fs::read_dir("/sys/class/net").ok()?.flatten() {
+        let path = entry.path();
+        if !path.join("wireless").exists() && !path.join("phy80211").exists() {
+            continue;
+        }
+        let iface = entry.file_name().to_string_lossy().into_owned();
+        let connected = std::fs::read_to_string(path.join("operstate"))
+            .is_ok_and(|s| s.trim() == "up");
+        let signal = connected.then(|| wifi_signal(&proc, &iface)).flatten();
+        let cand = (signal, connected);
+        if best.is_none_or(|b| (cand.1, cand.0) > (b.1, b.0)) {
+            best = Some(cand);
+        }
+    }
+    best
+}
+
+/// `iface`'s link quality from `/proc/net/wireless` as a whole percentage.
+/// The table's rows are `  wlp0s20f3: 0000   63.  -47.  -256 ...` — the
+/// interface, a status word, then the quality with a trailing dot.
+pub(crate) fn wifi_signal(proc_net_wireless: &str, iface: &str) -> Option<u8> {
+    proc_net_wireless.lines().find_map(|line| {
+        let (name, rest) = line.split_once(':')?;
+        if name.trim() != iface {
+            return None;
+        }
+        let qual: f32 = rest.split_whitespace().nth(1)?.trim_end_matches('.').parse().ok()?;
+        Some((qual / WIFI_QUALITY_MAX * 100.0).round().clamp(0.0, 100.0) as u8)
+    })
+}
+
 /// The default sink's `(level %, muted)`; `None` when pactl is unavailable
 /// or fails. The level is `None` when pactl answered without a percentage.
 pub(crate) async fn read_volume() -> Option<(Option<u32>, bool)> {
@@ -147,6 +192,7 @@ pub(crate) fn get_initial_stats() -> SystemStats {
         battery: read_battery_details(),
         volume: pollster::block_on(read_volume()),
         brightness: read_brightness(),
+        wifi: read_wifi(),
     }
 }
 
@@ -179,6 +225,7 @@ pub(crate) async fn spawn_system_stats(sender: calloop::channel::Sender<CustomEv
             battery: read_battery_details(),
             volume: read_volume().await,
             brightness: read_brightness(),
+            wifi: read_wifi(),
         };
         log::debug!("[spawn_system_stats] stats: {:?}", stats);
         let _ = sender.send(CustomEvent::SystemStatsUpdated(stats));
