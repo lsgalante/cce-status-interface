@@ -180,8 +180,8 @@ apart, in the order cpu, memory, brightness, volume, wifi, battery — the
 order the compositor's `RIGHT_ORDER` gave the five separate segments, with
 wifi (added 2026-10-02, after that order) beside volume, and `stats` has
 its own slot there between `tray` and `clock` (cce-window-manager
-2026-09-16). `RIGHT_ORDER` has no `wifi`, so a lone `--module wifi` segment
-sorts last, past the clock. The single names stay valid `--module` values for a bar
+2026-09-16; `wifi` joined it between `volume` and `battery` in
+cce-window-manager@1279fc5). The single names stay valid `--module` values for a bar
 that wants them apart; a blanket `impl<T: IconStat> StatusModule for T`
 lays a lone readout out through the same `readouts_width` /
 `render_readouts` the combined segment uses. (Superimposing the number on a
