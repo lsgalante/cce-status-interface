@@ -13,13 +13,14 @@ and the `cce-ui` toolkit this app is built on. This crate is deliberately small:
 `src/config.rs` (pointer-first config readers), `src/tray.rs` (SNI host),
 `src/cloud.rs` (menu page building), `src/stats.rs` (system stat readers —
 numbers, not strings; the modules do the formatting), `src/icons.rs` (tinted
-cce-icons glyph textures), `src/listeners.rs` (status/switcher socket tasks).
+cce-icons glyph textures), `src/listeners.rs` (status/switcher socket tasks),
+`src/osd.rs` (the volume/brightness slider).
 
 ## Build, test, run
 
 ```sh
 cargo build --release                 # standalone build (or `-p cce-status-interface` from the workspace root)
-cargo test                            # 38 tests: main.rs (parsers, droplet geometry), config.rs, tray.rs, the tray bridge's x11.rs and title.rs
+cargo test                            # 42 tests: main.rs (parsers, droplet geometry), config.rs, tray.rs, osd.rs, the tray bridge's x11.rs and title.rs
 make install                          # release build, then `ccebuild install --no-build cce-status-interface`
 ```
 
@@ -109,7 +110,7 @@ test bar and bridge never reach the live session's bus.
 
 ## Process model (the most important thing to know)
 
-One binary, three modes, selected by CLI args in `main()`:
+One binary, four modes, selected by CLI args in `main()`:
 
 - **No args — launcher daemon.** Spawns one child process per module
   (`--module window`, `--module clock`, …), polls every 500ms and restarts crashed
@@ -121,6 +122,8 @@ One binary, three modes, selected by CLI args in `main()`:
   `light_source` (the daemon launches `stats`, not the six it combines).
 - **`--trigger-switcher`** — one-shot: writes `trigger` to the switcher socket of the
   running instance and exits (used as a keybinding target).
+- **`--osd <level>`** — the volume/brightness slider (below). Started by the
+  launcher daemon, never supervised: it exits on its own.
 
 (The old `--monolithic` all-modules-in-one-window mode is gone, along with the
 app-side super+drag module reordering that only made sense there.)
@@ -135,6 +138,37 @@ right. **`light_source` is the exception**: it short-circuits ahead of all of
 that and takes its side from `/window_manager/light_source_position` — the
 angle points at a side — so a `layout { status_bar light_source=… }` entry is
 read and then ignored, which looks like the key not working.
+
+## The volume/brightness slider (`osd.rs`)
+
+A transient bubble — glyph, track, number — that appears when either level
+moves and leaves `osd { timeout_ms }` (1500) after the last change. It is a
+layer-shell surface on the **OVERLAY** layer, which the compositor stacks
+above `layers.fullscreen`, so it shows over fullscreen games and video where
+the bar is hidden. Keyboard interactivity is `None` (a fullscreen window
+must never yield focus to it) and the input region is empty (clicks pass
+through).
+
+- **Trigger**: the launcher daemon runs `spawn_level_watchers` — the same
+  fast path the readouts use, now taking a callback (`LevelChange`) instead
+  of a calloop sender — so a key, `brightnessctl` in a terminal or a mixer
+  all show it. Each change is forwarded as one line (`brightness 40`,
+  `volume 55 0`, `volume - 1`) to the slider's instance socket
+  (`/tmp/cce-status-osd-<display>.sock`, `cce_ui::ipc::instance`), or, with
+  nothing listening, `--osd <line>` is spawned. Queued changes collapse to
+  the newest.
+- **It exits rather than hides**: a mapped surface, even fully transparent,
+  keeps a fullscreen window off direct scanout. It gives up its socket
+  BEFORE the close fade, so a change during the fade starts a fresh slider
+  instead of being answered and dropped.
+- Looks: the bar's `module { }` box (droplet, bevel or plain), colors, font
+  and glyphs, scaled by `osd { height }` (default 1.5 × bar height) over
+  the bar height. `osd { width position margin }` place it (`"bottom"`
+  default, `"top"`, `"center"`; margin from that edge, default 96);
+  `osd { enabled false }` turns it off. Muted reads in `disabled_color`.
+- Verify in a shadow by running `--osd volume 55 0` directly (export
+  `CCE_ICONS_DIR`), or the launcher plus a real level change — the watchers
+  read the machine's real backlight and sink, which the shadow shares.
 
 ## Rendering
 

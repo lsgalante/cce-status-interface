@@ -250,23 +250,48 @@ const VOLUME_COALESCE_MS: u64 = 30;
 /// next [`spawn_system_stats`] tick, which is a full second at worst — long
 /// enough that the number visibly lags the key. The one-second poll still
 /// reads both, so it remains the safety net if either watcher cannot run.
-pub(crate) async fn spawn_level_watchers(sender: calloop::channel::Sender<CustomEvent>) {
-    tokio::spawn(watch_brightness(sender.clone()));
-    tokio::spawn(watch_volume(sender));
+///
+/// Each change goes to `emit`: the bar turns it into a one-field
+/// `CustomEvent`, and the launcher daemon into the volume/brightness slider
+/// (`osd.rs`).
+pub(crate) async fn spawn_level_watchers<F>(emit: F)
+where
+    F: Fn(LevelChange) + Clone + Send + Sync + 'static,
+{
+    tokio::spawn(watch_brightness(emit.clone()));
+    tokio::spawn(watch_volume(emit));
+}
+
+/// One value moved by the fast path ([`spawn_level_watchers`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum LevelChange {
+    /// Backlight level %, `None` without a backlight.
+    Brightness(Option<i32>),
+    /// The default sink's `(level %, muted)`, `None` when pactl is unavailable.
+    Volume(Option<(Option<u32>, bool)>),
+}
+
+impl From<LevelChange> for CustomEvent {
+    fn from(change: LevelChange) -> Self {
+        match change {
+            LevelChange::Brightness(b) => CustomEvent::BrightnessUpdated(b),
+            LevelChange::Volume(v) => CustomEvent::VolumeUpdated(v),
+        }
+    }
 }
 
 /// Poll `/sys/class/backlight` and push every change. `brightnessctl` writes
 /// the sysfs attribute directly (see the compositor's media-key bindings), so
 /// there is nothing to subscribe to — but the read is two small files, and
 /// only a moved value is sent.
-async fn watch_brightness(sender: calloop::channel::Sender<CustomEvent>) {
+async fn watch_brightness(emit: impl Fn(LevelChange)) {
     let mut last = read_brightness();
     loop {
         tokio::time::sleep(std::time::Duration::from_millis(BRIGHTNESS_POLL_MS)).await;
         let cur = read_brightness();
         if cur != last {
             last = cur;
-            let _ = sender.send(CustomEvent::BrightnessUpdated(cur));
+            emit(LevelChange::Brightness(cur));
         }
     }
 }
@@ -279,11 +304,11 @@ async fn watch_brightness(sender: calloop::channel::Sender<CustomEvent>) {
 /// A subscription that ends (no pactl, a sound server restart) is retried
 /// with the same backoff shape the status listener uses, and the one-second
 /// poll covers the gap in the meantime.
-async fn watch_volume(sender: calloop::channel::Sender<CustomEvent>) {
+async fn watch_volume(emit: impl Fn(LevelChange)) {
     let mut last = read_volume().await;
     let mut retry_s = 1u64;
     loop {
-        match volume_subscription(&sender, &mut last).await {
+        match volume_subscription(&emit, &mut last).await {
             // A subscription that delivered something was working; a fresh
             // failure after it should start over at the short delay.
             Ok(true) => retry_s = 1,
@@ -298,7 +323,7 @@ async fn watch_volume(sender: calloop::channel::Sender<CustomEvent>) {
 /// One run of `pactl subscribe`, ending when the process does. `Ok(true)`
 /// means it delivered at least one event we acted on.
 async fn volume_subscription(
-    sender: &calloop::channel::Sender<CustomEvent>,
+    emit: &impl Fn(LevelChange),
     last: &mut Option<(Option<u32>, bool)>,
 ) -> std::io::Result<bool> {
     use tokio::io::{AsyncBufReadExt, BufReader};
@@ -353,7 +378,7 @@ async fn volume_subscription(
         let cur = read_volume().await;
         if cur != *last {
             *last = cur;
-            let _ = sender.send(CustomEvent::VolumeUpdated(cur));
+            emit(LevelChange::Volume(cur));
         }
     }
     let _ = child.wait().await;

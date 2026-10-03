@@ -3,6 +3,7 @@ mod config;
 mod icons;
 mod listeners;
 mod modules;
+mod osd;
 mod stats;
 mod tray;
 
@@ -1369,7 +1370,10 @@ impl cce_ui::engine::Application for StatusApp {
         if paints_stat(selected_module.as_ref().map(|(n, _)| n.as_str()), "brightness")
             || paints_stat(selected_module.as_ref().map(|(n, _)| n.as_str()), "volume")
         {
-            tokio::spawn(spawn_level_watchers(sender.clone()));
+            let sender = sender.clone();
+            tokio::spawn(spawn_level_watchers(move |change| {
+                let _ = sender.send(change.into());
+            }));
         }
 
         let font_system = cce_ui::create_font_system();
@@ -2146,6 +2150,11 @@ fn main() {
         return;
     }
 
+    if args.len() > 1 && args[1] == "--osd" {
+        osd::main(&args[2..]);
+        return;
+    }
+
     let has_module = args.iter().any(|arg| arg == "--module");
 
     if !has_module {
@@ -2186,6 +2195,10 @@ fn main() {
                     .arg(module)
                     .spawn()
             };
+
+            // The volume/brightness slider is not a supervised module: it
+            // is started per change and exits on its own (`osd.rs`).
+            osd::spawn_trigger(current_exe.clone()).await;
 
             let mut supervised: std::collections::HashMap<String, Supervised> = std::collections::HashMap::new();
 
