@@ -20,7 +20,7 @@ cce-icons glyph textures), `src/listeners.rs` (status/switcher socket tasks),
 
 ```sh
 cargo build --release                 # standalone build (or `-p cce-status-interface` from the workspace root)
-cargo test                            # 42 tests: main.rs (parsers, droplet geometry), config.rs, tray.rs, osd.rs, the tray bridge's x11.rs and title.rs
+cargo test                            # 46 tests: main.rs (parsers, droplet geometry), config.rs, tray.rs, osd.rs, the tray bridge's x11.rs and title.rs
 make install                          # release build, then `ccebuild install --no-build cce-status-interface`
 ```
 
@@ -161,11 +161,21 @@ through).
   keeps a fullscreen window off direct scanout. It gives up its socket
   BEFORE the close fade, so a change during the fade starts a fresh slider
   instead of being answered and dropped.
+- **Placement** is worked out once, at startup (`placement`,
+  `beside_segment`): by default (`osd { position "status" }`) it sits beside
+  the `stats` segment — else the lone `volume`/`brightness` one — read from
+  `ccectl windows --json`, centered on it and `module { spacing }` away:
+  below a segment in the top half of its output, above one in the bottom
+  half, clamped on screen. The rect is converted to margins on the output
+  it lies in (`ccectl outputs --json`), but the layer surface is created
+  with no output, so on a multi-monitor setup the compositor's choice of
+  output must be the segment's for it to line up. `"top"`/`"bottom"`/
+  `"center"` center it on the screen instead, `osd { margin }` (96) from
+  that edge; an unlisted segment falls back to `"bottom"`.
 - Looks: the bar's `module { }` box (droplet, bevel or plain), colors, font
   and glyphs, scaled by `osd { height }` (default 1.5 × bar height) over
-  the bar height. `osd { width position margin }` place it (`"bottom"`
-  default, `"top"`, `"center"`; margin from that edge, default 96);
-  `osd { enabled false }` turns it off. Muted reads in `disabled_color`.
+  the bar height; `osd { width }` (260). `osd { enabled false }` turns it
+  off. Muted reads in `disabled_color`.
 - Verify in a shadow by running `--osd volume 55 0` directly (export
   `CCE_ICONS_DIR`), or the launcher plus a real level change — the watchers
   read the machine's real backlight and sink, which the shadow shares.

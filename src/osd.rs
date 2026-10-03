@@ -23,7 +23,7 @@
 //!   The compositor's close fade dissolves it on the way out.
 //!
 //! Config, in the app's own `config.kdl` beside `module { }`:
-//! `osd { timeout_ms 1500 width 260 height <1.5 × bar> position "bottom" margin 96 }`
+//! `osd { timeout_ms 1500 width 260 height <1.5 × bar> position "status" margin 96 }`
 //! and `osd { enabled false }` to turn it off. The box, colors, font, glyphs
 //! and droplet style are the bar's `module { }` keys, so the slider reads as
 //! one of its readouts grown up.
@@ -107,6 +107,14 @@ impl Level {
         matches!(self, Level::Volume { muted: true, .. })
     }
 
+    /// The bar module that reads this level out on its own.
+    fn module(self) -> &'static str {
+        match self {
+            Level::Brightness(_) => "brightness",
+            Level::Volume { .. } => "volume",
+        }
+    }
+
     fn icon(self) -> &'static str {
         match self {
             Level::Brightness(_) => "brightness",
@@ -147,20 +155,83 @@ fn size() -> (u32, u32) {
     (w.round() as u32, h.round() as u32)
 }
 
-/// `osd { position "bottom"|"top"|"center" margin 96 }` — horizontally
-/// centered either way; `margin` is the gap from the chosen screen edge.
-fn placement() -> (LayerAnchor, (i32, i32, i32, i32)) {
+/// A layer surface's anchor plus its (top, right, bottom, left) margins.
+type Placement = (LayerAnchor, (i32, i32, i32, i32));
+
+/// `osd { position "status"|"bottom"|"top"|"center" margin 96 }`.
+///
+/// `"status"`, the default, puts the slider beside the bar segment showing
+/// the level — `stats`, else the lone `volume`/`brightness` readout — one
+/// `module { spacing }` away: below it on a top bar, above it on a bottom
+/// one, centered on it and kept on screen. The others center the slider
+/// horizontally, `margin` from the chosen screen edge; a segment the
+/// compositor does not list falls back to `"bottom"`.
+fn placement(level: Level, (w, h): (u32, u32)) -> Placement {
     let margin = cfg_f32("/osd/margin").unwrap_or(96.0).max(0.0) as i32;
     let position = crate::get_cached_config()
         .pointer("/osd/position")
         .and_then(|v| v.as_str())
-        .unwrap_or("bottom")
+        .unwrap_or("status")
         .to_string();
     match position.as_str() {
-        "top" => (LayerAnchor::TOP, (margin, 0, 0, 0)),
-        "center" => (LayerAnchor::empty(), (0, 0, 0, 0)),
-        _ => (LayerAnchor::BOTTOM, (0, 0, margin, 0)),
+        "top" => return (LayerAnchor::TOP, (margin, 0, 0, 0)),
+        "center" => return (LayerAnchor::empty(), (0, 0, 0, 0)),
+        "bottom" => return (LayerAnchor::BOTTOM, (0, 0, margin, 0)),
+        _ => {}
     }
+    let ccectl = |args: &[&str]| {
+        std::process::Command::new(crate::get_ccectl_cmd())
+            .args(args)
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default()
+    };
+    let gap = crate::read_status_module_spacing_from_config().round() as i32;
+    beside_segment(
+        &ccectl(&["windows", "--json"]),
+        &ccectl(&["outputs", "--json"]),
+        &["stats", level.module()],
+        (w as i32, h as i32),
+        gap,
+    )
+    .unwrap_or_else(|| {
+        log::warn!("[osd] no {} segment listed — placing the slider at the bottom", level.module());
+        (LayerAnchor::BOTTOM, (0, 0, margin, 0))
+    })
+}
+
+/// [`placement`]'s `"status"` geometry, from `ccectl windows --json` and
+/// `ccectl outputs --json` (one JSON object per line each). The segment is
+/// the first of `modules` the compositor lists, matched by the app_id's
+/// `-<module>` suffix so both prefixes and either side match. Its rect is in
+/// layout coordinates and a layer surface's margins are output-relative, so
+/// it is taken relative to the output it sits on.
+fn beside_segment(windows: &str, outputs: &str, modules: &[&str], (w, h): (i32, i32), gap: i32) -> Option<Placement> {
+    let objects = |text: &str| -> Vec<serde_json::Value> {
+        text.lines().filter_map(|l| serde_json::from_str(l).ok()).collect()
+    };
+    let int = |v: &serde_json::Value, k: &str| v.get(k).and_then(|x| x.as_i64()).map(|x| x as i32);
+    let windows = objects(windows);
+    let segment = modules.iter().find_map(|module| {
+        let suffix = format!("-{module}");
+        windows.iter().find(|v| {
+            v.get("app_id")
+                .and_then(|a| a.as_str())
+                .is_some_and(|a| a.starts_with("cce-status") && a.ends_with(&suffix))
+        })
+    })?;
+    let (sx, sy, sw, sh) = (int(segment, "x")?, int(segment, "y")?, int(segment, "w")?, int(segment, "h")?);
+    let (cx, cy) = (sx + sw / 2, sy + sh / 2);
+    let output = objects(outputs).into_iter().find(|o| {
+        let (Some(ox), Some(oy), Some(ow), Some(oh)) = (int(o, "x"), int(o, "y"), int(o, "logical_w"), int(o, "logical_h")) else {
+            return false;
+        };
+        (ox..ox + ow).contains(&cx) && (oy..oy + oh).contains(&cy)
+    })?;
+    let (ox, oy, ow, oh) = (int(&output, "x")?, int(&output, "y")?, int(&output, "logical_w")?, int(&output, "logical_h")?);
+    let left = (cx - ox - w / 2).clamp(0, (ow - w).max(0));
+    let top = if cy - oy < oh / 2 { sy - oy + sh + gap } else { sy - oy - gap - h };
+    Some((LayerAnchor::TOP | LayerAnchor::LEFT, (top.clamp(0, (oh - h).max(0)), 0, 0, left)))
 }
 
 // ---------------------------------------------------------------- trigger
@@ -256,6 +327,9 @@ pub(crate) struct OsdApp {
     seen_renderer: bool,
     width: u32,
     height: u32,
+    /// Where the surface goes, worked out once at startup: a slider that
+    /// is already up stays put while its level changes.
+    placement: Placement,
 }
 
 impl OsdApp {
@@ -290,6 +364,7 @@ impl cce_ui::engine::Application for OsdApp {
             Some("ok".into())
         });
         let (width, height) = size();
+        let placement = placement(level, (width, height));
         let mut app = Self {
             level,
             // Opens already at the level: the slider is news only once it is
@@ -301,6 +376,7 @@ impl cce_ui::engine::Application for OsdApp {
             seen_renderer: false,
             width,
             height,
+            placement,
         };
         app.arm_hide();
         app
@@ -318,7 +394,7 @@ impl cce_ui::engine::Application for OsdApp {
     }
 
     fn layer(&self) -> Option<LayerSettings> {
-        let (anchor, margin) = placement();
+        let (anchor, margin) = self.placement;
         Some(LayerSettings {
             layer: LayerKind::Overlay,
             anchor,
@@ -525,6 +601,46 @@ mod tests {
         assert_eq!(Level::from_change(LevelChange::Brightness(None)), None);
         assert_eq!(Level::from_change(LevelChange::Volume(None)), None);
         assert_eq!(Level::from_change(LevelChange::Brightness(Some(40))), Some(Level::Brightness(40)));
+    }
+
+    const OUTPUT: &str = r#"{"logical_h":1200,"logical_w":1920,"name":"eDP-1","x":0,"y":0}"#;
+
+    #[test]
+    fn the_slider_hangs_centered_under_a_top_bar_stats_segment() {
+        let windows = concat!(
+            r#"{"app_id":"cce-status-interface-right-tray","x":1087,"y":0,"w":116,"h":27}"#, "\n",
+            r#"{"app_id":"cce-status-interface-right-stats","x":1215,"y":0,"w":359,"h":27}"#, "\n",
+            r#"{"app_id":"cce-terminal","x":0,"y":0,"w":1920,"h":1200}"#, "\n",
+        );
+        let (anchor, margin) = beside_segment(windows, OUTPUT, &["stats", "volume"], (260, 40), 12).unwrap();
+        assert_eq!(anchor, LayerAnchor::TOP | LayerAnchor::LEFT);
+        // Centered on 1215 + 359/2 = 1394; 12 below the 27px strip.
+        assert_eq!(margin, (39, 0, 0, 1394 - 130));
+    }
+
+    #[test]
+    fn on_a_bottom_bar_it_sits_above_and_stays_on_screen() {
+        let windows = r#"{"app_id":"cce-status-left-volume","x":1880,"y":1173,"w":40,"h":27}"#;
+        let (_, (top, _, _, left)) = beside_segment(windows, OUTPUT, &["stats", "volume"], (260, 40), 12).unwrap();
+        assert_eq!(top, 1173 - 12 - 40);
+        assert_eq!(left, 1920 - 260);
+    }
+
+    #[test]
+    fn margins_are_relative_to_the_segments_output() {
+        let outputs = concat!(
+            r#"{"logical_h":1200,"logical_w":1920,"x":0,"y":0}"#, "\n",
+            r#"{"logical_h":1080,"logical_w":1920,"x":1920,"y":0}"#, "\n",
+        );
+        let windows = r#"{"app_id":"cce-status-right-stats","x":3000,"y":0,"w":200,"h":27}"#;
+        let (_, (_, _, _, left)) = beside_segment(windows, outputs, &["stats"], (260, 40), 12).unwrap();
+        assert_eq!(left, 3100 - 1920 - 130);
+    }
+
+    #[test]
+    fn no_listed_segment_means_no_placement() {
+        let windows = r#"{"app_id":"cce-status-right-clock","x":1586,"y":0,"w":322,"h":27}"#;
+        assert_eq!(beside_segment(windows, OUTPUT, &["stats", "volume"], (260, 40), 12), None);
     }
 
     #[test]
