@@ -196,47 +196,108 @@ pub(crate) fn get_initial_stats() -> SystemStats {
     }
 }
 
-pub(crate) async fn spawn_system_stats(sender: calloop::channel::Sender<CustomEvent>) {
+/// Does `module` paint `field` — one of the [`SystemStats`] field names?
+/// The same split as `stats_signature`: a single-stat module reads its own
+/// field, the combined `stats` bar (or an unknown name) reads them all.
+pub(crate) fn module_reads(module: Option<&str>, field: &str) -> bool {
+    match module {
+        Some("window") | Some("tray") | Some("light_source") => false,
+        Some(m @ ("clock" | "cpu" | "memory" | "battery" | "volume" | "brightness" | "wifi")) => m == field,
+        _ => true,
+    }
+}
+
+/// A CPU reading moves the bar only by at least this many points, or once
+/// it has been held back for [`CPU_HOLD_S`]. The busy figure jitters by a
+/// point or two every second at rest, and each change redraws the segment
+/// (and the compositor re-bakes the blur behind it).
+const CPU_STEP: u8 = 2;
+const CPU_HOLD_S: u64 = 5;
+
+/// The once-a-second poll. It reads only what `module` paints, and never the
+/// two values the fast path owns when `fast_levels` is set (the backlight and
+/// the sink, [`spawn_level_watchers`]): the bar keeps those from the fast
+/// path, so polling them too only spawned `pactl` twice a second for nothing.
+/// A clock alone wakes once a minute, on the minute — it shows no seconds.
+pub(crate) async fn spawn_system_stats(
+    sender: calloop::channel::Sender<CustomEvent>,
+    module: Option<String>,
+    fast_levels: bool,
+) {
     log::info!("[spawn_system_stats] Starting system stats loop!");
+    let module = module.as_deref();
+    let reads = |field: &str| module_reads(module, field);
+    let read_volume_here = reads("volume") && !fast_levels;
+    let read_brightness_here = reads("brightness") && !fast_levels;
+    let clock_only = ["memory", "cpu", "battery", "volume", "brightness", "wifi"]
+        .iter()
+        .all(|f| !reads(f));
+
     let mut last_cpu = read_cpu_ticks().unwrap_or((0, 0));
+    let mut shown_cpu: Option<u8> = Some(0);
+    let mut shown_cpu_at = std::time::Instant::now();
     loop {
         log::debug!("[spawn_system_stats] loop iteration start");
         let clock = chrono::Local::now().format("%A, %B %d, %Y %I:%M %p").to_string();
-        let memory = read_memory_usage();
-        
-        let cpu_pct = if let Some(current_cpu) = read_cpu_ticks() {
-            let total_diff = current_cpu.0 - last_cpu.0;
-            let idle_diff = current_cpu.1 - last_cpu.1;
-            last_cpu = current_cpu;
-            if total_diff > 0 {
-                let usage = 100.0 - (idle_diff as f32 * 100.0 / total_diff as f32);
-                Some(usage.round().clamp(0.0, 100.0) as u8)
-            } else {
-                Some(0)
+
+        let cpu_pct = if reads("cpu") {
+            let sample = read_cpu_ticks().map(|current_cpu| {
+                let total_diff = current_cpu.0 - last_cpu.0;
+                let idle_diff = current_cpu.1 - last_cpu.1;
+                last_cpu = current_cpu;
+                if total_diff > 0 {
+                    let usage = 100.0 - (idle_diff as f32 * 100.0 / total_diff as f32);
+                    usage.round().clamp(0.0, 100.0) as u8
+                } else {
+                    0
+                }
+            });
+            let moved = match (sample, shown_cpu) {
+                (Some(new), Some(old)) => {
+                    new.abs_diff(old) >= CPU_STEP
+                        || (new != old && shown_cpu_at.elapsed().as_secs() >= CPU_HOLD_S)
+                }
+                (a, b) => a != b,
+            };
+            if moved {
+                shown_cpu = sample;
+                shown_cpu_at = std::time::Instant::now();
             }
+            shown_cpu
         } else {
             None
         };
 
         let stats = SystemStats {
             clock,
-            memory,
+            memory: if reads("memory") { read_memory_usage() } else { None },
             cpu_pct,
-            battery: read_battery_details(),
-            volume: read_volume().await,
-            brightness: read_brightness(),
-            wifi: read_wifi(),
+            battery: if reads("battery") { read_battery_details() } else { None },
+            volume: if read_volume_here { read_volume().await } else { None },
+            brightness: if read_brightness_here { read_brightness() } else { None },
+            wifi: if reads("wifi") { read_wifi() } else { None },
         };
         log::debug!("[spawn_system_stats] stats: {:?}", stats);
         let _ = sender.send(CustomEvent::SystemStatsUpdated(stats));
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        let wait = if clock_only {
+            until_next_minute(chrono::Local::now())
+        } else {
+            std::time::Duration::from_secs(1)
+        };
+        tokio::time::sleep(wait).await;
     }
 }
 
-/// How often the backlight is re-read on the fast path. Two small sysfs
-/// reads, so the cost is a rounding error next to the once-a-second poll's
-/// two `pactl` processes — and nothing is sent unless the value moved, so an
-/// unchanged backlight never wakes the bar's event loop.
+/// How long until just past the next minute boundary of `now`.
+pub(crate) fn until_next_minute(now: chrono::DateTime<chrono::Local>) -> std::time::Duration {
+    use chrono::Timelike;
+    let into = std::time::Duration::from_secs(now.second() as u64)
+        + std::time::Duration::from_nanos(now.nanosecond().min(999_999_999) as u64);
+    std::time::Duration::from_secs(60).saturating_sub(into) + std::time::Duration::from_millis(50)
+}
+
+/// How often the backlight is re-read when its change notification cannot be
+/// had ([`watch_brightness`]'s fallback).
 const BRIGHTNESS_POLL_MS: u64 = 100;
 
 /// How long a sink event is held before the volume is read, swallowing the
@@ -248,8 +309,10 @@ const VOLUME_COALESCE_MS: u64 = 30;
 /// The fast path for the two values a keypress moves: the backlight and the
 /// default sink. Both reach the bar the moment they change instead of at the
 /// next [`spawn_system_stats`] tick, which is a full second at worst — long
-/// enough that the number visibly lags the key. The one-second poll still
-/// reads both, so it remains the safety net if either watcher cannot run.
+/// enough that the number visibly lags the key. Where these run, the poll no
+/// longer reads either value: each watcher is its own safety net (the volume
+/// one re-reads on every resubscribe, the backlight one falls back to
+/// polling).
 ///
 /// Each change goes to `emit`: the bar turns it into a one-field
 /// `CustomEvent`, and the launcher daemon into the volume/brightness slider
@@ -280,19 +343,75 @@ impl From<LevelChange> for CustomEvent {
     }
 }
 
-/// Poll `/sys/class/backlight` and push every change. `brightnessctl` writes
-/// the sysfs attribute directly (see the compositor's media-key bindings), so
-/// there is nothing to subscribe to — but the read is two small files, and
-/// only a moved value is sent.
-async fn watch_brightness(emit: impl Fn(LevelChange)) {
-    let mut last = read_brightness();
+/// Push every backlight change. The kernel signals `actual_brightness`
+/// (`sysfs_notify`, from `backlight_generate_event`) on every write to
+/// `brightness` — `brightnessctl`, the compositor's media keys, firmware
+/// hotkeys — so a thread blocks in `poll` on it and wakes only then.
+/// Measured on this panel: the notification lands ~20 ms after a write, and
+/// nothing fires at rest. Until 2026-10-05 this re-read the files every
+/// 100 ms, in two processes (the bar's `stats` segment and the launcher's
+/// slider trigger), forever. Polling remains the fallback when the
+/// notification cannot be had.
+async fn watch_brightness(emit: impl Fn(LevelChange) + Send + 'static) {
+    std::thread::Builder::new()
+        .name("backlight-watch".into())
+        .spawn(move || {
+            let mut last = read_brightness();
+            if let Err(e) = brightness_notifications(&emit, &mut last) {
+                log::info!("[watch_brightness] no change notification ({e}); polling");
+            }
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(BRIGHTNESS_POLL_MS));
+                let cur = read_brightness();
+                if cur != last {
+                    last = cur;
+                    emit(LevelChange::Brightness(cur));
+                }
+            }
+        })
+        .ok();
+}
+
+/// Block on the first backlight's `actual_brightness` notification and push
+/// each moved value. Returns only on an error, for the polling fallback.
+fn brightness_notifications(
+    emit: &impl Fn(LevelChange),
+    last: &mut Option<i32>,
+) -> std::io::Result<()> {
+    use std::io::{Read, Seek};
+    use std::os::fd::AsRawFd;
+
+    let dir = std::fs::read_dir("/sys/class/backlight")?
+        .flatten()
+        .map(|e| e.path())
+        .find(|p| p.join("brightness").exists() && p.join("max_brightness").exists())
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no backlight"))?;
+    let mut file = std::fs::File::open(dir.join("actual_brightness"))?;
+    let mut buf = [0u8; 32];
     loop {
-        tokio::time::sleep(std::time::Duration::from_millis(BRIGHTNESS_POLL_MS)).await;
+        // sysfs re-arms the notification on a read from the start.
+        file.seek(std::io::SeekFrom::Start(0))?;
+        let _ = file.read(&mut buf)?;
+        let mut pfd = libc::pollfd { fd: file.as_raw_fd(), events: libc::POLLPRI | libc::POLLERR, revents: 0 };
+        let rc = unsafe { libc::poll(&mut pfd, 1, -1) };
+        if rc < 0 {
+            let err = std::io::Error::last_os_error();
+            if err.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(err);
+        }
+        if pfd.revents & libc::POLLNVAL != 0 {
+            return Err(std::io::Error::other("backlight fd invalid"));
+        }
         let cur = read_brightness();
-        if cur != last {
-            last = cur;
+        if cur != *last {
+            *last = cur;
             emit(LevelChange::Brightness(cur));
         }
+        // A held key writes in a burst; one read per 10 ms is plenty, and it
+        // bounds the loop should the attribute ever stay readable.
+        std::thread::sleep(std::time::Duration::from_millis(10));
     }
 }
 
@@ -369,6 +488,14 @@ async fn volume_subscription(
         }
     });
 
+    // A resubscribe follows a gap in which changes went unseen; nothing else
+    // reads the sink where this runs, so catch up now.
+    let cur = read_volume().await;
+    if cur != *last {
+        *last = cur;
+        emit(LevelChange::Volume(cur));
+    }
+
     let mut delivered = false;
     while rx.recv().await.is_some() {
         // Swallow the rest of the burst, then read once.
@@ -394,4 +521,32 @@ async fn volume_subscription(
 /// playback.
 pub(crate) fn is_sink_event(line: &str) -> bool {
     line.contains(" on sink #") || line.contains(" on server")
+}
+
+#[cfg(test)]
+mod poll_tests {
+    use super::{module_reads, until_next_minute};
+    use chrono::TimeZone;
+
+    #[test]
+    fn a_single_stat_module_reads_only_its_own_field() {
+        assert!(module_reads(Some("clock"), "clock"));
+        assert!(!module_reads(Some("clock"), "volume"));
+        assert!(!module_reads(Some("clock"), "cpu"));
+        assert!(module_reads(Some("cpu"), "cpu"));
+        assert!(!module_reads(Some("cpu"), "memory"));
+        // The combined bar, and a name this build does not know, read all.
+        assert!(module_reads(Some("stats"), "wifi"));
+        assert!(module_reads(None, "battery"));
+        assert!(!module_reads(Some("tray"), "clock"));
+    }
+
+    #[test]
+    fn the_clock_wakes_just_past_the_minute() {
+        let at = |s, ms| chrono::Local.with_ymd_and_hms(2026, 10, 5, 21, 30, s).unwrap()
+            + chrono::Duration::milliseconds(ms);
+        assert_eq!(until_next_minute(at(0, 0)).as_millis(), 60_050);
+        assert_eq!(until_next_minute(at(59, 900)).as_millis(), 150);
+        assert_eq!(until_next_minute(at(30, 0)).as_millis(), 30_050);
+    }
 }

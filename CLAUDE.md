@@ -20,7 +20,7 @@ cce-icons glyph textures), `src/listeners.rs` (status/switcher socket tasks),
 
 ```sh
 cargo build --release                 # standalone build (or `-p cce-status-interface` from the workspace root)
-cargo test                            # 48 tests: main.rs (parsers, droplet geometry, menu glyphs), config.rs, tray.rs, osd.rs, the tray bridge's x11.rs and title.rs
+cargo test                            # 50 tests: main.rs (parsers, droplet geometry, menu glyphs), stats.rs, config.rs, tray.rs, osd.rs, the tray bridge's x11.rs and title.rs
 make install                          # release build, then `ccebuild install --no-build cce-status-interface`
 ```
 
@@ -292,15 +292,23 @@ listen to tray D-Bus, etc.:
   `SystemStats` carries numbers (`cpu_pct`, `memory`, `battery: (capacity,
   charging)`, `volume: (level, muted)`, `brightness`, `wifi: (signal,
   connected)`), each `Option` where
-  the source can be absent; only the clock arrives pre-formatted. The loop is
+  the source can be absent; only the clock arrives pre-formatted. The loop
+  reads only what its segment paints (`module_reads`, the same split as
+  `stats_signature`) — the `clock` segment reads nothing but the time, and
+  wakes once a minute, on the minute. Until 2026-10-05 every stats segment
+  ran the whole poll, two `pactl` spawns included, every second. A CPU
+  reading reaches the bar only when it moves by `CPU_STEP` points or has been
+  held back `CPU_HOLD_S`, so idle jitter does not redraw the segment (and
+  re-bake the compositor's blur behind it) each second. The loop is
   once a second, which is fine for a clock or a load average and far too slow
   for the two values a KEYPRESS moves — so the backlight and the sink have a
   fast path beside it (`spawn_level_watchers`), each pushing its own
   one-field event (`BrightnessUpdated` / `VolumeUpdated`) that patches
-  `stats` in place. `watch_brightness` polls `/sys/class/backlight` every
-  100ms — `brightnessctl` writes the attribute directly, so there is nothing
-  to subscribe to, and two small sysfs reads are cheap enough that the
-  interval is not worth tuning; `watch_volume` follows `pactl subscribe` and
+  `stats` in place. `watch_brightness` blocks in `poll(POLLPRI)` on
+  `actual_brightness`, which the kernel's `backlight_generate_event`
+  `sysfs_notify`s on every write to `brightness` (measured ~20 ms after a
+  `brightnessctl set`, nothing at rest); it falls back to the old 100 ms poll
+  only when that cannot be opened. `watch_volume` follows `pactl subscribe` and
   re-reads only on a `sink`/`server` event (NOT `sink-input`, which fires
   throughout playback, and NOT `client`, which the bar's own `pactl` runs
   generate — matching either would put the reader in a loop with itself).
@@ -312,8 +320,10 @@ listen to tray D-Bus, etc.:
   `pactl` spawn per event would fall behind); the child carries
   `PR_SET_PDEATHSIG` as well as `kill_on_drop`, because a subscription whose
   reader was killed outright is reparented to init and sits there rather than
-  noticing. The one-second loop still reads both values, so it remains the
-  safety net when `pactl subscribe` cannot run at all. Measured in a shadow:
+  noticing. Where the fast path runs, the one-second loop does NOT read
+  either value (`has_fast_levels`) and `update()` keeps them across a stats
+  push; each subscription re-reads the sink when it (re)starts, so a gap
+  while `pactl subscribe` was down is caught up. Measured in a shadow:
   ~45ms for the backlight, ~55ms for the sink, against a second before.
 - **Tray** (`spawn_status_tray`): a full StatusNotifierItem/Watcher host over `zbus`,
   including DBusMenu fetching. Icons arrive as pixmaps or theme names (rendered via

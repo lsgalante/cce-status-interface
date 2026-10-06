@@ -12,8 +12,8 @@
 //!
 //! - **The trigger** ([`spawn_trigger`]) runs in the launcher daemon. It
 //!   drives the same fast-path watchers the bar's readouts use
-//!   ([`crate::spawn_level_watchers`] — the backlight polled every 100ms, the
-//!   sink followed through `pactl subscribe`), so the slider moves for a
+//!   ([`crate::spawn_level_watchers`] — the backlight's sysfs change
+//!   notification, the sink followed through `pactl subscribe`), so the slider moves for a
 //!   keypress, `brightnessctl` in a terminal or a mixer app alike. Each change
 //!   is forwarded as one line to the running slider, or starts one.
 //! - **The slider** (`--osd <line>`, [`main`]) is a single-instance `cce-ui`

@@ -117,6 +117,13 @@ fn stats_signature(module: Option<&str>, s: &SystemStats) -> Option<String> {
     }
 }
 
+/// Does this module run the brightness/volume fast path
+/// ([`spawn_level_watchers`])? Then it owns those two values, and the
+/// one-second poll leaves them alone.
+fn has_fast_levels(module: Option<&str>) -> bool {
+    paints_stat(module, "brightness") || paints_stat(module, "volume")
+}
+
 /// Does this module paint `field` (`"brightness"` or `"volume"`)? The
 /// fast-path pushes carry one value each, so they ask this where a full stats
 /// push compares a [`stats_signature`]; the two must agree about which
@@ -1402,15 +1409,15 @@ impl cce_ui::engine::Application for StatusApp {
         let has_stats = selected_module.as_ref().map_or(true, |(name, _)| {
             name == "stats" || name == "cpu" || name == "memory" || name == "brightness" || name == "volume" || name == "battery" || name == "wifi" || name == "clock"
         });
-        if has_stats {
-            tokio::spawn(spawn_system_stats(sender.clone()));
-        }
         // The backlight and the sink are what a keypress moves, so they get a
-        // fast path alongside the one-second poll — only where a module
+        // fast path instead of the one-second poll — only where a module
         // actually paints one of them.
-        if paints_stat(selected_module.as_ref().map(|(n, _)| n.as_str()), "brightness")
-            || paints_stat(selected_module.as_ref().map(|(n, _)| n.as_str()), "volume")
-        {
+        let module_name = selected_module.as_ref().map(|(n, _)| n.clone());
+        let fast_levels = has_fast_levels(module_name.as_deref());
+        if has_stats {
+            tokio::spawn(spawn_system_stats(sender.clone(), module_name, fast_levels));
+        }
+        if fast_levels {
             let sender = sender.clone();
             tokio::spawn(spawn_level_watchers(move |change| {
                 let _ = sender.send(change.into());
@@ -1505,7 +1512,16 @@ impl cce_ui::engine::Application for StatusApp {
                 changed = self.title != t;
                 self.title = t;
             }
-            CustomEvent::SystemStatsUpdated(s) => {
+            CustomEvent::SystemStatsUpdated(mut s) => {
+                // Where the fast path runs, the poll does not read the
+                // backlight or the sink (`spawn_system_stats`): those two
+                // stay as the fast path last set them.
+                if has_fast_levels(self.selected_module_name.as_deref()) {
+                    if let Some(old) = self.stats.as_ref() {
+                        s.brightness = old.brightness;
+                        s.volume = old.volume;
+                    }
+                }
                 log::debug!("[module-{}] stats updated, current width={}", self.selected_module_name.as_deref().unwrap_or("none"), self.width);
                 let module = self.selected_module_name.as_deref();
                 match stats_signature(module, &s) {
@@ -2198,11 +2214,13 @@ fn main() {
 
     if !has_module {
         log::info!("Starting cce-status-interface launcher daemon...");
-        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let rt = small_runtime();
         rt.block_on(async {
             use tokio::signal::unix::{signal, SignalKind};
             let mut sigint = signal(SignalKind::interrupt()).expect("SIGINT");
             let mut sigterm = signal(SignalKind::terminate()).expect("SIGTERM");
+            // Before any module is spawned, so an early exit is not missed.
+            let mut sigchld = signal(SignalKind::child()).expect("SIGCHLD");
             
             // `stats` is the combined readout segment (cpu, memory,
             // brightness, volume, wifi, battery in one bubble); the six single
@@ -2262,6 +2280,11 @@ fn main() {
             }
 
             loop {
+                let next_restart = supervised
+                    .values()
+                    .filter(|e| e.child.is_none())
+                    .map(|e| e.restart_at)
+                    .min();
                 tokio::select! {
                     _ = sigint.recv() => {
                         log::info!("Received SIGINT, shutting down...");
@@ -2271,50 +2294,58 @@ fn main() {
                         log::info!("Received SIGTERM, shutting down...");
                         break;
                     }
-                    _ = tokio::time::sleep(std::time::Duration::from_millis(500)) => {
-                        let now = std::time::Instant::now();
-                        for module in &modules {
-                            let Some(entry) = supervised.get_mut(*module) else { continue };
+                    // A module exited — or any child: the slider, a `pactl` —
+                    // or a held-back restart is due. Until 2026-10-05 this
+                    // woke every 500 ms to `try_wait` each module.
+                    _ = sigchld.recv() => {}
+                    _ = async {
+                        match next_restart {
+                            Some(t) => tokio::time::sleep_until(tokio::time::Instant::from_std(t)).await,
+                            None => std::future::pending().await,
+                        }
+                    } => {}
+                }
+                let now = std::time::Instant::now();
+                for module in &modules {
+                    let Some(entry) = supervised.get_mut(*module) else { continue };
 
-                            if let Some(child) = entry.child.as_mut() {
-                                match child.try_wait() {
-                                    Ok(None) => continue,
-                                    Ok(Some(status)) => {
-                                        entry.child = None;
-                                        if entry.spawned_at.elapsed() >= HEALTHY_UPTIME {
-                                            entry.backoff = RESTART_BASE;
-                                        } else {
-                                            entry.backoff = (entry.backoff * 2).min(RESTART_MAX);
-                                        }
-                                        entry.restart_at = now + entry.backoff;
-                                        log::warn!(
-                                            "Module process '{}' exited with status: {:?}. Restarting in {:?}...",
-                                            module, status, entry.backoff
-                                        );
-                                    }
-                                    Err(e) => {
-                                        log::error!("Error checking status for module '{}': {:?}", module, e);
-                                        continue;
-                                    }
+                    if let Some(child) = entry.child.as_mut() {
+                        match child.try_wait() {
+                            Ok(None) => continue,
+                            Ok(Some(status)) => {
+                                entry.child = None;
+                                if entry.spawned_at.elapsed() >= HEALTHY_UPTIME {
+                                    entry.backoff = RESTART_BASE;
+                                } else {
+                                    entry.backoff = (entry.backoff * 2).min(RESTART_MAX);
                                 }
+                                entry.restart_at = now + entry.backoff;
+                                log::warn!(
+                                    "Module process '{}' exited with status: {:?}. Restarting in {:?}...",
+                                    module, status, entry.backoff
+                                );
                             }
+                            Err(e) => {
+                                log::error!("Error checking status for module '{}': {:?}", module, e);
+                                continue;
+                            }
+                        }
+                    }
 
-                            if now >= entry.restart_at {
-                                match spawn_module(module) {
-                                    Ok(c) => {
-                                        log::info!("Restarted module process for: {}", module);
-                                        entry.child = Some(c);
-                                        entry.spawned_at = now;
-                                    }
-                                    Err(e) => {
-                                        entry.backoff = (entry.backoff * 2).min(RESTART_MAX);
-                                        entry.restart_at = now + entry.backoff;
-                                        log::error!(
-                                            "Failed to restart module process for {}: {:?}. Retrying in {:?}...",
-                                            module, e, entry.backoff
-                                        );
-                                    }
-                                }
+                    if now >= entry.restart_at {
+                        match spawn_module(module) {
+                            Ok(c) => {
+                                log::info!("Restarted module process for: {}", module);
+                                entry.child = Some(c);
+                                entry.spawned_at = now;
+                            }
+                            Err(e) => {
+                                entry.backoff = (entry.backoff * 2).min(RESTART_MAX);
+                                entry.restart_at = now + entry.backoff;
+                                log::error!(
+                                    "Failed to restart module process for {}: {:?}. Retrying in {:?}...",
+                                    module, e, entry.backoff
+                                );
                             }
                         }
                     }
@@ -2331,10 +2362,22 @@ fn main() {
         return;
     }
 
-    let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+    let rt = small_runtime();
     let _guard = rt.enter();
 
     cce_ui::engine::run::<StatusApp>();
+}
+
+/// The runtime for the launcher and every module process: a few sockets, a
+/// timer and a `pactl` pipe, so two workers. `Runtime::new()` starts one per
+/// core — twenty here, in each of the bar's six processes — and a timer tick
+/// on a runtime that wide wakes idle workers to look for work to steal.
+fn small_runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("tokio runtime")
 }
 
 
