@@ -33,6 +33,9 @@ pub(crate) struct MenuItem {
     label: String,
     enabled: bool,
     is_separator: bool,
+    /// `toggle-type`: "checkmark", "radio", or "" for an item that is not
+    /// a toggle.
+    toggle_type: String,
     toggle_state: i32, // -1 if not toggleable, 0 if unchecked, 1 if checked
     children: Vec<MenuItem>,
 }
@@ -64,6 +67,13 @@ pub(crate) fn parse_menu_item(
         })
         .unwrap_or(true);
 
+    let toggle_type: String = properties.remove("toggle-type")
+        .and_then(|v| {
+            let s: Result<String, _> = v.try_into();
+            s.ok()
+        })
+        .unwrap_or_default();
+
     let toggle_state: i32 = properties.remove("toggle-state")
         .and_then(|v| {
             let i: Result<i32, _> = v.try_into();
@@ -86,6 +96,7 @@ pub(crate) fn parse_menu_item(
         label,
         enabled,
         is_separator,
+        toggle_type,
         toggle_state,
         children,
     })
@@ -123,11 +134,51 @@ pub(crate) struct MenuPage {
     pub rows: Vec<MenuRow>,
 }
 
+/// The toolkit's leading mark (`cce_ui::widget::context_menu::MARK_*`) for a
+/// DBusMenu toggle: a checked checkmark item wears the check, a radio item
+/// the filled or the outlined circle, and an unchecked checkmark item and a
+/// plain item nothing.
+pub(crate) fn toggle_mark(toggle_type: &str, toggle_state: i32) -> &'static str {
+    use cce_ui::widget::context_menu::{MARK_CHECK, MARK_OFF, MARK_ON};
+    match (toggle_type, toggle_state) {
+        ("radio", 1) => MARK_ON,
+        ("radio", 0) => MARK_OFF,
+        (_, 1) => MARK_CHECK,
+        _ => "",
+    }
+}
+
+/// The row that turns a page back to `parent`: the word "Back", drawn after
+/// the chevron-left glyph.
+pub(crate) fn back_row(parent: usize) -> MenuRow {
+    MenuRow {
+        label: "Back".to_string(),
+        enabled: true,
+        separator: false,
+        action: MenuRowAction::Back(parent),
+    }
+}
+
+/// How a menu row is drawn around its text: the glyph at its left (a mark
+/// the label leads with, or the back chevron), the label without the mark,
+/// and the glyph at its right end (the chevron of a row that leads to a
+/// page). The same conventions as cce-ui's context menus, laid out here
+/// because the bar draws its menus in its own surface.
+pub(crate) fn menu_row_glyphs(row: &MenuRow) -> (Option<&'static str>, &str, Option<&'static str>) {
+    let (mark, text) = cce_ui::widget::context_menu::split_mark(&row.label);
+    match row.action {
+        MenuRowAction::Back(_) => (Some("chevron-left"), text, None),
+        MenuRowAction::Submenu(_) => (mark, text, Some("chevron-right")),
+        _ => (mark, text, None),
+    }
+}
+
 /// Fetch a tray icon's DBusMenu and flatten it into in-surface pages: page 0
 /// is the root; each enabled submenu becomes its own page (capped at 16)
-/// reached by a `Submenu` row and left by the "< Back" row. Separators and
+/// reached by a `Submenu` row and left by a `Back` row. Separators and
 /// disabled items are kept as rows for visual fidelity; toggle states become
-/// `[x]`/`[ ]` label prefixes, exactly like the popup renderer they replace.
+/// the toolkit's leading marks (`toggle_mark`), which the menu draws as
+/// glyphs, as it draws the page and back chevrons — see `menu_row_glyphs`.
 pub(crate) async fn fetch_tray_menu_pages(
     conn: &zbus::Connection,
     destination: &str,
@@ -154,12 +205,7 @@ pub(crate) async fn fetch_tray_menu_pages(
     ) {
         let mut rows = Vec::new();
         if let Some(parent_page) = parent {
-            rows.push(MenuRow {
-                label: "< Back".to_string(),
-                enabled: true,
-                separator: false,
-                action: MenuRowAction::Back(parent_page),
-            });
+            rows.push(back_row(parent_page));
         }
         // Reserve this page's slot before recursing so child pages number
         // depth-first after it.
@@ -178,15 +224,8 @@ pub(crate) async fn fetch_tray_menu_pages(
                 });
                 continue;
             }
-            let mut label = if child.toggle_state == 1 {
-                format!("[x] {}", child.label)
-            } else if child.toggle_state == 0 {
-                format!("[ ] {}", child.label)
-            } else {
-                child.label.clone()
-            };
+            let label = format!("{}{}", toggle_mark(&child.toggle_type, child.toggle_state), child.label);
             if !child.children.is_empty() && child.enabled && pages.len() < 16 {
-                label = format!("{} >", label);
                 let child_page = pages.len();
                 pages.push(MenuPage { title: String::new(), rows: Vec::new() });
                 rows.push(MenuRow {

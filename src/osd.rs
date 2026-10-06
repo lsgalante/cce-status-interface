@@ -322,9 +322,6 @@ pub(crate) struct OsdApp {
     generation: u64,
     sender: calloop::channel::Sender<OsdEvent>,
     font_system: FontSystem,
-    /// See `StatusApp::seen_renderer`: a later renderer is a reconnect, and
-    /// the cached glyph ids died with the old one.
-    seen_renderer: bool,
     width: u32,
     height: u32,
     /// Where the surface goes, worked out once at startup: a slider that
@@ -373,7 +370,6 @@ impl cce_ui::engine::Application for OsdApp {
             generation: 0,
             sender,
             font_system: cce_ui::create_font_system(),
-            seen_renderer: false,
             width,
             height,
             placement,
@@ -488,9 +484,9 @@ impl cce_ui::engine::Application for OsdApp {
         // still says which level it is by moving when that key is pressed.
         let raise = crate::read_text_raise_from_config() * k;
         let mut x = padding;
-        let glyph_px = (crate::read_icon_size_from_config() * k * scale as f32).round().max(1.0) as u32;
-        if let Some((image, gw, gh)) = crate::icons::tinted_icon(self.level.icon(), glyph_px, crate::icons::tint_of(color)) {
-            let (gw, gh) = (gw as f32 / scale as f32, gh as f32 / scale as f32);
+        // The glyph is looked up every frame: the cache is keyed on the
+        // renderer epoch, so a reconnect's new renderer gets its own upload.
+        if let Some((image, gw, gh)) = crate::icons::glyph(self.level.icon(), crate::read_icon_size_from_config() * k, cce_ui::icon_tint(color)) {
             pc.image(
                 image,
                 Rect { x, y: (h - gh) / 2.0 - raise, width: gw, height: gh },
@@ -515,7 +511,7 @@ impl cce_ui::engine::Application for OsdApp {
                 right - tw,
                 (h - font_size) / 2.0 - raise,
                 font_size,
-                crate::icons::tint_of(color),
+                cce_ui::icon_tint(color),
                 Some(font_family.clone()),
                 None,
                 cce_ui::scene::paint::TextAttrs { italic: false, weight },
@@ -535,12 +531,6 @@ impl cce_ui::engine::Application for OsdApp {
         }
 
         Some(pc.finish())
-    }
-
-    fn renderer_init(&mut self, _renderer: &mut cce_ui::vk::VkRenderer) {
-        if std::mem::replace(&mut self.seen_renderer, true) {
-            crate::icons::drop_textures();
-        }
     }
 
     fn display_list_text(&self) -> bool {

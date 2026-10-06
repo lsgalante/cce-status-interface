@@ -5,7 +5,7 @@ use cce_ui::widget::StyledLabel as Label;
 
 use crate::{
     RectWidget, RoundedBox, SystemStats, TrayItem,
-    TrayIconBounds, make_text_buffer,
+    TrayIconBounds,
 };
 
 /// Vertical offset that centers a text run in a box `box_h` tall. The engine
@@ -286,10 +286,9 @@ impl StatusModule for ClockModule {
 
 /// A stat module's readout: a cce-icons glyph with its value beside it —
 /// the glyph IS the unit, so the number is bare ("87" next to the battery,
-/// not "Bat 87%"). The glyph is tinted the readout's color; see `icons.rs`
-/// for why the tint is done here rather than through `cce_ui::upload_icon`.
+/// not "Bat 87%"). The glyph is tinted the readout's color; see `icons.rs`.
 ///
-/// The pre-glyph text form rides along as the FALLBACK: `tinted_icon` returns
+/// The pre-glyph text form rides along as the FALLBACK: `icons::glyph` returns
 /// `None` when the icon set is missing or unparsable, and a readout that
 /// silently loses its glyph would be a bare number nobody can attribute — so
 /// it degrades to the old "Cpu 45%" instead.
@@ -313,10 +312,7 @@ impl IconReadout {
     /// `module { icon_size }` on the longer side. `None` = no glyph, text
     /// fallback.
     fn glyph(&self) -> Option<(u32, f32, f32)> {
-        let scale = cce_ui::scale::scale_factor();
-        let px = (crate::read_icon_size_from_config() * scale).round().max(1.0) as u32;
-        let (image, w, h) = crate::icons::tinted_icon(self.icon, px, crate::icons::tint_of(self.color))?;
-        Some((image, w as f32 / scale, h as f32 / scale))
+        crate::icons::glyph(self.icon, crate::read_icon_size_from_config(), cce_ui::icon_tint(self.color))
     }
 
     /// The number's font size — `module { icon_font_size }`, else the
@@ -389,7 +385,7 @@ impl IconReadout {
                         ns,
                         nx,
                         centered_text_y(bar_h, ns),
-                        crate::icons::tint_of(self.color),
+                        cce_ui::icon_tint(self.color),
                         Some(font_family.to_string()),
                         None,
                         None,
@@ -616,13 +612,14 @@ impl IconStat for BatteryModule {
             None => (100, false),
         };
         // Accent while charging or nearly flat; charging also swaps in the
-        // bolt glyph, the icon form of the text readout's "⚡" prefix.
+        // bolt glyph. The text fallback (no icon set) says so in a word, as
+        // wide as "Bat" so the stable slot still holds it.
         let color = if !charging && cap > 10 { normal_color } else { color::TEXT_ACCENT };
         Some(IconReadout {
             icon: if charging { "battery-charging" } else { "battery" },
             number: Some(cap.to_string()),
             color,
-            fallback: format!("{} {cap}%", if charging { "⚡" } else { "Bat" }),
+            fallback: format!("{} {cap}%", if charging { "Chg" } else { "Bat" }),
             fallback_template: "Bat 100%",
         })
     }
@@ -779,14 +776,14 @@ impl StatusModule for TrayModule {
         _w: f32,
         _stats: &Option<SystemStats>,
         _title: &str,
-        font_system: &mut FontSystem,
-        font_family: &str,
-        font_size: f32,
+        _font_system: &mut FontSystem,
+        _font_family: &str,
+        _font_size: f32,
         _normal_color: [f32; 4],
         bar_h: f32,
         scale_factor: f64,
-        text_prims: &mut Vec<crate::TextPrim>,
-        _icon_prims: &mut Vec<crate::IconPrim>,
+        _text_prims: &mut Vec<crate::TextPrim>,
+        icon_prims: &mut Vec<crate::IconPrim>,
         _rects: &mut Vec<RectWidget>,
         overlay_rects: &mut Vec<RectWidget>,
         tray_items: &HashMap<String, TrayItem>,
@@ -898,57 +895,57 @@ impl StatusModule for TrayModule {
             }
 
             if !drawn_pixmap {
-                let symbol = if let Some(ref name) = item.icon_name {
-                    let name_lower = name.to_lowercase();
-                    if name_lower.contains("volume") || name_lower.contains("sound") || name_lower.contains("audio") {
-                        if name_lower.contains("mute") { "🔇" } else { "🔊" }
-                    } else if name_lower.contains("wifi") || name_lower.contains("network") || name_lower.contains("ethernet") {
-                        "📶"
-                    } else if name_lower.contains("battery") {
-                        "🔋"
-                    } else if name_lower.contains("bluetooth") {
-                        "ᛒ"
-                    } else if name_lower.contains("mail") || name_lower.contains("envelope") {
-                        "✉"
-                    } else if name_lower.contains("chat") || name_lower.contains("messenger") || name_lower.contains("discord") || name_lower.contains("slack") || name_lower.contains("telegram") {
-                        "💬"
-                    } else if name_lower.contains("steam") || name_lower.contains("game") {
-                        "🎮"
-                    } else if name_lower.contains("dropbox") {
-                        "📦"
-                    } else {
-                        "⚙"
-                    }
-                } else {
-                    "⚙"
-                };
-
-                // Measure the throwaway buffer for centering, then emit a text prim.
-                let buf = make_text_buffer(font_system, symbol, font_size, font_family);
-                let scale = cce_ui::scale::scale_factor();
-                let tw = buf.layout_runs().next().map(|r| r.line_w).unwrap_or(0.0) / scale;
-                let tx = icon_x + (icon_size - tw) / 2.0;
-                // Plain centering within the icon box: the box itself already
-                // carries the `text_raise` lift, and `centered_text_y` here
-                // would apply it a second time.
-                let ty = icon_y + (icon_size - font_size) / 2.0;
-                text_prims.push((
-                    symbol.to_string(),
-                    font_size,
-                    tx,
-                    ty,
-                    [
-                        (color::TEXT_ACCENT[0] * 255.0) as u8,
-                        (color::TEXT_ACCENT[1] * 255.0) as u8,
-                        (color::TEXT_ACCENT[2] * 255.0) as u8,
-                    ],
-                    Some(font_family.to_string()),
-                    None,
-                    None,
-                    None,
-                ));
+                // An item that brought neither a pixmap nor an icon the theme
+                // resolves: stand in a cce-icons glyph for what its icon NAME
+                // says it is, in the accent colour. The item's own art is the
+                // app's and is drawn above whenever there is any; this is
+                // cce's, so it is a glyph, never an emoji. Without the icon
+                // set the slot is left empty — a 16 px slot has no room for a
+                // word, and the item still answers clicks and names itself in
+                // its menu.
+                let glyph_name = tray_fallback_glyph(item.icon_name.as_deref());
+                if let Some((image, gw, gh)) =
+                    crate::icons::glyph(glyph_name, icon_size, cce_ui::icon_tint(color::TEXT_ACCENT))
+                {
+                    icon_prims.push(crate::IconPrim {
+                        image,
+                        x: icon_x + (icon_size - gw) / 2.0,
+                        y: icon_y + (icon_size - gh) / 2.0,
+                        w: gw,
+                        h: gh,
+                        alpha: 1.0,
+                    });
+                }
             }
         }
+    }
+}
+
+/// The cce-icons glyph a tray item with no icon of its own is drawn as,
+/// guessed from its icon NAME (`None`: it sent none) — the gear for anything
+/// unrecognised.
+pub(crate) fn tray_fallback_glyph(icon_name: Option<&str>) -> &'static str {
+    let Some(name) = icon_name else { return "gear" };
+    let name = name.to_lowercase();
+    let has = |words: &[&str]| words.iter().any(|w| name.contains(w));
+    if has(&["volume", "sound", "audio"]) {
+        if name.contains("mute") { "volume-muted" } else { "volume" }
+    } else if has(&["wifi", "network", "ethernet"]) {
+        "wifi"
+    } else if name.contains("battery") {
+        "battery"
+    } else if name.contains("bluetooth") {
+        "bluetooth"
+    } else if has(&["mail", "envelope"]) {
+        "mail"
+    } else if has(&["chat", "messenger", "discord", "slack", "telegram"]) {
+        "chat"
+    } else if has(&["steam", "game"]) {
+        "gamepad"
+    } else if name.contains("dropbox") {
+        "cube"
+    } else {
+        "gear"
     }
 }
 

@@ -20,7 +20,7 @@ cce-icons glyph textures), `src/listeners.rs` (status/switcher socket tasks),
 
 ```sh
 cargo build --release                 # standalone build (or `-p cce-status-interface` from the workspace root)
-cargo test                            # 46 tests: main.rs (parsers, droplet geometry), config.rs, tray.rs, osd.rs, the tray bridge's x11.rs and title.rs
+cargo test                            # 48 tests: main.rs (parsers, droplet geometry, menu glyphs), config.rs, tray.rs, osd.rs, the tray bridge's x11.rs and title.rs
 make install                          # release build, then `ccebuild install --no-build cce-status-interface`
 ```
 
@@ -244,19 +244,20 @@ number (cpu with no /proc/stat, a sink with no level) draws the glyph
 alone.
 
 The glyphs come from the **cce-icons** crate via `cce_ui::icons_dir()`
-(`$CCE_ICONS_DIR`, else `~/projects/cce/cce-icons/svg`) — but NOT through
-`cce_ui::upload_icon`: a `Prim::Image` has alpha and no color, and the
-artwork is white, so `icons.rs::tinted_icon` rasterizes the SVG itself
-(`cce_ui::rasterize_svg`), multiplies it by the readout's raw-sRGB color and
-uploads it, cached per `(name, px, color)` — for the life of the RENDERER,
-not the process: the cache holds renderer image ids, and a reconnect
-(cce-ui repairs a lost transport by opening a new session around the same
-`Application`) rebuilds the renderer and its image table, leaving every
-cached id naming nothing. A draw for an unknown id is skipped rather than
-reported, so a reconnected bar came back with its numbers and no glyphs at
-all; `renderer_init` now calls `icons::drop_textures()` on every renderer
-after the first, and the rebuild it forces re-uploads them. A
-glyph that fails to load falls back to the old text readout ("Cpu 45%"), so
+(`$CCE_ICONS_DIR`, else `~/projects/cce/cce-icons/svg`), through
+`icons::glyph` — `cce_ui::upload_icon_tinted` at a logical size: a
+`Prim::Image` has alpha and no color, and the artwork is white, so the
+readout's raw-sRGB color is baked into the texture, cached per `(name, px,
+color)` and keyed on the renderer epoch. A reconnect (cce-ui repairs a lost
+transport by opening a new session around the same `Application`) rebuilds
+the renderer and its image table; the cache then misses and re-uploads, and
+`renderer_init` forces a layout rebuild so the retained `icon_prims` stop
+naming the old renderer's ids — a draw for an unknown id is skipped rather
+than reported, which is how a reconnected bar once kept its numbers and lost
+every glyph. (Until 2026-10-05 `icons.rs` rasterized and uploaded the SVGs
+itself, through a cache `renderer_init` had to empty by hand.) A
+glyph that fails to load falls back to the old text readout ("Cpu 45%",
+"Chg 87%" for a charging battery), so
 a bar started without the icon set is still attributable; **a shadow session
 needs `CCE_ICONS_DIR` exported into the spawn**, its HOME being elsewhere,
 exactly as it needs `CCE_FONTS_DIR`. Slot stability holds as before: the
@@ -316,7 +317,12 @@ listen to tray D-Bus, etc.:
   ~45ms for the backlight, ~55ms for the sink, against a second before.
 - **Tray** (`spawn_status_tray`): a full StatusNotifierItem/Watcher host over `zbus`,
   including DBusMenu fetching. Icons arrive as pixmaps or theme names (rendered via
-  `resvg`/`png`).
+  `resvg`/`png`) — the app's own art, drawn as it comes. An item that brings
+  neither a pixmap nor a name the theme resolves is drawn as a cce-icons glyph
+  guessed from its icon name (`modules::tray_fallback_glyph`: volume, wifi,
+  battery, bluetooth, mail, chat, gamepad, cube for Dropbox, else the gear),
+  in the accent colour. Those were emoji until 2026-10-05; without the icon
+  set the slot is left empty, since 16 px holds no word.
 - **Switcher** (`spawn_switcher_listener`): binds
   `/tmp/cce-status-interface-switcher-{WAYLAND_DISPLAY}.sock`; a line on it fires
   `SwitcherTriggered`.
@@ -337,7 +343,16 @@ contraction are ANIMATED over ~140ms, `menu_anim`/`menu_closing` stepped in
 module context menus and tray icon DBusMenus alike (fetched/flattened by `cloud.rs::
 fetch_tray_menu_pages` into `MenuPage`/`MenuRow` pages riding a
 `CustomEvent::TrayMenuFetched`; submenus paginate in place; row clicks send the
-DBusMenu "clicked" via `send_tray_menu_event`). The compositor treats a status
+DBusMenu "clicked" via `send_tray_menu_event`). **A menu's marks and page
+turns are cce-icons glyphs**, by cce-ui's context-menu conventions
+(`cloud::menu_row_glyphs`): a label leading with `context_menu::MARK_CHECK` /
+`MARK_ON` / `MARK_OFF` is drawn with the check / circle / circle-outline glyph
+and the text without it (a DBusMenu toggle becomes one by its `toggle-type`,
+`cloud::toggle_mark`; the window module's Mode page is a radio group), a
+`Submenu` row ends in chevron-right, and a `Back` row reads "Back" after
+chevron-left. A page where any row has a left glyph reserves the column on
+every row, so the labels share an edge. They were `[x]` / `[ ]`, `Label >`
+and `< Back` text until 2026-10-05. The compositor treats a status
 segment thicker than the bar as expanded: frozen slot, no size enforcement,
 raised above overlapped windows; the bar must reset its own height on close.
 In droplet style the expanded panel is a FLAT glass sheet: `spec_at_reference_height`

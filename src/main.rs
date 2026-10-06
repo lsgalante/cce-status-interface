@@ -78,7 +78,7 @@ pub struct SystemStats {
 }
 
 /// A bundled cce-icons glyph placed in the bar: `image` is the tinted
-/// texture from `icons::tinted_icon`, the rect is logical px, `alpha` the
+/// texture from `icons::glyph`, the rect is logical px, `alpha` the
 /// ghosting under a superimposed readout. Retained like `text_prims` and
 /// replayed by `display_list`, drawn before the text so the number sits on
 /// the glyph.
@@ -437,8 +437,8 @@ struct StatusApp {
     adjust_position_mode: bool,
     /// Whether a renderer has been handed to this app yet. The first one is
     /// the one `new()`'s glyph uploads are queued for; every later one is a
-    /// reconnect, and the ids cached in `icons` name images that died with
-    /// the renderer being replaced — see `renderer_init`.
+    /// reconnect, and the ids retained in `icon_prims` name images that died
+    /// with the renderer being replaced — see `renderer_init`.
     seen_renderer: bool,
 }
 
@@ -854,11 +854,25 @@ impl StatusApp {
                     // Wide enough for the longest row label — fixed minimums
                     // truncated window titles in the picker.
                     let tx_probe = ModuleContextMenu::PAD + 8.0;
+                    // The glyph columns (see `menu_row_glyphs`): one at the
+                    // left, reserved on every row of a page where any row
+                    // has a mark or a back chevron so the labels share one
+                    // edge, and a chevron at the right end of a page row.
+                    let mark_side = (font_size * 0.95).round();
+                    let chevron_side = (font_size * 0.8).round();
+                    let glyph_gap = 6.0;
+                    let lead_w = if menu.rows().iter().any(|r| !r.separator && menu_row_glyphs(r).0.is_some()) {
+                        mark_side + glyph_gap
+                    } else {
+                        0.0
+                    };
                     let mut label_w: f32 = 0.0;
                     for page_row in menu.rows().to_vec() {
                         if !page_row.separator {
-                            let l = cce_ui::widget::StyledLabel::new_with_family(&mut self.font_system, &page_row.label, font_size, [0.0, 0.0, 0.0, 1.0], &font_family);
-                            label_w = label_w.max(l.w);
+                            let (_, text, trail) = menu_row_glyphs(&page_row);
+                            let l = cce_ui::widget::StyledLabel::new_with_family(&mut self.font_system, text, font_size, [0.0, 0.0, 0.0, 1.0], &font_family);
+                            let trail_w = if trail.is_some() { glyph_gap + chevron_side } else { 0.0 };
+                            label_w = label_w.max(lead_w + l.w + trail_w);
                         }
                     }
                     let menu_w = module_box_w.max(menu.min_w).max(label_w + 2.0 * tx_probe);
@@ -970,12 +984,39 @@ impl StatusApp {
                                 self.menu_hover_rect =
                                     Some((anim_x + 6.0, iy + 1.0, anim_w - 12.0, h - 2.0));
                             }
+                            let tint = if row.enabled { text_u8 } else { dim_u8 };
+                            let (lead, text, trail) = menu_row_glyphs(row);
+                            if let Some(name) = lead {
+                                let side = if lead == Some("chevron-left") { chevron_side } else { mark_side };
+                                if let Some((image, gw, gh)) = crate::icons::glyph(name, side, tint) {
+                                    self.icon_prims.push(IconPrim {
+                                        image,
+                                        x: tx + (mark_side - gw) / 2.0,
+                                        y: iy + (h - gh) / 2.0,
+                                        w: gw,
+                                        h: gh,
+                                        alpha: 1.0,
+                                    });
+                                }
+                            }
+                            if let Some(name) = trail {
+                                if let Some((image, gw, gh)) = crate::icons::glyph(name, chevron_side, tint) {
+                                    self.icon_prims.push(IconPrim {
+                                        image,
+                                        x: anim_x + anim_w - (ModuleContextMenu::PAD + 8.0) - gw,
+                                        y: iy + (h - gh) / 2.0,
+                                        w: gw,
+                                        h: gh,
+                                        alpha: 1.0,
+                                    });
+                                }
+                            }
                             self.text_prims.push((
-                                row.label.clone(),
+                                text.to_string(),
                                 font_size,
-                                tx,
+                                tx + lead_w,
                                 iy + (h - font_size) / 2.0,
-                                if row.enabled { text_u8 } else { dim_u8 },
+                                tint,
                                 Some(font_family.clone()),
                                 None,
                                 None,
@@ -1758,14 +1799,14 @@ impl cce_ui::engine::Application for StatusApp {
 
     /// A reconnect is a new session around the SAME app (cce-ui's
     /// `window_runner` repairs a lost transport rather than restarting the
-    /// process), and the renderer is rebuilt with it — so the glyph textures
-    /// `icons::tinted_icon` cached ids for no longer exist. A draw for an
-    /// unknown image id is skipped silently, which is why a reconnected bar
-    /// kept its numbers and lost every glyph. Drop the cache and rebuild, so
-    /// the next layout uploads into the renderer just created.
+    /// process), and the renderer is rebuilt with it — so the glyph ids the
+    /// retained `icon_prims` hold name nothing. A draw for an unknown image
+    /// id is skipped silently, which is why a reconnected bar once kept its
+    /// numbers and lost every glyph. The upload cache follows the renderer
+    /// epoch by itself (`icons::glyph`); rebuilding the layout is what asks
+    /// it again, uploading into the renderer just created.
     fn renderer_init(&mut self, _renderer: &mut cce_ui::vk::VkRenderer) {
         if std::mem::replace(&mut self.seen_renderer, true) {
-            crate::icons::drop_textures();
             self.needs_rebuild = true;
         }
     }
@@ -2040,25 +2081,23 @@ impl cce_ui::engine::Application for StatusApp {
                             // Page 0 is the root built below; the mode page is
                             // the only extra, so it is always page 1.
                             rows.insert(0, MenuRow {
-                                label: format!("{} >", self.layout),
+                                label: self.layout.clone(),
                                 enabled: true,
                                 separator: false,
                                 action: MenuRowAction::Submenu(1),
                             });
-                            let mut mode_rows = vec![MenuRow {
-                                label: "< Back".to_string(),
-                                enabled: true,
-                                separator: false,
-                                action: MenuRowAction::Back(0),
-                            }];
+                            let mut mode_rows = vec![cloud::back_row(0)];
                             for mode in MODES {
                                 let current = mode == self.layout;
+                                // A radio group: the toolkit's on and off
+                                // marks, drawn as the circle glyphs.
+                                let mark = if current {
+                                    cce_ui::widget::context_menu::MARK_ON
+                                } else {
+                                    cce_ui::widget::context_menu::MARK_OFF
+                                };
                                 mode_rows.push(MenuRow {
-                                    label: format!(
-                                        "{} {}",
-                                        if current { "[x]" } else { "[ ]" },
-                                        mode
-                                    ),
+                                    label: format!("{mark}{mode}"),
                                     // The current mode is a marker, not a
                                     // target — disabled rows never match a
                                     // click.
@@ -2302,6 +2341,63 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The bar's menus draw their marks and page turns as cce-icons glyphs,
+    /// by the toolkit's context-menu conventions, and never spell them as
+    /// characters: a DBusMenu toggle becomes a leading mark, a submenu row
+    /// ends in chevron-right, a back row starts with chevron-left.
+    #[test]
+    fn menu_marks_and_page_turns_are_glyphs() {
+        use cce_ui::widget::context_menu::{MARK_CHECK, MARK_OFF, MARK_ON};
+        assert_eq!(toggle_mark("checkmark", 1), MARK_CHECK);
+        assert_eq!(toggle_mark("checkmark", 0), "");
+        assert_eq!(toggle_mark("radio", 1), MARK_ON);
+        assert_eq!(toggle_mark("radio", 0), MARK_OFF);
+        assert_eq!(toggle_mark("", -1), "");
+
+        let row = |label: &str, action: MenuRowAction| MenuRow {
+            label: label.to_string(),
+            enabled: true,
+            separator: false,
+            action,
+        };
+        assert_eq!(
+            menu_row_glyphs(&row(&format!("{MARK_CHECK}Sync"), MenuRowAction::Item(3))),
+            (Some("check"), "Sync", None)
+        );
+        assert_eq!(
+            menu_row_glyphs(&row("Tiled", MenuRowAction::Submenu(1))),
+            (None, "Tiled", Some("chevron-right"))
+        );
+        assert_eq!(menu_row_glyphs(&back_row(0)), (Some("chevron-left"), "Back", None));
+        assert_eq!(menu_row_glyphs(&row("Quit", MenuRowAction::Item(9))), (None, "Quit", None));
+    }
+
+    /// A tray item with no icon of its own stands in a cce-icons glyph,
+    /// guessed from its icon name, and every one it can name is in the set.
+    #[test]
+    fn a_tray_item_without_an_icon_is_a_glyph() {
+        use modules::tray_fallback_glyph as g;
+        assert_eq!(g(None), "gear");
+        assert_eq!(g(Some("audio-volume-muted")), "volume-muted");
+        assert_eq!(g(Some("audio-volume-high")), "volume");
+        assert_eq!(g(Some("network-wireless")), "wifi");
+        assert_eq!(g(Some("battery-full")), "battery");
+        assert_eq!(g(Some("bluetooth-active")), "bluetooth");
+        assert_eq!(g(Some("mail-unread")), "mail");
+        assert_eq!(g(Some("discord")), "chat");
+        assert_eq!(g(Some("steam_tray_mono")), "gamepad");
+        assert_eq!(g(Some("dropboxstatus-idle")), "cube");
+        assert_eq!(g(Some("something-else")), "gear");
+        // The workspace's own icon set, where the build has it.
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../cce-icons/svg");
+        if dir.is_dir() {
+            for name in ["gear", "volume-muted", "volume", "wifi", "battery", "bluetooth", "mail", "chat",
+                "gamepad", "cube", "check", "circle", "circle-outline", "chevron-left", "chevron-right"] {
+                assert!(dir.join(format!("{name}.svg")).is_file(), "{name}.svg is not in cce-icons");
+            }
+        }
+    }
 
     #[test]
     fn tray_clicks_report_screen_points_below_the_bar() {
