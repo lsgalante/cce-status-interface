@@ -78,27 +78,8 @@ pub trait StatusModule {
     );
 }
 
-/// A stat module's width from the WIDER of its live text and a
-/// widest-plausible template ("Cpu 100%"), plus padding. Sizing to the live
-/// text alone made the surface resize whenever the value crossed a digit
-/// boundary ("Cpu 9.9%" ↔ "Cpu 10.2%"), which re-arranged the whole status
-/// strip and — through the compositor's configure echo — ping-ponged the
-/// module and its neighbors at frame rate (the tray/cpu jitter).
-fn stable_text_width(
-    font_system: &mut FontSystem,
-    text: &str,
-    template: &str,
-    font_size: f32,
-    font_family: &str,
-    padding: f32,
-) -> f32 {
-    let live = Label::new_with_family(font_system, text, font_size, [0.0, 0.0, 0.0, 1.0], font_family).w;
-    let tmpl = Label::new_with_family(font_system, template, font_size, [0.0, 0.0, 0.0, 1.0], font_family).w;
-    live.max(tmpl) + 2.0 * padding
-}
-
-/// The live half of `stable_text_width`: the text as it is right now, plus
-/// padding — the content measure `content_width` implementations return.
+/// A module's text as it is right now, plus padding — the content measure
+/// `content_width` implementations return.
 fn live_text_width(
     font_system: &mut FontSystem,
     text: &str,
