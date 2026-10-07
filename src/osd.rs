@@ -514,7 +514,7 @@ impl cce_ui::engine::Application for OsdApp {
                 cce_ui::icon_tint(color),
                 Some(font_family.clone()),
                 None,
-                cce_ui::scene::paint::TextAttrs { italic: false, weight },
+                cce_ui::scene::paint::TextAttrs { italic: false, weight, ..Default::default() },
             );
         }
 

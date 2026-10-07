@@ -1800,7 +1800,7 @@ impl cce_ui::engine::Application for StatusApp {
         }
 
         for (text, tsize, x, y, color, font, bounds, layout, weight) in &self.text_prims {
-            let attrs = cce_ui::scene::paint::TextAttrs { italic: false, weight: *weight };
+            let attrs = cce_ui::scene::paint::TextAttrs { italic: false, weight: *weight, ..Default::default() };
             match layout {
                 Some(l) => pc.text_boxed(text.clone(), *x, *y, *tsize, *color, font.clone(), *bounds, attrs, *l),
                 // Glyphs are drawn plain: contrast is the compositor's job,
