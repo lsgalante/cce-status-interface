@@ -23,10 +23,7 @@ use cce_ui::cosmic_text::{
     Attrs, Buffer, FontSystem, Metrics,
 };
 use cce_ui::color;
-use cce_ui::widget::{
-    WidgetHost,
-    MouseButton, ElementState, MouseScrollDelta, KeyEvent,
-};
+use cce_ui::widget::{WidgetHost, MouseButton, ElementState, MouseScrollDelta, KeyEvent, WidgetHostExt};
 
 #[derive(Debug, Clone)]
 pub struct TrayPixmap {
@@ -764,7 +761,7 @@ impl StatusApp {
                             return trimmed.to_string();
                         }
                     }
-                    let last_segment = fallback_id.split('/').last().unwrap_or(fallback_id);
+                    let last_segment = fallback_id.split('/').next_back().unwrap_or(fallback_id);
                     let cleaned = last_segment
                         .split('_')
                         .next()
@@ -1399,16 +1396,16 @@ impl cce_ui::engine::Application for StatusApp {
         // Every module can host an in-surface menu, so every process listens
         // for the compositor's click-away dismiss pushes.
         tokio::spawn(spawn_status_listener("dismiss".to_string(), sender.clone()));
-        let is_primary_for_switcher = selected_module.as_ref().map_or(true, |(name, _)| name == "window");
+        let is_primary_for_switcher = selected_module.as_ref().is_none_or(|(name, _)| name == "window");
         if is_primary_for_switcher {
             tokio::spawn(spawn_switcher_listener(sender.clone()));
         }
 
-        let has_tray = selected_module.as_ref().map_or(true, |(name, _)| name == "tray");
+        let has_tray = selected_module.as_ref().is_none_or(|(name, _)| name == "tray");
         if has_tray {
             tokio::spawn(spawn_status_tray(sender.clone()));
         }
-        let has_stats = selected_module.as_ref().map_or(true, |(name, _)| {
+        let has_stats = selected_module.as_ref().is_none_or(|(name, _)| {
             name == "stats" || name == "cpu" || name == "memory" || name == "brightness" || name == "volume" || name == "battery" || name == "wifi" || name == "clock"
         });
         // The backlight and the sink are what a keypress moves, so they get a
@@ -1465,7 +1462,7 @@ impl cce_ui::engine::Application for StatusApp {
             sender,
             last_config_modified: cce_ui::config::config_files_modified(),
             selected_module_name: selected_module.as_ref().map(|(n, _)| n.clone()),
-            selected_module_side: selected_module.as_ref().map(|(_, s)| s.clone()),
+            selected_module_side: selected_module.as_ref().map(|(_, s)| *s),
             status_hide_mode: false,
             adjust_position_mode: false,
             seen_renderer: false,
@@ -1890,7 +1887,7 @@ impl cce_ui::engine::Application for StatusApp {
         // An open in-surface menu owns every button event: row clicks run
         // their action (dispatch / DBusMenu event / page navigation); any
         // other press (bar strip, menu padding, right-click) closes.
-        if self.context_menu.is_some() {
+        if let Some(menu) = self.context_menu.as_mut() {
             if state != ElementState::Pressed {
                 return None;
             }
@@ -1899,15 +1896,10 @@ impl cce_ui::engine::Application for StatusApp {
             if self.menu_closing {
                 return None;
             }
-            let hit = if button == MouseButton::Left {
-                self.context_menu.as_ref().and_then(|m| m.item_at(lx, ly))
-            } else {
-                None
-            };
+            let hit = if button == MouseButton::Left { menu.item_at(lx, ly) } else { None };
             let mut result = None;
             match hit {
                 Some(i) => {
-                    let menu = self.context_menu.as_mut().unwrap();
                     let action = menu.rows().get(i).map(|r| r.action.clone());
                     match action {
                         Some(MenuRowAction::Dispatch(ev)) => {
@@ -2165,12 +2157,11 @@ impl cce_ui::engine::Application for StatusApp {
             if button == MouseButton::Left {
                 let mut clicked_window = false;
                 for mb in &self.module_bounds {
-                    if mb.name == "window" {
-                        if coord >= mb.x && coord <= (mb.x + mb.w) {
+                    if mb.name == "window"
+                        && coord >= mb.x && coord <= (mb.x + mb.w) {
                             clicked_window = true;
                             break;
                         }
-                    }
                 }
 
                 if clicked_window {

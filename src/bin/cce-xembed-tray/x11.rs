@@ -636,7 +636,7 @@ impl Tray {
             .get_property(false, icon, self.atoms._XEMBED_INFO, AtomEnum::ANY, 0, 2)?
             .reply()?;
         let flags = reply.value32().and_then(|mut v| v.nth(1));
-        if flags.map_or(true, |f| f & XEMBED_MAPPED != 0) {
+        if flags.is_none_or(|f| f & XEMBED_MAPPED != 0) {
             self.conn.map_window(icon)?;
         } else {
             self.conn.unmap_window(icon)?;
@@ -676,7 +676,7 @@ impl Tray {
         };
         let lsb = self.conn.setup().image_byte_order == ImageOrder::LSB_FIRST;
         let pixels = to_sni_argb(&reply.data, reply.depth, lsb)?;
-        if pixels.chunks_exact(4).all(|p| p[0] == 0) {
+        if pixels.as_chunks::<4>().0.iter().all(|p| p[0] == 0) {
             return None;
         }
         let entry = self.icons.get_mut(&icon)?;
@@ -721,11 +721,11 @@ fn clamp_i16(v: i32) -> i16 {
 /// order, straight alpha. X's ARGB visuals are premultiplied; a depth-24
 /// image has no alpha and is opaque. `None` for any other layout.
 pub fn to_sni_argb(data: &[u8], depth: u8, lsb_first: bool) -> Option<Vec<u8>> {
-    if data.len() % 4 != 0 || !(depth == 24 || depth == 32) {
+    if !data.len().is_multiple_of(4) || !(depth == 24 || depth == 32) {
         return None;
     }
     let mut out = Vec::with_capacity(data.len());
-    for px in data.chunks_exact(4) {
+    for px in data.as_chunks::<4>().0 {
         let bytes = [px[0], px[1], px[2], px[3]];
         let v = if lsb_first { u32::from_le_bytes(bytes) } else { u32::from_be_bytes(bytes) };
         let a = if depth == 32 { (v >> 24) as u8 } else { 255 };

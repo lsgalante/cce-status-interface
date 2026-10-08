@@ -122,7 +122,7 @@ pub(crate) fn load_png_as_pixmap(path: &std::path::Path) -> Option<TrayPixmap> {
     let actual_bytes = &buf[..info.buffer_size()];
     match info.color_type {
         png::ColorType::Rgba => {
-            for chunk in actual_bytes.chunks_exact(4) {
+            for chunk in actual_bytes.as_chunks::<4>().0 {
                 argb_pixels.push(chunk[3]); // A
                 argb_pixels.push(chunk[0]); // R
                 argb_pixels.push(chunk[1]); // G
@@ -130,7 +130,7 @@ pub(crate) fn load_png_as_pixmap(path: &std::path::Path) -> Option<TrayPixmap> {
             }
         }
         png::ColorType::Rgb => {
-            for chunk in actual_bytes.chunks_exact(3) {
+            for chunk in actual_bytes.as_chunks::<3>().0 {
                 argb_pixels.push(255);      // A
                 argb_pixels.push(chunk[0]); // R
                 argb_pixels.push(chunk[1]); // G
@@ -146,7 +146,7 @@ pub(crate) fn load_png_as_pixmap(path: &std::path::Path) -> Option<TrayPixmap> {
             }
         }
         png::ColorType::GrayscaleAlpha => {
-            for chunk in actual_bytes.chunks_exact(2) {
+            for chunk in actual_bytes.as_chunks::<2>().0 {
                 argb_pixels.push(chunk[1]); // A
                 argb_pixels.push(chunk[0]); // R
                 argb_pixels.push(chunk[0]); // G
@@ -183,7 +183,7 @@ pub(crate) fn load_svg_as_pixmap(path: &std::path::Path) -> Option<TrayPixmap> {
     
     let raw_pixels = pixmap.data();
     let mut argb_pixels = Vec::with_capacity((target_w * target_h * 4) as usize);
-    for chunk in raw_pixels.chunks_exact(4) {
+    for chunk in raw_pixels.as_chunks::<4>().0 {
         argb_pixels.push(chunk[3]); // A
         argb_pixels.push(chunk[0]); // R
         argb_pixels.push(chunk[1]); // G
