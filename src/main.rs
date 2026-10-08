@@ -489,7 +489,7 @@ impl StatusApp {
         } else if self.width > self.height {
             false
         } else {
-            cce_ui::IS_VERTICAL.load(std::sync::atomic::Ordering::Relaxed)
+            cce_ui::backend::text::vertical_text().is_some()
         }
     }
 
@@ -497,9 +497,8 @@ impl StatusApp {
     fn rebuild_layout(&mut self) {
         log::info!("[cce-status-interface] rebuild_layout module={:?} size={}x{}", self.selected_module_name, self.width, self.height);
         let is_vertical = self.is_vertical();
-        cce_ui::IS_VERTICAL.store(is_vertical, std::sync::atomic::Ordering::Relaxed);
         let bar_thickness = read_status_height_from_config() as u32;
-        cce_ui::BAR_THICKNESS.store(bar_thickness, std::sync::atomic::Ordering::Relaxed);
+        cce_ui::backend::text::set_vertical_text(is_vertical.then_some(bar_thickness));
 
         // Family WITHOUT the embedded size: the toolkit's text pipeline lets
         // a size inside the font string ("Chivo Mono 14") override the
