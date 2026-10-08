@@ -1477,6 +1477,12 @@ impl cce_ui::engine::Application for StatusApp {
 
 
 
+    /// A bar segment is placed by the compositor: no client-side move,
+    /// resize or resize cursors. (cce-ui used to infer this from the app id.)
+    fn standard_csd(&self) -> bool {
+        false
+    }
+
     fn settings(&self) -> cce_ui::engine::WindowSettings {
         let app_id = self.get_app_id();
         cce_ui::engine::WindowSettings {

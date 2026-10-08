@@ -380,6 +380,12 @@ impl cce_ui::engine::Application for OsdApp {
         app
     }
 
+    /// An overlay, not a window: no client-side move, resize or resize
+    /// cursors. (cce-ui used to infer this from the app id.)
+    fn standard_csd(&self) -> bool {
+        false
+    }
+
     fn settings(&self) -> WindowSettings {
         WindowSettings {
             title: "Level".to_string(),
