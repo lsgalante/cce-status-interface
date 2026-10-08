@@ -28,6 +28,7 @@
 //! and droplet style are the bar's `module { }` keys, so the slider reads as
 //! one of its readouts grown up.
 
+use cce_ui::scene::paint::DropletFinish;
 use cce_ui::cosmic_text::FontSystem;
 use cce_ui::engine::{
     EngineState, LayerAnchor, LayerKeyboardInteractivity, LayerKind, LayerSettings, LogicalPosition, LogicalSize,

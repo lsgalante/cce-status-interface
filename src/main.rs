@@ -15,6 +15,7 @@ pub(crate) use listeners::*;
 pub(crate) use stats::*;
 pub(crate) use tray::*;
 
+use cce_ui::scene::paint::DropletFinish;
 use modules::{StatusModule, WindowModule, ClockModule, BatteryModule, VolumeModule, BrightnessModule, MemoryModule, CpuModule, WifiModule, StatsModule, TrayModule, LightSourceModule};
 
 use std::collections::HashMap;
