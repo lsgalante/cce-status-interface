@@ -31,12 +31,11 @@
 use cce_ui::scene::paint::DropletFinish;
 use cce_ui::cosmic_text::FontSystem;
 use cce_ui::engine::{
-    EngineState, LayerAnchor, LayerKeyboardInteractivity, LayerKind, LayerSettings, LogicalPosition, LogicalSize,
+    LayerAnchor, LayerKeyboardInteractivity, LayerKind, LayerSettings, LogicalPosition, LogicalSize,
     WindowSettings,
 };
 use cce_ui::scene::layout::Rect;
 use cce_ui::widget::{ElementState, KeyEvent, MouseButton, MouseScrollDelta};
-use wayland_client::QueueHandle;
 
 use crate::{LevelChange, StatusBoxBevel};
 
@@ -353,7 +352,9 @@ fn quad_of(text: [f32; 4], a: f32) -> [f32; 4] {
 impl cce_ui::engine::Application for OsdApp {
     type Message = OsdEvent;
 
-    fn new(_qh: &QueueHandle<EngineState<Self>>, sender: calloop::channel::Sender<Self::Message>) -> Self {
+    fn create(sender: cce_ui::engine::AppSender<Self::Message>) -> Self {
+        // The app keeps calloop's sender; `AppSender` converts into it.
+        let sender: calloop::channel::Sender<Self::Message> = sender.into();
         let level = INITIAL.get().copied().unwrap_or(Level::Brightness(0));
         let forward = sender.clone();
         cce_ui::ipc::instance::serve(move |line| {

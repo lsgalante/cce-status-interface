@@ -1360,7 +1360,9 @@ impl cce_ui::engine::Application for StatusApp {
         true
     }
 
-    fn new(_qh: &wayland_client::QueueHandle<cce_ui::engine::EngineState<Self>>, sender: calloop::channel::Sender<Self::Message>) -> Self {
+    fn create(sender: cce_ui::engine::AppSender<Self::Message>) -> Self {
+        // The app keeps calloop's sender; `AppSender` converts into it.
+        let sender: calloop::channel::Sender<Self::Message> = sender.into();
         let selected_module = parse_selected_module_from_args();
 
         let mut left_modules: Vec<Box<dyn StatusModule>> = Vec::new();
