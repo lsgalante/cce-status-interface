@@ -29,15 +29,6 @@ libc = "0.2"
 # tray selection, the icons' pixels (damage) and their input region (shape).
 x11rb = { version = "0.13", features = ["damage", "shape", "xfixes"] }
 
-
-
-
-
-
-
-
-
-
 [lints.clippy]
 # The toolkit's house style (cce-ui's [lints.clippy]): geometry, colour and paint state
 # taken piecewise, and the legacy tuple views.

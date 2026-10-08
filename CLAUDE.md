@@ -27,6 +27,12 @@ make install                          # release build, then `ccebuild install --
 Running it requires a live cce compositor session (`$WAYLAND_DISPLAY` plus the cce
 sockets); there is no meaningful headless mode.
 
+CI (`.github/workflows/ci.yml`, since 2026-10-08) builds every target and runs the tests,
+and runs clippy with warnings as errors, on the crate alone (its git pin of cce-ui, not
+the workspace's). The crate allows only cce-ui's two house-style lints (too many
+arguments, complex types, in `Cargo.toml`); anything else clippy reports is fixed —
+locally, `cargo clippy -p cce-status-interface --all-targets -- -D warnings`.
+
 ## `cce-xembed-tray` — legacy X11 tray icons in the bar
 
 A second binary (`src/bin/cce-xembed-tray/`, run by `cce-xembed-tray.service`)
