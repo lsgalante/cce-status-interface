@@ -20,7 +20,7 @@ cce-icons glyph textures), `src/listeners.rs` (status/switcher socket tasks),
 
 ```sh
 cargo build --release                 # standalone build (or `-p cce-status-interface` from the workspace root)
-cargo test                            # 50 tests: main.rs (parsers, droplet geometry, menu glyphs), stats.rs, config.rs, tray.rs, osd.rs, the tray bridge's x11.rs and title.rs
+cargo test                            # 51 tests: main.rs (parsers, droplet geometry, menu glyphs, module readings), stats.rs, config.rs, tray.rs, osd.rs, the tray bridge's x11.rs and title.rs
 make install                          # release build, then `ccebuild install --no-build cce-status-interface`
 ```
 
@@ -504,6 +504,22 @@ is per pixel, so it needs neither the pool nor the measurement loop. (Before
 the scrim, `text_relief`'s letterpress underlay and `text_halo`'s four-copy
 outline decorated the letterforms; they went 2026-08-28. Don't reintroduce a
 per-letterform treatment without a reason the backdrop cannot serve.)
+
+## Screen readers (since 2026-10-09)
+
+Each segment publishes what it shows over AT-SPI (`Application::accessibility`, cce-ui's
+`a11y` feature; with `CCE_A11Y=1`, not by default yet — the toolkit's rule while its
+adapter is proven, `docs/rfc-accessibility-locale.md` in cce-ui). A module is a status node
+named by what it reads — `StatusModule::a11y`, `IconStat::spoken`: "Battery: 80%,
+charging", "System: CPU 7%, Memory 41% in use, …" — in the NAME, because AccessKit's AT-SPI
+side publishes no text value but a text field's; nothing is published for a reading not in
+yet. A tray item is a button; an open menu a menu of its rows. AT-SPI offers a reader only
+"click", so a click on a module does what a left press there does (the window module's
+picker) and otherwise opens the module's menu, as a right press does. Every action is the
+press it stands for, at the thing (`accessibility_action`), except a menu row, which runs
+through `run_menu_row` — the click handler's own row code — so it works before the
+surface has grown to lay the menu out. Checked over AT-SPI on private buses (a stand-in
+`StatusNotifierItem` for the tray: a reader's click reached its `Activate`).
 
 ## Interactions worth knowing before touching input code
 

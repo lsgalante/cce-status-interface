@@ -368,6 +368,13 @@ pub struct ModuleBounds {
 }
 
 
+/// The bar's own accessibility nodes (`AppNodes::id`): its modules from 1, its tray items
+/// from 100, an open menu at 500 and its rows from 1000.
+const A11Y_MODULE: u64 = 1;
+const A11Y_TRAY: u64 = 100;
+const A11Y_MENU: u64 = 500;
+const A11Y_MENU_ROW: u64 = 1000;
+
 struct StatusApp {
     // Status State
     layout: String,
@@ -467,6 +474,54 @@ impl StatusApp {
             _ => None,
         };
         status_app_id(selected)
+    }
+
+    /// Run row `i` of the open menu, as a click on it does: dispatch its event (returned,
+    /// for the loop), send a tray item's click, turn the page, or run ccectl. A separator,
+    /// a disabled row and an inert one do nothing.
+    fn run_menu_row(&mut self, i: usize) -> Option<CustomEvent> {
+        let menu = self.context_menu.as_mut()?;
+        let row = menu.rows().get(i)?;
+        if row.separator || !row.enabled {
+            return None;
+        }
+        match row.action.clone() {
+            MenuRowAction::Dispatch(ev) => {
+                self.menu_closing = true;
+                Some(ev)
+            }
+            MenuRowAction::Item(id) => {
+                if let Some((dest, path)) = menu.tray_target.clone() {
+                    send_tray_menu_event(dest, path, id);
+                }
+                self.menu_closing = true;
+                None
+            }
+            MenuRowAction::Submenu(p) | MenuRowAction::Back(p) => {
+                menu.page = p;
+                menu.hovered = None;
+                None
+            }
+            MenuRowAction::Ccectl(args) => {
+                std::thread::spawn(move || {
+                    let _ = std::process::Command::new(get_ccectl_cmd()).args(&args).spawn();
+                });
+                self.menu_closing = true;
+                None
+            }
+            MenuRowAction::Inert => None,
+        }
+    }
+
+    /// A module's slot as a rect in the surface: along the bar its bounds, across it the
+    /// strip (the bar's own thickness, not a menu's expansion).
+    fn module_rect(&self, mb: &ModuleBounds) -> (f32, f32, f32, f32) {
+        let strip = read_status_height_from_config();
+        if self.is_vertical() {
+            (0.0, mb.x, strip, mb.w)
+        } else {
+            (mb.x, 0.0, mb.w, strip)
+        }
     }
 
     fn is_vertical(&self) -> bool {
@@ -1480,6 +1535,130 @@ impl cce_ui::engine::Application for StatusApp {
         false
     }
 
+    /// For a screen reader: each module as what it is and what it reads ("Battery: 80%,
+    /// charging" — in its NAME, since AccessKit's AT-SPI side publishes no text value but a
+    /// text field's), its click doing what a left press there does, else opening its menu
+    /// (AT-SPI offers a reader only "click"); each tray item a button that activates it;
+    /// and an open menu with its rows. Every action is carried out as the press it stands
+    /// for, where the thing is drawn (`accessibility_action`).
+    fn accessibility(&mut self, nodes: &mut cce_ui::a11y::AppNodes) {
+        use cce_ui::a11y::AppNodes;
+        use cce_ui::accesskit::{Action, Node, Rect, Role};
+        let rect = |x: f32, y: f32, w: f32, h: f32| Rect::new(x as f64, y as f64, (x + w) as f64, (y + h) as f64);
+        let menus = !self.is_vertical() || self.context_menu.is_some();
+        let modules = self.module_bounds.clone();
+        for (i, mb) in modules.iter().enumerate() {
+            let Some(module) = self.left_modules.iter().chain(self.right_modules.iter()).find(|m| m.name() == mb.name) else { continue };
+            let Some((name, reading)) = module.a11y(&self.stats, &self.title) else { continue };
+            let mut node = Node::new(Role::Status);
+            node.set_label(if reading.is_empty() { name } else { format!("{name}: {reading}") });
+            let (x, y, w, h) = self.module_rect(mb);
+            node.set_bounds(rect(x, y, w, h));
+            if menus {
+                node.add_action(Action::ShowContextMenu);
+            }
+            if menus || mb.name == "window" {
+                node.add_action(Action::Click);
+            }
+            if mb.name == "tray" {
+                let mut items = Vec::new();
+                for (j, b) in self.tray_item_bounds.iter().enumerate() {
+                    let mut item = Node::new(Role::Button);
+                    item.set_label(b.title.clone().filter(|t| !t.is_empty()).unwrap_or_else(|| b.id.split('/').next().unwrap_or(&b.id).to_string()));
+                    item.set_bounds(rect(b.x, b.y, b.w, b.h));
+                    item.add_action(Action::Click);
+                    item.add_action(Action::ShowContextMenu);
+                    nodes.push(AppNodes::id(A11Y_TRAY + j as u64), item);
+                    items.push(AppNodes::id(A11Y_TRAY + j as u64));
+                }
+                node.set_children(items);
+            }
+            nodes.push_top(AppNodes::id(A11Y_MODULE + i as u64), node);
+        }
+        if let Some(menu) = self.context_menu.as_ref().filter(|_| !self.menu_closing) {
+            let mut node = Node::new(Role::Menu);
+            if !menu.title().is_empty() {
+                node.set_label(menu.title());
+            }
+            let (mx, my, mw, mh) = menu.rect;
+            node.set_bounds(rect(mx, my, mw, mh));
+            let mut rows = Vec::new();
+            // The rows as soon as the menu holds them; where each is, once the surface has
+            // grown to show them and laid them out (`row_bounds`).
+            for (i, row) in menu.rows().iter().enumerate() {
+                if row.separator {
+                    continue;
+                }
+                let inert = matches!(row.action, MenuRowAction::Inert);
+                let mut item = Node::new(if inert { Role::Label } else { Role::MenuItem });
+                item.set_label(row.label.as_str());
+                if let Some(&(off, h)) = menu.row_bounds.get(i) {
+                    item.set_bounds(rect(mx, my + off, mw, h));
+                }
+                if !row.enabled {
+                    item.set_disabled();
+                } else if !inert {
+                    item.add_action(Action::Click);
+                }
+                nodes.push(AppNodes::id(A11Y_MENU_ROW + i as u64), item);
+                rows.push(AppNodes::id(A11Y_MENU_ROW + i as u64));
+            }
+            node.set_children(rows);
+            nodes.push_top(AppNodes::id(A11Y_MENU), node);
+            // The keyboard is in an open menu: on its highlighted row, else the menu.
+            nodes.set_focus(menu.hovered.map_or(AppNodes::id(A11Y_MENU), |i| AppNodes::id(A11Y_MENU_ROW + i as u64)));
+        }
+    }
+
+    /// A reader's press, as the press it stands for: a click on a menu row runs it as a
+    /// click there does, a click on a tray item is a left press on it, a module's or a tray
+    /// item's context menu a right press. A
+    /// click on a module is a left press where one does something (the window module's
+    /// picker), else its context menu.
+    fn accessibility_action(&mut self, n: u64, action: cce_ui::a11y::AppAction) -> bool {
+        use cce_ui::a11y::AppAction;
+        let mut button = match action {
+            AppAction::Click => MouseButton::Left,
+            AppAction::ShowContextMenu => MouseButton::Right,
+            _ => return false,
+        };
+        if (A11Y_MODULE..A11Y_TRAY).contains(&n) && button == MouseButton::Left {
+            let is_window = self.module_bounds.get((n - A11Y_MODULE) as usize).is_some_and(|mb| mb.name == "window");
+            if !is_window {
+                button = MouseButton::Right;
+            }
+        }
+        if (A11Y_MENU_ROW..A11Y_MENU_ROW + 1000).contains(&n) {
+            // A row runs as a click on it does, laid out yet or not.
+            if button != MouseButton::Left || self.context_menu.is_none() || self.menu_closing {
+                return false;
+            }
+            if let Some(msg) = self.run_menu_row((n - A11Y_MENU_ROW) as usize) {
+                let _ = self.sender.send(msg);
+            }
+            self.needs_rebuild = true;
+            return true;
+        }
+        let at = if (A11Y_TRAY..A11Y_MENU).contains(&n) {
+            let Some(b) = self.tray_item_bounds.get((n - A11Y_TRAY) as usize) else { return false };
+            (b.x + b.w / 2.0, b.y + b.h / 2.0)
+        } else if (A11Y_MODULE..A11Y_TRAY).contains(&n) {
+            let Some(mb) = self.module_bounds.get((n - A11Y_MODULE) as usize).cloned() else { return false };
+            let (x, y, w, h) = self.module_rect(&mb);
+            (x + w / 2.0, y + h / 2.0)
+        } else {
+            return false;
+        };
+        let mut rebuild = false;
+        let pos = cce_ui::engine::LogicalPosition::new(at.0, at.1);
+        if let Some(msg) = self.handle_mouse_input(button, ElementState::Pressed, pos, &mut rebuild) {
+            // What a menu row dispatches goes through the loop, as a click's does.
+            let _ = self.sender.send(msg);
+        }
+        self.handle_mouse_input(button, ElementState::Released, pos, &mut rebuild);
+        true
+    }
+
     fn settings(&self) -> cce_ui::engine::WindowSettings {
         let app_id = self.get_app_id();
         cce_ui::engine::WindowSettings {
@@ -1887,7 +2066,7 @@ impl cce_ui::engine::Application for StatusApp {
         // An open in-surface menu owns every button event: row clicks run
         // their action (dispatch / DBusMenu event / page navigation); any
         // other press (bar strip, menu padding, right-click) closes.
-        if let Some(menu) = self.context_menu.as_mut() {
+        if self.context_menu.is_some() {
             if state != ElementState::Pressed {
                 return None;
             }
@@ -1896,41 +2075,14 @@ impl cce_ui::engine::Application for StatusApp {
             if self.menu_closing {
                 return None;
             }
-            let hit = if button == MouseButton::Left { menu.item_at(lx, ly) } else { None };
-            let mut result = None;
-            match hit {
-                Some(i) => {
-                    let action = menu.rows().get(i).map(|r| r.action.clone());
-                    match action {
-                        Some(MenuRowAction::Dispatch(ev)) => {
-                            self.menu_closing = true;
-                            result = Some(ev);
-                        }
-                        Some(MenuRowAction::Item(id)) => {
-                            if let Some((dest, path)) = menu.tray_target.clone() {
-                                send_tray_menu_event(dest, path, id);
-                            }
-                            self.menu_closing = true;
-                        }
-                        Some(MenuRowAction::Submenu(p)) | Some(MenuRowAction::Back(p)) => {
-                            menu.page = p;
-                            menu.hovered = None;
-                        }
-                        Some(MenuRowAction::Ccectl(args)) => {
-                            std::thread::spawn(move || {
-                                let _ = std::process::Command::new(get_ccectl_cmd())
-                                    .args(&args)
-                                    .spawn();
-                            });
-                            self.menu_closing = true;
-                        }
-                        _ => {}
-                    }
-                }
+            let hit = if button == MouseButton::Left { self.context_menu.as_ref().and_then(|m| m.item_at(lx, ly)) } else { None };
+            let result = match hit {
+                Some(i) => self.run_menu_row(i),
                 None => {
                     self.menu_closing = true;
+                    None
                 }
-            }
+            };
             self.needs_rebuild = true;
             *needs_rebuild = true;
             return result;
@@ -2383,6 +2535,41 @@ fn small_runtime() -> tokio::runtime::Runtime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What a screen reader is told each module reads: its name and its state in words,
+    /// the combined stats module all of them, and nothing for a reading not in yet.
+    #[test]
+    fn modules_read_out_in_words() {
+        let stats = Some(SystemStats {
+            clock: "12:30".into(),
+            memory: Some(41),
+            cpu_pct: Some(7),
+            battery: Some((80, true)),
+            volume: Some((Some(35), true)),
+            brightness: Some(60),
+            wifi: Some((None, false)),
+        });
+        let read = |m: &dyn StatusModule, title: &str| m.a11y(&stats, title).map(|(n, r)| format!("{n}: {r}"));
+        assert_eq!(read(&BatteryModule, "").as_deref(), Some("Battery: 80%, charging"));
+        assert_eq!(read(&VolumeModule, "").as_deref(), Some("Volume: muted, 35%"));
+        assert_eq!(read(&WifiModule, "").as_deref(), Some("Wi-Fi: disconnected"));
+        assert_eq!(read(&BrightnessModule, "").as_deref(), Some("Brightness: 60%"));
+        assert_eq!(read(&MemoryModule, "").as_deref(), Some("Memory: 41% in use"));
+        assert_eq!(read(&CpuModule, "").as_deref(), Some("CPU: 7%"));
+        assert_eq!(read(&ClockModule, "").as_deref(), Some("Clock: 12:30"));
+        assert_eq!(read(&WindowModule, "notes.md").as_deref(), Some("Focused window: notes.md"));
+        assert_eq!(read(&WindowModule, "").as_deref(), Some("Focused window: no focus"));
+        assert_eq!(
+            read(&StatsModule, "").as_deref(),
+            Some("System: CPU 7%, Memory 41% in use, Brightness 60%, Volume muted, 35%, Wi-Fi disconnected, Battery 80%, charging"),
+        );
+        // A machine without a battery has no battery module to read; before the first
+        // reading, nothing is told as if it were the machine's state.
+        let no_battery = Some(SystemStats { battery: None, ..stats.clone().unwrap() });
+        assert_eq!(BatteryModule.a11y(&no_battery, ""), None);
+        assert_eq!(BatteryModule.a11y(&None, ""), None);
+        assert_eq!(ClockModule.a11y(&None, ""), None);
+    }
 
     /// The bar's menus draw their marks and page turns as cce-icons glyphs,
     /// by the toolkit's context-menu conventions, and never spell them as

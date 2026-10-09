@@ -18,6 +18,13 @@ pub(crate) fn centered_text_y(box_h: f32, font_size: f32) -> f32 {
 
 pub trait StatusModule {
     fn name(&self) -> &'static str;
+
+    /// What a screen reader says of this module: its name ("Battery") and what it shows
+    /// ("80%, charging"). `None` while it shows nothing (a hidden module, a reading not in
+    /// yet), so a reader is never told a placeholder as if it were the machine's state.
+    fn a11y(&self, _stats: &Option<SystemStats>, _title: &str) -> Option<(String, String)> {
+        None
+    }
     
     fn has_custom_background(&self, _title: &str) -> bool { false }
 
@@ -109,6 +116,11 @@ pub struct WindowModule;
 
 impl StatusModule for WindowModule {
     fn name(&self) -> &'static str { "window" }
+
+    fn a11y(&self, _stats: &Option<SystemStats>, title: &str) -> Option<(String, String)> {
+        let has_title = !title.is_empty() && title != "(none)";
+        Some(("Focused window".to_string(), if has_title { title.to_string() } else { NO_FOCUS_TEXT.to_string() }))
+    }
 
     // No has_custom_background override: the "(none)" chip is an ordinary
     // bubble (it used to draw its own square-topped box in render, which
@@ -215,6 +227,11 @@ pub struct ClockModule;
 
 impl StatusModule for ClockModule {
     fn name(&self) -> &'static str { "clock" }
+
+    fn a11y(&self, stats: &Option<SystemStats>, _title: &str) -> Option<(String, String)> {
+        let clock = stats.as_ref()?.clock.trim();
+        (!clock.is_empty()).then(|| ("Clock".to_string(), clock.to_string()))
+    }
 
     fn width(
         &self,
@@ -433,10 +450,18 @@ fn render_readouts(
 pub(crate) trait IconStat {
     const NAME: &'static str;
     fn readout(stats: &Option<SystemStats>, normal_color: [f32; 4]) -> Option<IconReadout>;
+    /// The reading in words, for a screen reader: the module's name and what it reads;
+    /// `None` where the readout hides.
+    fn spoken(stats: &SystemStats) -> Option<(&'static str, String)>;
 }
 
 impl<T: IconStat> StatusModule for T {
     fn name(&self) -> &'static str { T::NAME }
+
+    fn a11y(&self, stats: &Option<SystemStats>, _title: &str) -> Option<(String, String)> {
+        let (name, reading) = T::spoken(stats.as_ref()?)?;
+        Some((name.to_string(), reading))
+    }
 
     fn width(
         &self,
@@ -525,6 +550,23 @@ impl StatsModule {
 impl StatusModule for StatsModule {
     fn name(&self) -> &'static str { "stats" }
 
+    fn a11y(&self, stats: &Option<SystemStats>, _title: &str) -> Option<(String, String)> {
+        let s = stats.as_ref()?;
+        let parts: Vec<String> = [
+            CpuModule::spoken(s),
+            MemoryModule::spoken(s),
+            BrightnessModule::spoken(s),
+            VolumeModule::spoken(s),
+            WifiModule::spoken(s),
+            BatteryModule::spoken(s),
+        ]
+        .into_iter()
+        .flatten()
+        .map(|(name, reading)| format!("{name} {reading}"))
+        .collect();
+        (!parts.is_empty()).then(|| ("System".to_string(), parts.join(", ")))
+    }
+
     fn width(
         &self,
         stats: &Option<SystemStats>,
@@ -587,6 +629,11 @@ pub struct BatteryModule;
 impl IconStat for BatteryModule {
     const NAME: &'static str = "battery";
 
+    fn spoken(stats: &SystemStats) -> Option<(&'static str, String)> {
+        let (cap, charging) = stats.battery?;
+        Some(("Battery", if charging { format!("{cap}%, charging") } else { format!("{cap}%") }))
+    }
+
     fn readout(stats: &Option<SystemStats>, normal_color: [f32; 4]) -> Option<IconReadout> {
         let (cap, charging) = match stats {
             Some(s) => s.battery?,
@@ -610,6 +657,16 @@ pub struct VolumeModule;
 
 impl IconStat for VolumeModule {
     const NAME: &'static str = "volume";
+
+    fn spoken(stats: &SystemStats) -> Option<(&'static str, String)> {
+        let (pct, muted) = stats.volume?;
+        Some(("Volume", match (pct, muted) {
+            (Some(p), false) => format!("{p}%"),
+            (Some(p), true) => format!("muted, {p}%"),
+            (None, true) => "muted".to_string(),
+            (None, false) => "unknown".to_string(),
+        }))
+    }
 
     fn readout(stats: &Option<SystemStats>, normal_color: [f32; 4]) -> Option<IconReadout> {
         let (pct, muted) = match stats {
@@ -640,6 +697,15 @@ pub struct WifiModule;
 
 impl IconStat for WifiModule {
     const NAME: &'static str = "wifi";
+
+    fn spoken(stats: &SystemStats) -> Option<(&'static str, String)> {
+        let (signal, connected) = stats.wifi?;
+        Some(("Wi-Fi", match (connected, signal) {
+            (false, _) => "disconnected".to_string(),
+            (true, Some(p)) => format!("connected, signal {p}%"),
+            (true, None) => "connected".to_string(),
+        }))
+    }
 
     fn readout(stats: &Option<SystemStats>, normal_color: [f32; 4]) -> Option<IconReadout> {
         let (signal, connected) = match stats {
@@ -673,6 +739,10 @@ pub struct BrightnessModule;
 impl IconStat for BrightnessModule {
     const NAME: &'static str = "brightness";
 
+    fn spoken(stats: &SystemStats) -> Option<(&'static str, String)> {
+        Some(("Brightness", format!("{}%", stats.brightness?)))
+    }
+
     fn readout(stats: &Option<SystemStats>, normal_color: [f32; 4]) -> Option<IconReadout> {
         let pct = match stats {
             Some(s) => s.brightness?,
@@ -692,6 +762,10 @@ pub struct MemoryModule;
 
 impl IconStat for MemoryModule {
     const NAME: &'static str = "memory";
+
+    fn spoken(stats: &SystemStats) -> Option<(&'static str, String)> {
+        Some(("Memory", stats.memory.map_or("unknown".to_string(), |p| format!("{p}% in use"))))
+    }
 
     fn readout(stats: &Option<SystemStats>, normal_color: [f32; 4]) -> Option<IconReadout> {
         let pct = match stats {
@@ -713,6 +787,10 @@ pub struct CpuModule;
 impl IconStat for CpuModule {
     const NAME: &'static str = "cpu";
 
+    fn spoken(stats: &SystemStats) -> Option<(&'static str, String)> {
+        Some(("CPU", stats.cpu_pct.map_or("unknown".to_string(), |p| format!("{p}%"))))
+    }
+
     fn readout(stats: &Option<SystemStats>, normal_color: [f32; 4]) -> Option<IconReadout> {
         let pct = match stats {
             Some(s) => s.cpu_pct,
@@ -732,6 +810,11 @@ pub struct TrayModule;
 
 impl StatusModule for TrayModule {
     fn name(&self) -> &'static str { "tray" }
+
+    /// The tray itself; its items are buttons of their own (`StatusApp::accessibility`).
+    fn a11y(&self, _stats: &Option<SystemStats>, _title: &str) -> Option<(String, String)> {
+        Some(("Tray".to_string(), String::new()))
+    }
 
     fn width(
         &self,
@@ -938,6 +1021,11 @@ pub(crate) fn get_light_source_pos_from_config() -> f32 {
 
 impl StatusModule for LightSourceModule {
     fn name(&self) -> &'static str { "light_source" }
+
+    /// The DE's light: its direction is set from the module's menu.
+    fn a11y(&self, _stats: &Option<SystemStats>, _title: &str) -> Option<(String, String)> {
+        Some(("Light direction".to_string(), format!("{:.2} radians", get_light_source_pos_from_config())))
+    }
 
     // The module is just the empty circle — no module box behind it.
     fn has_custom_background(&self, _title: &str) -> bool { true }
