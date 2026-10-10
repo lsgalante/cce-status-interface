@@ -15,6 +15,7 @@ pub(crate) use listeners::*;
 pub(crate) use stats::*;
 pub(crate) use tray::*;
 
+use cce_ui::ipc::ctl::{StatusTopic, WindowInfo};
 use cce_ui::scene::paint::DropletFinish;
 use modules::{StatusModule, WindowModule, ClockModule, BatteryModule, VolumeModule, BrightnessModule, MemoryModule, CpuModule, WifiModule, StatsModule, TrayModule, LightSourceModule};
 
@@ -459,7 +460,8 @@ struct StatusApp {
 /// when copied, so they live in one place.
 fn status_app_id(selected: Option<(&str, Side)>) -> String {
     let display = std::env::var("WAYLAND_DISPLAY").unwrap_or_else(|_| "wayland-0".to_string());
-    let use_interface_prefix = std::path::Path::new(&format!("/tmp/cce-status-interface-{}.sock", display)).exists();
+    let use_interface_prefix =
+        std::path::Path::new(&cce_ui::ipc::ctl::status_socket_for(Some(&display))).exists();
     let prefix = if use_interface_prefix { "cce-status-interface" } else { "cce-status" };
     match selected {
         Some((name, side)) => format!("{}-{:?}-{}", prefix, side, name).to_lowercase(),
@@ -1292,14 +1294,8 @@ pub(crate) fn segment_screen_rect(app_id: &str) -> Option<(i32, i32, i32)> {
 
 /// `segment_screen_rect`'s parse, split out to test.
 pub(crate) fn segment_rect_in(windows_json: &str, app_id: &str) -> Option<(i32, i32, i32)> {
-    windows_json.lines().find_map(|line| {
-        let v: serde_json::Value = serde_json::from_str(line).ok()?;
-        if v.get("app_id")?.as_str()? != app_id {
-            return None;
-        }
-        let n = |k: &str| v.get(k).and_then(|x| x.as_i64()).map(|x| x as i32);
-        Some((n("x")?, n("y")?, n("h")?))
-    })
+    let w = WindowInfo::parse_all(windows_json).into_iter().find(|w| w.app_id == app_id)?;
+    Some((w.x, w.y, w.h))
 }
 
 /// The SNI `Activate`/`ContextMenu` point for a click at segment-local
@@ -1356,12 +1352,8 @@ pub(crate) fn parse_ccectl_window_line(line: &str) -> Option<CcectlWindow> {
 
 /// Parse one line of `ccectl windows --json` output.
 pub(crate) fn parse_ccectl_window_json_line(line: &str) -> Option<CcectlWindow> {
-    let v: serde_json::Value = serde_json::from_str(line).ok()?;
-    let id = v.get("id")?.as_u64()?.to_string();
-    let app_id = v.get("app_id")?.as_str()?.to_string();
-    let title = v.get("title").and_then(|t| t.as_str()).unwrap_or("").to_string();
-    let focused = v.get("focused").and_then(|f| f.as_bool()).unwrap_or(false);
-    Some((id, app_id, title, focused))
+    let w = WindowInfo::from_json_line(line)?;
+    Some((w.id.to_string(), w.app_id, w.title, w.focused))
 }
 
 /// Parse one `ccectl windows` line in either format — JSON (`--json`) when the
@@ -1448,12 +1440,12 @@ impl cce_ui::engine::Application for StatusApp {
         left_modules.push(module);
 
         if has_window {
-            tokio::spawn(spawn_status_listener("layout".to_string(), sender.clone()));
-            tokio::spawn(spawn_status_listener("title".to_string(), sender.clone()));
+            tokio::spawn(spawn_status_listener(StatusTopic::Layout, sender.clone()));
+            tokio::spawn(spawn_status_listener(StatusTopic::Title, sender.clone()));
         }
         // Every module can host an in-surface menu, so every process listens
         // for the compositor's click-away dismiss pushes.
-        tokio::spawn(spawn_status_listener("dismiss".to_string(), sender.clone()));
+        tokio::spawn(spawn_status_listener(StatusTopic::Dismiss, sender.clone()));
         let is_primary_for_switcher = selected_module.as_ref().is_none_or(|(name, _)| name == "window");
         if is_primary_for_switcher {
             tokio::spawn(spawn_switcher_listener(sender.clone()));
@@ -2634,8 +2626,8 @@ mod tests {
     #[test]
     fn tray_clicks_report_screen_points_below_the_bar() {
         let listing = concat!(
-            r#"{"app_id":"cce-status-interface-right-clock","x":1569,"y":0,"w":339,"h":27}"#, "\n",
-            r#"{"app_id":"cce-status-interface-right-tray","x":1127,"y":0,"w":116,"h":27}"#, "\n",
+            r#"{"id":1,"app_id":"cce-status-interface-right-clock","x":1569,"y":0,"w":339,"h":27}"#, "\n",
+            r#"{"id":2,"app_id":"cce-status-interface-right-tray","x":1127,"y":0,"w":116,"h":27}"#, "\n",
         );
         let seg = segment_rect_in(listing, "cce-status-interface-right-tray");
         assert_eq!(seg, Some((1127, 0, 27)));

@@ -199,7 +199,7 @@ fn retry_title(x: Arc<XHandle>, icon: u32, fallback: String, events: WeakUnbound
 /// The compositor's status socket, as the bar finds it.
 fn status_socket_path() -> String {
     let display = std::env::var("WAYLAND_DISPLAY").unwrap_or_else(|_| "wayland-0".to_string());
-    format!("/tmp/cce-status-interface-{display}.sock")
+    cce_ui::ipc::ctl::status_socket_for(Some(&display))
 }
 
 /// Follow the compositor's `clickaway` topic — a press that landed on no
@@ -211,7 +211,8 @@ fn follow_click_aways(x: Arc<XHandle>) {
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
         loop {
             if let Ok(mut stream) = tokio::net::UnixStream::connect(status_socket_path()).await {
-                if stream.write_all(b"clickaway\n").await.is_ok() {
+                let topic = cce_ui::ipc::ctl::StatusTopic::ClickAway;
+                if stream.write_all(format!("{topic}\n").as_bytes()).await.is_ok() {
                     let mut lines = BufReader::new(stream).lines();
                     while let Ok(Some(_press)) = lines.next_line().await {
                         let x = x.clone();

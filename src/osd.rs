@@ -211,16 +211,12 @@ fn beside_segment(windows: &str, outputs: &str, modules: &[&str], (w, h): (i32, 
         text.lines().filter_map(|l| serde_json::from_str(l).ok()).collect()
     };
     let int = |v: &serde_json::Value, k: &str| v.get(k).and_then(|x| x.as_i64()).map(|x| x as i32);
-    let windows = objects(windows);
+    let windows = cce_ui::ipc::ctl::WindowInfo::parse_all(windows);
     let segment = modules.iter().find_map(|module| {
         let suffix = format!("-{module}");
-        windows.iter().find(|v| {
-            v.get("app_id")
-                .and_then(|a| a.as_str())
-                .is_some_and(|a| a.starts_with("cce-status") && a.ends_with(&suffix))
-        })
+        windows.iter().find(|w| w.app_id.starts_with("cce-status") && w.app_id.ends_with(&suffix))
     })?;
-    let (sx, sy, sw, sh) = (int(segment, "x")?, int(segment, "y")?, int(segment, "w")?, int(segment, "h")?);
+    let (sx, sy, sw, sh) = (segment.x, segment.y, segment.w, segment.h);
     let (cx, cy) = (sx + sw / 2, sy + sh / 2);
     let output = objects(outputs).into_iter().find(|o| {
         let (Some(ox), Some(oy), Some(ow), Some(oh)) = (int(o, "x"), int(o, "y"), int(o, "logical_w"), int(o, "logical_h")) else {
@@ -606,9 +602,9 @@ mod tests {
     #[test]
     fn the_slider_hangs_centered_under_a_top_bar_stats_segment() {
         let windows = concat!(
-            r#"{"app_id":"cce-status-interface-right-tray","x":1087,"y":0,"w":116,"h":27}"#, "\n",
-            r#"{"app_id":"cce-status-interface-right-stats","x":1215,"y":0,"w":359,"h":27}"#, "\n",
-            r#"{"app_id":"cce-terminal","x":0,"y":0,"w":1920,"h":1200}"#, "\n",
+            r#"{"id":1,"app_id":"cce-status-interface-right-tray","x":1087,"y":0,"w":116,"h":27}"#, "\n",
+            r#"{"id":2,"app_id":"cce-status-interface-right-stats","x":1215,"y":0,"w":359,"h":27}"#, "\n",
+            r#"{"id":3,"app_id":"cce-terminal","x":0,"y":0,"w":1920,"h":1200}"#, "\n",
         );
         let (anchor, margin) = beside_segment(windows, OUTPUT, &["stats", "volume"], (260, 40), 12).unwrap();
         assert_eq!(anchor, LayerAnchor::TOP | LayerAnchor::LEFT);
@@ -618,7 +614,7 @@ mod tests {
 
     #[test]
     fn on_a_bottom_bar_it_sits_above_and_stays_on_screen() {
-        let windows = r#"{"app_id":"cce-status-left-volume","x":1880,"y":1173,"w":40,"h":27}"#;
+        let windows = r#"{"id":1,"app_id":"cce-status-left-volume","x":1880,"y":1173,"w":40,"h":27}"#;
         let (_, (top, _, _, left)) = beside_segment(windows, OUTPUT, &["stats", "volume"], (260, 40), 12).unwrap();
         assert_eq!(top, 1173 - 12 - 40);
         assert_eq!(left, 1920 - 260);
@@ -630,14 +626,14 @@ mod tests {
             r#"{"logical_h":1200,"logical_w":1920,"x":0,"y":0}"#, "\n",
             r#"{"logical_h":1080,"logical_w":1920,"x":1920,"y":0}"#, "\n",
         );
-        let windows = r#"{"app_id":"cce-status-right-stats","x":3000,"y":0,"w":200,"h":27}"#;
+        let windows = r#"{"id":1,"app_id":"cce-status-right-stats","x":3000,"y":0,"w":200,"h":27}"#;
         let (_, (_, _, _, left)) = beside_segment(windows, outputs, &["stats"], (260, 40), 12).unwrap();
         assert_eq!(left, 3100 - 1920 - 130);
     }
 
     #[test]
     fn no_listed_segment_means_no_placement() {
-        let windows = r#"{"app_id":"cce-status-right-clock","x":1586,"y":0,"w":322,"h":27}"#;
+        let windows = r#"{"id":1,"app_id":"cce-status-right-clock","x":1586,"y":0,"w":322,"h":27}"#;
         assert_eq!(beside_segment(windows, OUTPUT, &["stats", "volume"], (260, 40), 12), None);
     }
 

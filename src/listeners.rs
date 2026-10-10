@@ -2,13 +2,13 @@
 //! switcher trigger socket.
 
 use crate::CustomEvent;
+use cce_ui::ipc::ctl::StatusTopic;
 
 /// Subscribe to one compositor status topic and forward its pushes as
 /// [`CustomEvent`]s, reconnecting every second until the socket is there.
 ///
-/// `sub` is the whole subscription line; the topic is its first word, so a
-/// topic that takes an argument can still be subscribed to.
-pub(crate) async fn spawn_status_listener(sub: String, sender: calloop::channel::Sender<CustomEvent>) {
+/// `topic` is cce-core's `ctl::StatusTopic`, the names the compositor serves.
+pub(crate) async fn spawn_status_listener(topic: StatusTopic, sender: calloop::channel::Sender<CustomEvent>) {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::net::UnixStream;
     // Retry delay, doubling while connections keep ending without ever
@@ -20,31 +20,25 @@ pub(crate) async fn spawn_status_listener(sub: String, sender: calloop::channel:
     // deploy separately, and cce-fx only restarts at login).
     let mut retry_s = 1u64;
     loop {
-        // The one name the compositor binds (`get_status_socket_path`); the
-        // shorter `cce-status-` spelling the docs once gave is not bound.
-        let socket_path = match std::env::var("WAYLAND_DISPLAY") {
-            Ok(display) => format!("/tmp/cce-status-interface-{}.sock", display),
-            Err(_) => "/tmp/cce-status-interface.sock".to_string(),
-        };
+        let socket_path = cce_ui::ipc::ctl::status_socket();
         if let Ok(mut stream) = UnixStream::connect(&socket_path).await {
-            log::info!("[status-listener] connected to {} for sub '{}'", socket_path, sub);
-            if stream.write_all(format!("{}\n", sub).as_bytes()).await.is_ok() {
+            log::info!("[status-listener] connected to {} for topic '{}'", socket_path, topic);
+            if stream.write_all(format!("{}\n", topic).as_bytes()).await.is_ok() {
                 let mut reader = BufReader::new(stream);
                 let mut line = String::new();
                 while reader.read_line(&mut line).await.unwrap_or(0) > 0 {
                     // Anything at all means the topic is understood.
                     retry_s = 1;
                     let val = line.trim().to_string();
-                    log::debug!("[status-listener] received '{}' update: '{}'", sub, val);
+                    log::debug!("[status-listener] received '{}' update: '{}'", topic, val);
                     if !val.is_empty() {
-                        let topic = sub.split_whitespace().next().unwrap_or("");
                         let ev = match topic {
-                            "layout" => CustomEvent::LayoutUpdated(val.clone()),
-                            "title" => CustomEvent::TitleUpdated(val.clone()),
+                            StatusTopic::Layout => CustomEvent::LayoutUpdated(val.clone()),
+                            StatusTopic::Title => CustomEvent::TitleUpdated(val.clone()),
                             // Click-away-close: the payload is the app_id of
                             // the segment the press landed on ("-" for none).
-                            "dismiss" => CustomEvent::MenuDismiss(val.clone()),
-                            _ => unreachable!(),
+                            StatusTopic::Dismiss => CustomEvent::MenuDismiss(val.clone()),
+                            other => unreachable!("the bar does not subscribe to {other}"),
                         };
                         let _ = sender.send(ev);
                     }
