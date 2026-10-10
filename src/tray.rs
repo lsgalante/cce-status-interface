@@ -385,23 +385,44 @@ impl Watcher {
     }
 }
 
-struct StatusInterface;
+struct StatusInterface {
+    tokio_handle: tokio::runtime::Handle,
+}
 
 #[zbus::interface(name = "org.clear.StatusInterface")]
 impl StatusInterface {
-    async fn notify_attention(&self, app_id: String, title: String) {
+    /// Posts the notification over D-Bus on a task of its own, so the
+    /// compositor's call returns at once even when the notification daemon
+    /// has to be activated first. Until 2026-10-10 this ran `sh -c
+    /// "notify-send ..."` and dropped the child unreaped: every activation
+    /// request left a `notify-send <defunct>` zombie under the tray process.
+    async fn notify_attention(&self, app_id: String, title: String, #[zbus(connection)] conn: &zbus::Connection) {
         log::debug!("[status-interface] Received NotifyAttention: app_id={}, title={}", app_id, title);
-        let title_escaped = title.replace('\'', "'\\''");
-        let app_id_escaped = app_id.replace('\'', "'\\''");
-        let cmd = format!(
-            "notify-send -a '{}' '{} needs attention' 'This window has requested activation.'",
-            app_id_escaped, title_escaped
-        );
-        std::process::Command::new("sh")
-            .args(["-c", &cmd])
-            .spawn()
-            .ok();
+        let conn = conn.clone();
+        self.tokio_handle.spawn(async move {
+            if let Err(e) = post_attention_notification(&conn, &app_id, &title).await {
+                log::warn!("Failed to show attention notification for {}: {}", app_id, e);
+            }
+        });
     }
+}
+
+/// `org.freedesktop.Notifications.Notify` with what `notify-send -a <app_id>
+/// '<title> needs attention' '...'` sent: no icon, actions or hints, and the
+/// server's default timeout.
+async fn post_attention_notification(conn: &zbus::Connection, app_id: &str, title: &str) -> zbus::Result<()> {
+    let summary = format!("{} needs attention", title);
+    let actions: &[&str] = &[];
+    let hints: HashMap<&str, zbus::zvariant::Value<'_>> = HashMap::new();
+    conn.call_method(
+        Some("org.freedesktop.Notifications"),
+        "/org/freedesktop/Notifications",
+        Some("org.freedesktop.Notifications"),
+        "Notify",
+        &(app_id, 0u32, "", summary.as_str(), "This window has requested activation.", actions, hints, -1i32),
+    )
+    .await?;
+    Ok(())
 }
 
 /// The registered items to drop when bus name `name` loses its owner
@@ -455,7 +476,7 @@ pub(crate) async fn spawn_status_tray(sender: calloop::channel::Sender<CustomEve
             .unwrap()
             .serve_at("/StatusNotifierWatcher", watcher)
             .unwrap()
-            .serve_at("/StatusInterface", StatusInterface)
+            .serve_at("/StatusInterface", StatusInterface { tokio_handle: tokio_handle.clone() })
             .unwrap()
             .build()
             .await
