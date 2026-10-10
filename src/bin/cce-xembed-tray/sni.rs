@@ -109,13 +109,13 @@ impl Item {
     }
 
     #[zbus(signal)]
-    async fn new_icon(ctxt: &zbus::SignalContext<'_>) -> zbus::Result<()>;
+    async fn new_icon(ctxt: &zbus::object_server::SignalEmitter<'_>) -> zbus::Result<()>;
 
     #[zbus(signal)]
-    async fn new_title(ctxt: &zbus::SignalContext<'_>) -> zbus::Result<()>;
+    async fn new_title(ctxt: &zbus::object_server::SignalEmitter<'_>) -> zbus::Result<()>;
 
     #[zbus(signal)]
-    async fn new_tool_tip(ctxt: &zbus::SignalContext<'_>) -> zbus::Result<()>;
+    async fn new_tool_tip(ctxt: &zbus::object_server::SignalEmitter<'_>) -> zbus::Result<()>;
 }
 
 /// An icon the X side reported. It is published once it has pixels: an
@@ -138,7 +138,7 @@ async fn register(conn: &zbus::Connection) {
 
 async fn publish(x: &Arc<XHandle>, icon: u32, title: String, image: SniImage, at: ClickPoint) -> zbus::Result<zbus::Connection> {
     let item = Item { icon, title, image, at, x: x.clone() };
-    let conn = zbus::ConnectionBuilder::session()?.serve_at(ITEM_PATH, item)?.build().await?;
+    let conn = zbus::connection::Builder::session()?.serve_at(ITEM_PATH, item)?.build().await?;
     register(&conn).await;
     log::info!("published {icon:#x} as {}", conn.unique_name().map(|n| n.to_string()).unwrap_or_default());
     Ok(conn)
@@ -155,7 +155,7 @@ async fn update(conn: &zbus::Connection, image: Option<SniImage>, title: Option<
             item.title = title;
         }
     }
-    let ctxt = iface.signal_context();
+    let ctxt = iface.signal_emitter();
     if image.is_some() {
         Item::new_icon(ctxt).await?;
     }

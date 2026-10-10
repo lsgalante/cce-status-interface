@@ -286,7 +286,7 @@ impl Watcher {
     async fn register_status_notifier_item(
         &self,
         service: &str,
-        #[zbus(header)] header: zbus::MessageHeader<'_>,
+        #[zbus(header)] header: zbus::message::Header<'_>,
         #[zbus(connection)] conn: &zbus::Connection,
     ) {
         let sender = header
@@ -464,7 +464,7 @@ pub(crate) async fn spawn_status_tray(sender: calloop::channel::Sender<CustomEve
             sender: sender.clone(),
             tokio_handle: tokio_handle.clone(),
         };
-        let builder = match zbus::ConnectionBuilder::session() {
+        let builder = match zbus::connection::Builder::session() {
             Ok(b) => b,
             Err(e) => {
                 log::warn!("Failed to initialize D-Bus session: {:?}", e);
