@@ -2342,7 +2342,7 @@ fn main() {
         let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
         rt.block_on(async {
             let display = std::env::var("WAYLAND_DISPLAY").unwrap_or_else(|_| "wayland-0".to_string());
-            let socket_path = format!("/tmp/cce-status-interface-switcher-{}.sock", display);
+            let socket_path = cce_ui::ipc::socket_path_for(crate::listeners::SWITCHER_PREFIX, Some(&display));
             use tokio::io::AsyncWriteExt;
             if let Ok(mut stream) = tokio::net::UnixStream::connect(&socket_path).await {
                 let _ = stream.write_all(b"trigger\n").await;

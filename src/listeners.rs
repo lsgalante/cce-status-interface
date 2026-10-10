@@ -51,11 +51,15 @@ pub(crate) async fn spawn_status_listener(topic: StatusTopic, sender: calloop::c
     }
 }
 
+/// The window-switcher trigger socket, `/tmp/cce-status-interface-switcher-<display>.sock`:
+/// `cce-status-interface --trigger-switcher` connects and sends `trigger`.
+pub(crate) const SWITCHER_PREFIX: &str = "cce-status-interface-switcher";
+
 pub(crate) async fn spawn_switcher_listener(sender: calloop::channel::Sender<CustomEvent>) {
     use tokio::io::AsyncBufReadExt;
     use tokio::net::UnixListener;
     let display = std::env::var("WAYLAND_DISPLAY").unwrap_or_else(|_| "wayland-0".to_string());
-    let socket_path = format!("/tmp/cce-status-interface-switcher-{}.sock", display);
+    let socket_path = cce_ui::ipc::socket_path_for(SWITCHER_PREFIX, Some(&display));
     let _ = std::fs::remove_file(&socket_path);
 
     if let Ok(listener) = UnixListener::bind(&socket_path) {
