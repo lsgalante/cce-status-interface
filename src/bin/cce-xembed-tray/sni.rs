@@ -199,12 +199,7 @@ fn retry_title(x: Arc<XHandle>, icon: u32, fallback: String, events: WeakUnbound
 /// The compositor's status socket, as the bar finds it.
 fn status_socket_path() -> String {
     let display = std::env::var("WAYLAND_DISPLAY").unwrap_or_else(|_| "wayland-0".to_string());
-    let primary = format!("/tmp/cce-status-interface-{display}.sock");
-    if std::path::Path::new(&primary).exists() {
-        primary
-    } else {
-        format!("/tmp/cce-status-{display}.sock")
-    }
+    format!("/tmp/cce-status-interface-{display}.sock")
 }
 
 /// Follow the compositor's `clickaway` topic — a press that landed on no

@@ -20,23 +20,11 @@ pub(crate) async fn spawn_status_listener(sub: String, sender: calloop::channel:
     // deploy separately, and cce-fx only restarts at login).
     let mut retry_s = 1u64;
     loop {
+        // The one name the compositor binds (`get_status_socket_path`); the
+        // shorter `cce-status-` spelling the docs once gave is not bound.
         let socket_path = match std::env::var("WAYLAND_DISPLAY") {
-            Ok(display) => {
-                let primary = format!("/tmp/cce-status-interface-{}.sock", display);
-                if std::path::Path::new(&primary).exists() {
-                    primary
-                } else {
-                    format!("/tmp/cce-status-{}.sock", display)
-                }
-            }
-            Err(_) => {
-                let primary = "/tmp/cce-status-interface.sock".to_string();
-                if std::path::Path::new(&primary).exists() {
-                    primary
-                } else {
-                    "/tmp/cce-status.sock".to_string()
-                }
-            }
+            Ok(display) => format!("/tmp/cce-status-interface-{}.sock", display),
+            Err(_) => "/tmp/cce-status-interface.sock".to_string(),
         };
         if let Ok(mut stream) = UnixStream::connect(&socket_path).await {
             log::info!("[status-listener] connected to {} for sub '{}'", socket_path, sub);
