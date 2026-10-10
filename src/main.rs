@@ -503,8 +503,10 @@ impl StatusApp {
                 None
             }
             MenuRowAction::Ccectl(args) => {
+                // `status`, not `spawn`: this thread is the reaper, so the
+                // ccectl never lingers as a zombie under the bar.
                 std::thread::spawn(move || {
-                    let _ = std::process::Command::new(get_ccectl_cmd()).args(&args).spawn();
+                    let _ = std::process::Command::new(get_ccectl_cmd()).args(&args).status();
                 });
                 self.menu_closing = true;
                 None
@@ -1154,10 +1156,11 @@ impl StatusApp {
         // (bound to super+tab via the window_manager.window_switcher config key).
         // Delegate to it so there is a single window-switcher implementation.
         if is_switcher_mode {
+            // Waited on by this thread, as the menu's ccectl actions are.
             std::thread::spawn(|| {
                 let _ = std::process::Command::new(get_ccectl_cmd())
                     .arg("window-switcher")
-                    .spawn();
+                    .status();
             });
             return;
         }
