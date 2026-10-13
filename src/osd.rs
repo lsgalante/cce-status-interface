@@ -348,6 +348,14 @@ fn quad_of(text: [f32; 4], a: f32) -> [f32; 4] {
 impl cce_ui::engine::Application for OsdApp {
     type Message = OsdEvent;
 
+    fn csd(&mut self) -> Option<&mut dyn cce_ui::engine::Csd> {
+        Some(self)
+    }
+
+    fn layer_app(&mut self) -> Option<&mut dyn cce_ui::engine::LayerApp> {
+        Some(self)
+    }
+
     fn create(sender: cce_ui::engine::AppSender<Self::Message>) -> Self {
         // The app keeps calloop's sender; `AppSender` converts into it.
         let sender: calloop::channel::Sender<Self::Message> = sender.into();
@@ -376,12 +384,6 @@ impl cce_ui::engine::Application for OsdApp {
         app
     }
 
-    /// An overlay, not a window: no client-side move, resize or resize
-    /// cursors. (cce-ui used to infer this from the app id.)
-    fn standard_csd(&self) -> bool {
-        false
-    }
-
     fn settings(&self) -> WindowSettings {
         WindowSettings {
             title: "Level".to_string(),
@@ -391,18 +393,6 @@ impl cce_ui::engine::Application for OsdApp {
             fullscreen: false,
             min_size: None,
         }
-    }
-
-    fn layer(&self) -> Option<LayerSettings> {
-        let (anchor, margin) = self.placement;
-        Some(LayerSettings {
-            layer: LayerKind::Overlay,
-            anchor,
-            exclusive_zone: 0,
-            keyboard_interactivity: LayerKeyboardInteractivity::None,
-            margin,
-            namespace: SOCKET_PREFIX.to_string(),
-        })
     }
 
     fn update(&mut self, msg: Self::Message, needs_rebuild: &mut bool, exit: &mut bool) {
@@ -563,6 +553,28 @@ impl cce_ui::engine::Application for OsdApp {
     fn handle_mouse_wheel(&mut self, _delta: &MouseScrollDelta, _pos: LogicalPosition, _needs_rebuild: &mut bool) {}
     fn handle_key_input(&mut self, _event: &KeyEvent, _needs_rebuild: &mut bool) -> Option<Self::Message> {
         None
+    }
+}
+
+impl cce_ui::engine::Csd for OsdApp {
+    /// An overlay, not a window: no client-side move, resize or resize
+    /// cursors. (cce-ui used to infer this from the app id.)
+    fn standard_csd(&self) -> bool {
+        false
+    }
+}
+
+impl cce_ui::engine::LayerApp for OsdApp {
+    fn layer(&self) -> Option<LayerSettings> {
+        let (anchor, margin) = self.placement;
+        Some(LayerSettings {
+            layer: LayerKind::Overlay,
+            anchor,
+            exclusive_zone: 0,
+            keyboard_interactivity: LayerKeyboardInteractivity::None,
+            margin,
+            namespace: SOCKET_PREFIX.to_string(),
+        })
     }
 }
 

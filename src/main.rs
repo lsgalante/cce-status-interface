@@ -1398,6 +1398,10 @@ pub(crate) fn draw_label(prims: &mut Vec<TextPrim>, label: cce_ui::widget::Style
 impl cce_ui::engine::Application for StatusApp {
     type Message = CustomEvent;
 
+    fn csd(&mut self) -> Option<&mut dyn cce_ui::engine::Csd> {
+        Some(self)
+    }
+
     /// The status bar is a systemd user service the compositor does not
     /// restore, so it waits for the next compositor instead of exiting with
     /// this one. Exiting took the tray module's StatusNotifierWatcher off the
@@ -1523,12 +1527,6 @@ impl cce_ui::engine::Application for StatusApp {
     }
 
 
-
-    /// A bar segment is placed by the compositor: no client-side move,
-    /// resize or resize cursors. (cce-ui used to infer this from the app id.)
-    fn standard_csd(&self) -> bool {
-        false
-    }
 
     /// For a screen reader: each module as what it is and what it reads ("Battery: 80%,
     /// charging" — in its NAME, since AccessKit's AT-SPI side publishes no text value but a
@@ -2323,6 +2321,14 @@ impl cce_ui::engine::Application for StatusApp {
     fn handle_mouse_wheel(&mut self, _delta: &MouseScrollDelta, _pos: cce_ui::engine::LogicalPosition, _needs_rebuild: &mut bool) {}
 
     fn handle_key_input(&mut self, _event: &KeyEvent, _needs_rebuild: &mut bool) -> Option<Self::Message> { None }
+}
+
+impl cce_ui::engine::Csd for StatusApp {
+    /// A bar segment is placed by the compositor: no client-side move,
+    /// resize or resize cursors. (cce-ui used to infer this from the app id.)
+    fn standard_csd(&self) -> bool {
+        false
+    }
 }
 
 
