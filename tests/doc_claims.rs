@@ -18,10 +18,11 @@
 /// grown tests — the list was right when written and had quietly inverted.
 ///
 /// Four claim shapes are understood, and each is checked only if the doc
-/// actually makes it:
+/// actually makes it. A count in one of them that this scan cannot read
+/// fails the test rather than leaving the claim unchecked:
 ///
 /// - `<N> modules carry unit tests` / `<N> modules have them` — how many
-///   files under src/ contain a `#[cfg(test)]` block.
+///   files under src/ contain a `#[test]` function.
 /// - `<N> tests` / `~<N> unit tests` — total `#[test]` count. A `~` figure
 ///   gets a 10% tolerance; a bare one must be exact, because that is what
 ///   writing a bare number claims.
@@ -36,8 +37,15 @@
 pub mod test_claims {
     use std::path::{Path, PathBuf};
 
-    /// Every `.rs` under src/ that carries a `#[cfg(test)]` block, with how
-    /// many `#[test]` functions it holds.
+    /// Every `.rs` under src/ that holds a `#[test]` function, with how many.
+    ///
+    /// Not every file with a `#[cfg(test)]`. The two agree here today, since
+    /// each test module is an inline `#[cfg(test)] mod tests { … }` in the
+    /// file it tests, the tray bridge's `src/bin/cce-xembed-tray/` modules
+    /// included. But one split out as `#[cfg(test)] mod tests;` puts the gate
+    /// in a parent with no tests of its own and the tests in a file with no
+    /// gate, and that rule counted the one and missed the other
+    /// (cce-compositor's `layout_probe.rs`).
     fn test_modules(root: &Path) -> Vec<(PathBuf, usize)> {
         fn walk(dir: &Path, out: &mut Vec<(PathBuf, usize)>) {
             let Ok(entries) = std::fs::read_dir(dir) else { return };
@@ -47,8 +55,9 @@ pub mod test_claims {
                     walk(&p, out);
                 } else if p.extension().and_then(|x| x.to_str()) == Some("rs") {
                     if let Ok(s) = std::fs::read_to_string(&p) {
-                        if s.contains("#[cfg(test)]") {
-                            out.push((p, s.matches("#[test]").count()));
+                        let n = s.matches("#[test]").count();
+                        if n > 0 {
+                            out.push((p, n));
                         }
                     }
                 }
@@ -80,28 +89,64 @@ pub mod test_claims {
         v
     }
 
+    const ONES: [&str; 20] = [
+        "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+        "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen",
+        "seventeen", "eighteen", "nineteen",
+    ];
+    const TENS: [&str; 8] =
+        ["twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"];
+
+    /// A count as the docs write it: digits, or English words up to
+    /// ninety-nine, hyphenated the usual way ("twenty-two").
     fn word_to_num(w: &str) -> Option<usize> {
-        const WORDS: [&str; 21] = [
-            "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
-            "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen",
-            "seventeen", "eighteen", "nineteen", "twenty",
-        ];
-        // Docs wrap these in punctuation — "(nine", "(~175", "48 tests:" —
-        // and a token that fails to parse makes the claim silently unchecked,
-        // which is the failure this whole file exists to prevent.
+        // Docs wrap these in punctuation — "(nine", "(~175", "48 tests:".
         let w = w.trim_matches(|c: char| !c.is_ascii_alphanumeric());
         if let Ok(n) = w.parse::<usize>() {
             return Some(n);
         }
         let lower = w.to_ascii_lowercase();
-        WORDS.iter().position(|x| *x == lower)
+        let ones = |s: &str| ONES.iter().position(|x| *x == s);
+        let tens = |s: &str| TENS.iter().position(|x| *x == s).map(|i| 20 + 10 * i);
+        match lower.split_once('-') {
+            None => ones(&lower).or_else(|| tens(&lower)),
+            Some((t, o)) => Some(tens(t)? + ones(o).filter(|n| (1..=9).contains(n))?),
+        }
     }
 
-    /// The token right before `phrase`, and whether it was written with `~`.
-    fn number_before(doc: &str, phrase: &str) -> Option<(usize, bool)> {
+    /// Whether a token is trying to be a count, read or not: it carries a
+    /// `~`, is digits with separators ("1,200"), or starts with a tens word
+    /// ("twenty-too", "twentytwo"). "unit" before "tests" is prose and says
+    /// nothing; one of these that `word_to_num` cannot read is a claim that
+    /// would otherwise go unchecked in silence, which is the failure this
+    /// whole file exists to prevent. Not any hyphenated number word: that
+    /// would read "one-shot tests" as a count.
+    fn looks_like_count(w: &str) -> bool {
+        let t = w.trim_matches(|c: char| !c.is_ascii_alphanumeric());
+        let lower = t.to_ascii_lowercase();
+        w.contains('~')
+            || (t.starts_with(|c: char| c.is_ascii_digit())
+                && t.chars().all(|c| c.is_ascii_digit() || ",._".contains(c)))
+            || TENS.iter().any(|x| lower.starts_with(x))
+    }
+
+    /// The token right before `phrase`'s first occurrence: `Ok` with the
+    /// count and whether it was written with `~`, or `Err` with the token
+    /// when it does not read as one. `None` when the phrase is absent.
+    fn number_before(doc: &str, phrase: &str) -> Option<Result<(usize, bool), String>> {
         let at = doc.find(phrase)?;
         let word = doc[..at].split_whitespace().next_back()?;
-        Some((word_to_num(word)?, word.contains('~')))
+        Some(match word_to_num(word) {
+            Some(n) => Ok((n, word.contains('~'))),
+            None => Err(word.to_string()),
+        })
+    }
+
+    fn unreadable(word: &str, phrase: &str) -> String {
+        format!(
+            "\"{word} {phrase}\" — `{word}` is not a count this scan can read; write \
+             it in digits or as words (\"twenty-two\"), or teach `word_to_num` the spelling"
+        )
     }
 
     /// Backticked `*.rs` names from `phrase` up to the end of its sentence.
@@ -122,6 +167,36 @@ pub mod test_claims {
         p.file_name().and_then(|x| x.to_str()).unwrap_or_default().to_string()
     }
 
+    /// cce-compositor's "Twenty-two modules carry unit tests" read as no
+    /// number at all until 2026-10-13, and the count and the module list went
+    /// unchecked with it.
+    #[test]
+    fn test_counts_read_as_the_docs_write_them() {
+        for (w, n) in [
+            ("Twenty-two", 22), ("(thirty-one", 31), ("twenty", 20), ("Nineteen", 19),
+            ("ninety-nine", 99), ("(~175", 175), ("48", 48), ("zero", 0),
+        ] {
+            assert_eq!(word_to_num(w), Some(n), "{w}");
+        }
+        for w in ["twenty-zero", "twenty-ten", "two-twenty", "one-shot", "twentytwo", "carry"] {
+            assert_eq!(word_to_num(w), None, "{w}");
+        }
+        for w in ["twenty-too", "twentytwo", "~many", "1,200"] {
+            assert!(looks_like_count(w), "{w} should read as a count");
+        }
+        for w in ["unit", "one-shot", "e2e", "3D", "carry"] {
+            assert!(!looks_like_count(w), "{w} should read as prose");
+        }
+        assert_eq!(
+            number_before("Twenty-two modules carry unit tests", "modules carry unit tests"),
+            Some(Ok((22, false)))
+        );
+        assert_eq!(
+            number_before("Many modules carry unit tests", "modules carry unit tests"),
+            Some(Err("Many".to_string()))
+        );
+    }
+
     #[test]
     fn test_claude_md_test_claims_match_the_source() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -133,49 +208,67 @@ pub mod test_claims {
         let mut checked = 0usize;
 
         // --- how many modules carry tests
+        //
+        // These phrases ARE the claim, so whatever stands before one is its
+        // count: a token that does not read as a number fails outright.
         for phrase in ["modules carry unit tests", "modules have them", "modules have unit tests"] {
-            if let Some((claimed, _)) = number_before(&doc, phrase) {
-                checked += 1;
-                if claimed != mods.len() {
-                    bad.push(format!(
-                        "\"{claimed} {phrase}\" — {} modules actually do: {}",
-                        mods.len(),
-                        mods.iter().map(|(p, _)| base(p)).collect::<Vec<_>>().join(", ")
-                    ));
-                }
-                // Where the doc ENUMERATES them, the list must be the real
-                // set. Two or more names means a list; a single one is the
-                // "`browse.rs` has the most" shape, checked separately.
-                let listed = names_after(&doc, phrase);
-                if listed.len() >= 2 {
-                    let mut want: Vec<String> = mods.iter().map(|(p, _)| base(p)).collect();
-                    let mut got = listed.clone();
-                    want.sort();
-                    got.sort();
-                    got.dedup();
-                    if want != got {
+            let Some(read) = number_before(&doc, phrase) else { continue };
+            checked += 1;
+            match read {
+                Err(word) => bad.push(unreadable(&word, phrase)),
+                Ok((claimed, _)) => {
+                    if claimed != mods.len() {
                         bad.push(format!(
-                            "the listed modules {got:?} are not the ones that have tests {want:?}"
+                            "\"{claimed} {phrase}\" — {} modules actually do: {}",
+                            mods.len(),
+                            mods.iter().map(|(p, _)| base(p)).collect::<Vec<_>>().join(", ")
                         ));
                     }
+                }
+            }
+            // Where the doc ENUMERATES them, the list must be the real
+            // set. Two or more names means a list; a single one is the
+            // "`browse.rs` has the most" shape, checked separately.
+            let listed = names_after(&doc, phrase);
+            if listed.len() >= 2 {
+                let mut want: Vec<String> = mods.iter().map(|(p, _)| base(p)).collect();
+                let mut got = listed.clone();
+                want.sort();
+                got.sort();
+                got.dedup();
+                if want != got {
+                    bad.push(format!(
+                        "the listed modules {got:?} are not the ones that have tests {want:?}"
+                    ));
                 }
             }
         }
 
         // --- total test count
+        //
+        // "tests" is everywhere in prose ("carry unit tests"), so here only a
+        // token shaped like a count is a claim — but one that is and does
+        // not read fails, rather than falling through to the next phrase.
         for phrase in ["unit tests", "tests"] {
-            if let Some((claimed, approx)) = number_before(&doc, phrase) {
-                checked += 1;
-                let off = (total as f64 - claimed as f64) / claimed.max(1) as f64;
-                let stale = if approx { off.abs() > 0.10 } else { total != claimed };
-                if stale {
-                    bad.push(format!(
-                        "\"{}{claimed} {phrase}\" — the crate has {total}",
-                        if approx { "~" } else { "" }
-                    ));
+            match number_before(&doc, phrase) {
+                Some(Ok((claimed, approx))) => {
+                    checked += 1;
+                    let off = (total as f64 - claimed as f64) / claimed.max(1) as f64;
+                    let stale = if approx { off.abs() > 0.10 } else { total != claimed };
+                    if stale {
+                        bad.push(format!(
+                            "\"{}{claimed} {phrase}\" — the crate has {total}",
+                            if approx { "~" } else { "" }
+                        ));
+                    }
                 }
-                break; // "unit tests" wins; don't double-count its "tests" tail
+                Some(Err(word)) if looks_like_count(&word) => {
+                    checked += 1;
+                    bad.push(unreadable(&word, phrase));
+                }
+                _ => continue,
             }
+            break; // "unit tests" wins; don't double-count its "tests" tail
         }
 
         // --- which file has the most
