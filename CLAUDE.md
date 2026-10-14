@@ -281,7 +281,7 @@ in `new()` — which tasks run depends on the selected module, so a clock proces
 listen to tray D-Bus, etc.:
 
 - **Compositor status feed** (`spawn_status_listener`): connects to
-  `/tmp/cce-status[-interface]-{WAYLAND_DISPLAY}.sock` and subscribes, one task
+  `/tmp/cce-status-interface-{WAYLAND_DISPLAY}.sock` and subscribes, one task
   per topic, line-oriented — `layout` and `title` only in the process that owns
   the window module, `dismiss` in every one. Reconnects back off
   1s doubling to 30s, reset the moment a connection delivers a line: a
