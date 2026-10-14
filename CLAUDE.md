@@ -21,7 +21,7 @@ cce-icons glyph textures), `src/listeners.rs` (status/switcher socket tasks),
 
 ```sh
 cargo build --release                 # standalone build (or `-p cce-status-interface` from the workspace root)
-cargo test                            # 53 tests: main.rs (parsers, droplet geometry, menu glyphs, module readings), stats.rs, config.rs, tray.rs, osd.rs, the tray bridge's x11.rs and title.rs, and tests/doc_claims.rs
+cargo test                            # 51 tests: main.rs (parsers, droplet geometry, menu glyphs, module readings), stats.rs, config.rs, tray.rs, osd.rs, the tray bridge's x11.rs and title.rs; plus tests/doc_claims.rs, which checks this count
 make install                          # release build, then `ccebuild install --no-build cce-status-interface`
 ```
 
