@@ -243,6 +243,10 @@ struct ModuleContextMenu {
     /// Per-row (y offset from the menu top, height), parallel to the current
     /// page's rows; rebuilt with the layout (rows have mixed heights).
     row_bounds: Vec<(f32, f32)>,
+    /// The page just turned under a still pointer: the next layout hovers
+    /// the row now under it (`compute_row_bounds`), as cce-ui's context
+    /// menus do, rather than leaving it dark until the pointer moves.
+    rehover: bool,
 }
 
 impl ModuleContextMenu {
@@ -266,6 +270,20 @@ impl ModuleContextMenu {
             .map(|r| if r.separator { Self::SEP_H } else { Self::ITEM_H })
             .sum();
         2.0 * Self::PAD + Self::HEADER_H + rows
+    }
+
+    /// The current page's [`row_bounds`](Self::row_bounds): each row's
+    /// offset from the menu top, under the title, and its height.
+    fn compute_row_bounds(&self) -> Vec<(f32, f32)> {
+        let mut off = Self::PAD + Self::HEADER_H;
+        self.rows()
+            .iter()
+            .map(|r| {
+                let h = if r.separator { Self::SEP_H } else { Self::ITEM_H };
+                off += h;
+                (off - h, h)
+            })
+            .collect()
     }
 
     fn contains(&self, x: f32, y: f32) -> bool {
@@ -502,6 +520,7 @@ impl StatusApp {
             MenuRowAction::Submenu(p) | MenuRowAction::Back(p) => {
                 menu.page = p;
                 menu.hovered = None;
+                menu.rehover = true;
                 None
             }
             MenuRowAction::Ccectl(args) => {
@@ -960,6 +979,10 @@ impl StatusApp {
                     let anim_x = start_x + (plate_x - start_x) * t;
                     let reveal_h = menu_h * t;
                     menu.rect = (anim_x, bar_h, anim_w, reveal_h);
+                    if std::mem::take(&mut menu.rehover) {
+                        menu.row_bounds = menu.compute_row_bounds();
+                        menu.hovered = menu.item_at(self.cursor_pos.0 as f32, self.cursor_pos.1 as f32);
+                    }
                     self.width = self.width.max((anim_x + anim_w + plate_x).round() as u32);
                     self.height = (bar_h + reveal_h).round() as u32;
 
@@ -1020,14 +1043,8 @@ impl StatusApp {
 
                     let rows = menu.rows().to_vec();
                     let hovered = menu.hovered;
-                    let mut bounds = Vec::with_capacity(rows.len());
-                    let mut off = ModuleContextMenu::PAD + ModuleContextMenu::HEADER_H;
-                    for (i, row) in rows.iter().enumerate() {
-                        let h = if row.separator {
-                            ModuleContextMenu::SEP_H
-                        } else {
-                            ModuleContextMenu::ITEM_H
-                        };
+                    let bounds = menu.compute_row_bounds();
+                    for (i, (row, &(off, h))) in rows.iter().zip(&bounds).enumerate() {
                         let iy = bar_h + off;
                         if row.separator {
                             self.rects.push(RectWidget {
@@ -1086,8 +1103,6 @@ impl StatusApp {
                                 None,
                             ));
                         }
-                        bounds.push((off, h));
-                        off += h;
                     }
                     menu.row_bounds = bounds;
 
@@ -1748,6 +1763,7 @@ impl cce_ui::engine::Application for StatusApp {
                         hovered: None,
                         rect: (0.0, 0.0, 0.0, 0.0),
                         row_bounds: Vec::new(),
+                        rehover: false,
                     });
                 } else {
                     changed = false;
@@ -1767,6 +1783,7 @@ impl cce_ui::engine::Application for StatusApp {
                         hovered: None,
                         rect: (0.0, 0.0, 0.0, 0.0),
                         row_bounds: Vec::new(),
+                        rehover: false,
                     });
                 } else {
                     changed = false;
@@ -2292,6 +2309,7 @@ impl cce_ui::engine::Application for StatusApp {
                         hovered: None,
                         rect: (0.0, 0.0, 0.0, 0.0),
                         row_bounds: Vec::new(),
+                        rehover: false,
                     });
                     self.needs_rebuild = true;
                     *needs_rebuild = true;
@@ -2329,6 +2347,10 @@ impl cce_ui::engine::Application for StatusApp {
         if side_swipe::swallow(delta) || self.menu_closing {
             return;
         }
+        // The wheel says where the pointer is too: the page a swipe turns
+        // to hovers the row under it from here, even with no motion since
+        // the menu opened.
+        self.cursor_pos = (pos.x as f64, pos.y as f64);
         let Some(menu) = self.context_menu.as_ref().filter(|m| m.contains(pos.x, pos.y)) else { return };
         let row = match side_swipe::feed(delta) {
             Some(SwipeDir::Forward) => menu
