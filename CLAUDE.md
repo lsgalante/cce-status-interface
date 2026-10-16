@@ -532,6 +532,14 @@ surface has grown to lay the menu out. Checked over AT-SPI on private buses (a s
   replayed to the segment as press+release instead of snapped (a still click on
   a top-edge segment used to re-home it to top-center), and an EXPANDED segment
   (menu open) is never grabbed at all, so the "Done" row can end adjust mode.
+- **A two-finger side swipe turns an open menu's page** (`handle_mouse_wheel`,
+  since 2026-10-16), as in cce-ui's context menus and with the same shared
+  recognizer (`cce_ui::widget::side_swipe`): forward over a `Submenu` row runs
+  it, back anywhere on a page runs its `Back` row, one turn per gesture. The
+  bar strip takes no wheel. In overview (or with Super held) the compositor
+  pans on any scroll except over chrome, which counts a segment with its menu
+  open since cce-fx@9754473 (`cursor/axis.rs`); before that, a swipe
+  over a bar menu panned the desk in overview.
 - Tray icons left-click activate / right-click open their DBusMenu. (The old
   layout-mode menu and viewport tabs are gone with the viewport-tag feature.)
 - `ToggleHideModules` / `ToggleAdjustPositionMode` mirror their state to the compositor

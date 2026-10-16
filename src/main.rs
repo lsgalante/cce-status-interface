@@ -2318,7 +2318,31 @@ impl cce_ui::engine::Application for StatusApp {
         None
     }
 
-    fn handle_mouse_wheel(&mut self, _delta: &MouseScrollDelta, _pos: cce_ui::engine::LogicalPosition, _needs_rebuild: &mut bool) {}
+    /// Over an open menu, a two-finger side swipe turns its page, as in
+    /// cce-ui's context menus (`cce_ui::widget::side_swipe`): forward on a
+    /// submenu row into its page, back anywhere on a page with a Back row.
+    /// The bar itself takes no wheel.
+    fn handle_mouse_wheel(&mut self, delta: &MouseScrollDelta, pos: cce_ui::engine::LogicalPosition, needs_rebuild: &mut bool) {
+        use cce_ui::widget::{side_swipe, SwipeDir};
+        // What is left of a swipe that turned the page is the turn's: the
+        // page it turned to must not turn again under the same fingers.
+        if side_swipe::swallow(delta) || self.menu_closing {
+            return;
+        }
+        let Some(menu) = self.context_menu.as_ref().filter(|m| m.contains(pos.x, pos.y)) else { return };
+        let row = match side_swipe::feed(delta) {
+            Some(SwipeDir::Forward) => menu
+                .item_at(pos.x, pos.y)
+                .filter(|&i| matches!(menu.rows()[i].action, MenuRowAction::Submenu(_))),
+            Some(SwipeDir::Back) => menu.rows().iter().position(|r| r.enabled && matches!(r.action, MenuRowAction::Back(_))),
+            None => None,
+        };
+        if let Some(i) = row {
+            self.run_menu_row(i);
+            self.needs_rebuild = true;
+            *needs_rebuild = true;
+        }
+    }
 
     fn handle_key_input(&mut self, _event: &KeyEvent, _needs_rebuild: &mut bool) -> Option<Self::Message> { None }
 }
